@@ -1,0 +1,16 @@
+
+
+dependencies {
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    api project(':vexra-client')
+    api project(':vexra-metrics-api')
+    api project(':vexra-server-api')
+    api project(':vexra-server-sm')
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}

@@ -1,0 +1,442 @@
+package net.xdob.vexra.adb.db;
+
+
+import java.sql.SQLException;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.RowPrefix;
+import org.adb.api.ErrorCode;
+import org.adb.command.query.AllColumnsForPlan;
+import org.adb.engine.Database;
+import org.adb.engine.SessionLocal;
+import org.adb.index.Cursor;
+import org.adb.index.IndexType;
+import org.adb.index.SingleRowCursor;
+import org.adb.message.DbException;
+import org.adb.mvstore.MVStoreException;
+import org.adb.result.Row;
+import org.adb.result.SearchRow;
+import org.adb.result.SortOrder;
+import org.adb.table.Column;
+import org.adb.table.IndexColumn;
+import org.adb.table.TableFilter;
+import org.adb.value.Value;
+import org.adb.value.ValueLob;
+import org.adb.value.ValueNull;
+
+/**
+ * A table stored in a RocksStore.
+ */
+public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
+
+  private final AdbTable rocksTable;
+
+
+  private int mainIndexColumn = SearchRow.ROWID_INDEX;
+
+  public AdbPrimaryIndex(Database db, AdbTable table, int id, IndexColumn[] columns, IndexType indexType) {
+    super(table, id, table.getName() + "_DATA", columns, 0, indexType);
+    this.rocksTable = table;
+
+  }
+
+
+  @Override
+  public String getCreateSQL() {
+    return null;
+  }
+
+  @Override
+  public String getPlanSQL() {
+    return table.getSQL(new StringBuilder(), TRACE_SQL_FLAGS).append(".tableScan").toString();
+  }
+
+  public void setMainIndexColumn(int mainIndexColumn) {
+    this.mainIndexColumn = mainIndexColumn;
+  }
+
+  public int getMainIndexColumn() {
+    return mainIndexColumn;
+  }
+
+  @Override
+  public void close(SessionLocal session) {
+    // ok
+  }
+
+  @Override
+  public void add(SessionLocal session, Row row) {
+    if (mainIndexColumn == SearchRow.ROWID_INDEX) {
+      if (row.getKey() == 0) {
+        row.setKey(rocksTable.nextKey());
+      }
+    } else {
+      long c = row.getValue(mainIndexColumn).getLong();
+      row.setKey(c);
+    }
+
+    if (rocksTable.getContainsLargeObject()) {
+      for (int i = 0, len = row.getColumnCount(); i < len; i++) {
+        Value v = row.getValue(i);
+        if (v instanceof ValueLob) {
+          ValueLob lob = ((ValueLob) v).copy(database, getId());
+          session.removeAtCommitStop(lob);
+          if (v != lob) {
+            row.setValue(i, lob);
+          }
+        }
+      }
+    }
+
+
+    TxnMap2 map = getTxnMap(session);
+    long rowId = row.getKey();
+    try {
+      RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
+      RowValue old = map.putIfAbsent(rowKey, row);
+      if (old != null) {
+        int errorCode = ErrorCode.CONCURRENT_UPDATE_1;
+        if (map.getVisible(rowKey) != null) {
+          // committed
+          errorCode = ErrorCode.DUPLICATE_KEY_1;
+        }
+        Row oldRow = RowCodec.decode(rowId, old.payload);
+        DbException e = DbException.get(errorCode,
+            getDuplicatePrimaryKeyMessage(mainIndexColumn).append(' ').append(oldRow).toString());
+        e.setSource(this);
+        throw e;
+      }
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+
+  }
+
+  @Override
+  public void remove(SessionLocal session, Row row) {
+    if (rocksTable.getContainsLargeObject()) {
+      for (int i = 0, len = row.getColumnCount(); i < len; i++) {
+        Value v = row.getValue(i);
+        if (v instanceof ValueLob) {
+          session.removeAtCommit((ValueLob) v);
+        }
+      }
+    }
+    TxnMap2 map = getTxnMap(session);
+    try {
+      RowKey rowKey = RowKey.of(map.getTabId(table.getId()), row.getKey());
+      RowValue existing = map.delete(rowKey);
+      if (existing == null) {
+        StringBuilder builder = new StringBuilder();
+        getSQL(builder, TRACE_SQL_FLAGS).append(": ").append(row.getKey());
+        throw DbException.get(ErrorCode.ROW_NOT_FOUND_WHEN_DELETING_1, builder.toString());
+      }
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+  }
+
+  @Override
+  public void update(SessionLocal session, Row oldRow, Row newRow) {
+    if (oldRow.getKey() != newRow.getKey()) {
+      throw DbException.get(ErrorCode.FEATURE_NOT_SUPPORTED_1, "update primary key");
+    }
+    if (mainIndexColumn != SearchRow.ROWID_INDEX) {
+      long c = newRow.getValue(mainIndexColumn).getLong();
+      newRow.setKey(c);
+    }
+    long key = oldRow.getKey();
+    assert mainIndexColumn != SearchRow.ROWID_INDEX || key != 0;
+    assert key == newRow.getKey() : key + " != " + newRow.getKey();
+    if (rocksTable.getContainsLargeObject()) {
+      for (int i = 0, len = oldRow.getColumnCount(); i < len; i++) {
+        Value oldValue = oldRow.getValue(i);
+        Value newValue = newRow.getValue(i);
+        if (oldValue != newValue) {
+          if (oldValue instanceof ValueLob) {
+            session.removeAtCommit((ValueLob) oldValue);
+          }
+          if (newValue instanceof ValueLob) {
+            ValueLob lob = ((ValueLob) newValue).copy(database, getId());
+            session.removeAtCommitStop(lob);
+            if (newValue != lob) {
+              newRow.setValue(i, lob);
+            }
+          }
+        }
+      }
+    }
+
+    TxnMap2 map = getTxnMap(session);
+    try {
+      RowKey rowKey = RowKey.of(map.getTabId(table.getId()), key);
+      RowValue existing = map.put(rowKey, newRow);
+      if (existing == null) {
+        StringBuilder builder = new StringBuilder();
+        getSQL(builder, TRACE_SQL_FLAGS).append(": ").append(key);
+        throw DbException.get(ErrorCode.ROW_NOT_FOUND_WHEN_DELETING_1, builder.toString());
+      }
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+
+
+  }
+
+  private final ConcurrentHashMap<Long, SessionLocal> rowLockOwners = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<SessionLocal, Set<Long>> sessionRowLocks = new ConcurrentHashMap<>();
+
+
+  Row lockRow(SessionLocal session, Row row, int timeoutMillis) {
+    TxnMap2 map = getTxnMap(session);
+    long key = row.getKey();
+    return lockRow(map, key, timeoutMillis);
+  }
+
+  private Row lockRow(TxnMap2 map, long key, int timeoutMillis) {
+    try {
+      return setRowKey((Row) map.lock(table.getId(), key, timeoutMillis), key);
+    } catch (SQLException ex) {
+      throw rocksTable.convertLockException(ex);
+    }
+  }
+
+  @Override
+  public Cursor find(SessionLocal session, SearchRow first, SearchRow last) {
+    long min = extractPKFromRow(first, Long.MIN_VALUE);
+    long max = extractPKFromRow(last, Long.MAX_VALUE);
+    return find(session, min, max);
+  }
+
+  private long extractPKFromRow(SearchRow row, long defaultValue) {
+    long result;
+    if (row == null) {
+      result = defaultValue;
+    } else if (mainIndexColumn == SearchRow.ROWID_INDEX) {
+      result = row.getKey() != 0 ? row.getKey() : defaultValue;
+    } else {
+      Value v = row.getValue(mainIndexColumn);
+      if (v == null) {
+        result = row.getKey() != 0 ? row.getKey() : defaultValue;
+      } else if (v == ValueNull.INSTANCE) {
+        result = 0L;
+      } else {
+        result = v.getLong();
+      }
+    }
+    return result;
+  }
+
+
+
+  private Cursor find(SessionLocal session, Long first, Long last) {
+    TxnMap2 map = getTxnMap(session);
+    try {
+      if (first != null && last != null && first.longValue() == last.longValue()) {
+        RowKey firstKey = RowKey.of(map.getTabId(table.getId()), first);
+        RowValue rowValue = map.getVisible(firstKey);
+        if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
+          return new SingleRowCursor(null);
+        }
+        Row row = RowCodec.decode(first, rowValue.payload);
+        return new SingleRowCursor(setRowKey(row, first));
+      }
+
+      RowPrefix rowPrefix = RowPrefix.of(map.getTabId(table.getId()));
+      return new RocksStoreCursor(map.entryIterator(rowPrefix, first, last));
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+  }
+
+
+
+  @Override
+  public AdbTable getTable() {
+    return rocksTable;
+  }
+
+  @Override
+  public Row getRow(SessionLocal session, long key) {
+    TxnMap2 map = getTxnMap(session);
+    try {
+      RowKey firstKey = RowKey.of(map.getTabId(table.getId()), key);
+      RowValue rowValue = map.getVisible(firstKey);
+      if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
+        return null;
+      }
+      return RowCodec.decode(key, rowValue.payload);
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+  }
+
+  @Override
+  public double getCost(SessionLocal session, int[] masks,
+                        TableFilter[] filters, int filter, SortOrder sortOrder,
+                        AllColumnsForPlan allColumnsSet) {
+    try {
+      return 10 * getCostRangeIndex(masks, getRowCount(session),
+          filters, filter, sortOrder, true, allColumnsSet);
+    } catch (MVStoreException e) {
+      throw DbException.get(ErrorCode.OBJECT_CLOSED, e);
+    }
+  }
+
+  @Override
+  public int getColumnIndex(Column col) {
+    // can not use this index - use the delegate index instead
+    return col.getColumnId();//SearchRow.ROWID_INDEX;
+  }
+
+  @Override
+  public boolean isFirstColumn(Column column) {
+    return false;
+  }
+
+  @Override
+  public void remove(SessionLocal session) {
+    TxnMap2 map = getTxnMap(session);
+    //map.clear(KeyWrapper.tablePrefix(table.getId()));
+  }
+
+  @Override
+  public void truncate(SessionLocal session) {
+    if (rocksTable.getContainsLargeObject()) {
+      database.getLobStorage().removeAllForTable(table.getId());
+    }
+    TxnMap2 map = getTxnMap(session);
+    //map.clear(KeyWrapper.tablePrefix(table.getId()));
+  }
+
+  @Override
+  public boolean canGetFirstOrLast() {
+    return true;
+  }
+
+  @Override
+  public Cursor findFirstOrLast(SessionLocal session, boolean first) {
+    TxnMap2 map = getTxnMap(session);
+    RowPrefix tablePrefix = RowPrefix.of(map.getTabId(table.getId()));
+    try {
+      RowValue  rowValue = first ? map.first(tablePrefix) : map.last(tablePrefix);
+      Row row = null;
+      if(rowValue!=null&&!rowValue.deleted&&rowValue.payload!=null){
+        row = RowCodec.decode(rowValue.rowKey, rowValue.payload);
+      }
+      return new SingleRowCursor(row != null ? setRowKey(row, row.getKey()) : null);
+    } catch (SQLException e) {
+      throw rocksTable.convertException(e);
+    }
+  }
+
+  @Override
+  public boolean needRebuild() {
+    return false;
+  }
+
+  @Override
+  public long getRowCount(SessionLocal session) {
+    return table.getRowCount(session);
+  }
+
+
+
+  @Override
+  public long getRowCountApproximation(SessionLocal session) {
+    return table.getRowCount(session);
+  }
+
+  @Override
+  public long getDiskSpaceUsed() {
+    throw DbException.getUnsupportedException("getDiskSpaceUsed");
+    //return 0;
+  }
+
+
+  @Override
+  public void addRowsToBuffer(SessionLocal session, List<Row> rows) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
+  public void addBufferedRows(SessionLocal session) {
+    throw new UnsupportedOperationException();
+  }
+
+
+  @Override
+  public boolean isRowIdIndex() {
+    return true;
+  }
+
+
+
+  @Override
+  public TxnMap2 getTxnMap(SessionLocal session) {
+    return session.getTransaction().getTxnMap2();
+  }
+
+  private static Row setRowKey(Row row, long key) {
+    if (row != null && row.getKey() == 0) {
+      row.setKey(key);
+    }
+    return row;
+  }
+
+  /**
+   * A cursor.
+   */
+  static final class RocksStoreCursor implements Cursor, AutoCloseable {
+
+    private TableScanCursor it;
+    private RowValue current;
+    private Row row;
+
+    public RocksStoreCursor(TableScanCursor it) {
+      this.it = it;
+    }
+
+    @Override
+    public Row get() {
+      if (row == null) {
+        if (current != null) {
+          row = RowCodec.decode(current.rowKey, current.payload);
+        }
+      }
+      return row;
+    }
+
+    @Override
+    public SearchRow getSearchRow() {
+      return get();
+    }
+
+    @Override
+    public boolean next() {
+      row = null;
+      current = null;
+      if (!it.next()) {
+        return false;
+      }
+      current = it.get();
+      return current != null;
+    }
+
+    @Override
+    public boolean previous() {
+      throw DbException.getUnsupportedException("previous");
+    }
+
+    @Override
+    public synchronized void close() throws Exception {
+      if(it!=null) {
+        it.close();
+        it = null;
+      }
+    }
+  }
+}

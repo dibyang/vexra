@@ -1,29 +1,15 @@
 import net.researchgate.release.GitAdapter
 
-buildscript {
-    repositories {
-        mavenLocal()
-        mavenCentral()
-        maven { url 'https://maven.aliyun.com/repository/public/' }
-    }
-    dependencies {
-        classpath 'net.researchgate:gradle-release:2.6.0'
-    }
-    //skip Test tasks
-    gradle.taskGraph.whenReady {
-        tasks.each { task ->
-            if (task.name.contains("test")) {
-                task.enabled = false
-            }
-        }
-    }
+plugins {
+    id 'java'
+    id 'maven-publish'
+    id 'signing'
+    id 'net.researchgate.release' version('2.6.0')
 }
 
-apply plugin: 'java'
-apply plugin: 'maven-publish'
-apply plugin: 'signing'
-apply plugin: 'net.researchgate.release'
-
+tasks.withType(Test).configureEach {
+    enabled = false
+}
 
 /**
  * signing.properties 文件内容示例如下
@@ -62,7 +48,7 @@ release {
     ]
 
     git {
-        requireBranch = 'master'
+        requireBranch = 'master|v.*'
         pushToRemote = 'origin'
         pushToBranchPrefix = ''
         commitVersionFileOnly = false
@@ -76,9 +62,12 @@ subprojects {
 
     buildscript {
         repositories {
-            mavenLocal()
             mavenCentral()
             maven { url 'https://maven.aliyun.com/repository/public/' }
+            mavenLocal()
+        }
+        dependencies {
+            classpath 'com.netflix.nebula:gradle-ospackage-plugin:11.0.0'
         }
     }
 
@@ -86,7 +75,6 @@ subprojects {
     apply plugin: "java-library"
     apply plugin: 'maven-publish'
     apply plugin: 'signing'
-
 
 
     configurations.configureEach {
@@ -110,19 +98,22 @@ subprojects {
 
 
     repositories {
-        mavenLocal()
-        maven { url 'https://maven.aliyun.com/repository/public/' }
         mavenCentral()
+        maven { url 'https://maven.aliyun.com/repository/public/' }
+        mavenLocal()
     }
 
     dependencies {
         //implementation("com.google.guava:guava:31.0-jre")
         //implementation("com.google.code.gson:gson:2.8.6")
         //implementation("org.apache.commons:commons-lang3:3.9")
-        compileOnly("org.slf4j:slf4j-api:${slf4j_version}")
-        testImplementation("junit:junit:4.12")
+        implementation("org.slf4j:slf4j-api:${slf4j_version}")
+        testImplementation("org.junit.jupiter:junit-jupiter:5.10.0")
     }
 
+    test {
+        useJUnitPlatform()
+    }
 
     //对于典型的 Java 项目，您可以添加一个javadocJar以及一个 sourceJar任务
     tasks.register('javadocJar', Jar) {
@@ -170,14 +161,43 @@ subprojects {
                 artifact sourceJar
                 // 添加javadocjar
                 artifact javadocJar
+                pom {
+                    name = 'vexra'
+                    description = "Distributed Database with Strong Consistency Based on Raft Protocol"
+                    // 构件主页
+                    url = 'https://github.com/dibyang/vexra'
+                    // 许可证名称和地址
+                    licenses {
+                        license {
+                            name = 'The Apache License, Version 2.0'
+                            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                        }
+                    }
+                    // 开发者信息
+                    developers {
+                        developer {
+                            id = 'dib.yang'
+                            name = 'dib.yang'
+                            email = 'dib.yang@gmail.com'
+                        }
+                    }
+                    // 版本控制仓库地址
+                    scm {
+                        url = 'https://github.com/dibyang/vexra'
+                        connection = 'scm:git:https://github.com/dibyang/vexra.git'
+                        developerConnection = 'scm:git:https://github.com/dibyang/vexra.git'
+                    }
+                }
             }
         }
         repositories {
             maven {
                 // 发布仓库配置，这里基于version后缀是否为SNAPSHOT来区分发布到release库还是snapshots库
-                def releasesRepoUrl = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/"
-                def snapshotsRepoUrl = "https://s01.oss.sonatype.org/content/repositories/snapshots/"
-                url = version.endsWith('SNAPSHOT') ? snapshotsRepoUrl : releasesRepoUrl
+                if(version.endsWith('SNAPSHOT')){
+                    it.url = project.property("snapshotsRepository")
+                }else{
+                    it.url = project.property("releasesRepository")
+                }
 
                 //认证用户和密码，在配置文件gradle.properties中配置
                 //oss-sonatype的登录用户名和密码
@@ -185,6 +205,7 @@ subprojects {
                     username = findProperty("ossrhUsername")?:""
                     password = findProperty("ossrhPassword")?:""
                 }
+
             }
         }
     }
@@ -193,8 +214,6 @@ subprojects {
     signing {
         sign publishing.publications.maven
     }
-
-    afterReleaseBuild.dependsOn publishMavenPublicationToMavenRepository
 
 
 }

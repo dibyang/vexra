@@ -1,0 +1,18 @@
+
+
+dependencies {
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    implementation project(':vexra-client')
+    implementation project(':vexra-server')
+    implementation "io.netty:netty-common:${netty_version}"
+    implementation "io.netty:netty-codec:${netty_version}"
+    implementation "io.netty:netty-transport-native-epoll:${netty_version}"
+    implementation platform("io.netty:netty-bom:${netty_version}")
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}

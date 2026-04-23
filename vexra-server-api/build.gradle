@@ -1,0 +1,10 @@
+
+dependencies {
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    api project(':vexra-client')
+}
+
+test {
+    useJUnitPlatform()
+}

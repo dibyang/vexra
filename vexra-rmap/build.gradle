@@ -1,0 +1,15 @@
+dependencies {
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    api project(':vexra-client')
+    api project(':vexra-server')
+    api project(':vexra-grpc')
+    implementation "ch.qos.logback:logback-core:${logback_version}"
+    implementation "ch.qos.logback:logback-classic:${logback_version}"
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}

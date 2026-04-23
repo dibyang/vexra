@@ -1,0 +1,98 @@
+package net.xdob.vexra.server.impl;
+
+import net.xdob.vexra.proto.raft.RaftPeerRole;
+import net.xdob.vexra.protocol.RaftPeer;
+import net.xdob.vexra.protocol.RaftPeerId;
+import net.xdob.vexra.server.RaftConfiguration;
+import net.xdob.vexra.util.JavaUtils;
+import net.xdob.vexra.util.Preconditions;
+import net.xdob.vexra.util.StringUtils;
+
+import java.util.*;
+
+/**
+ * Maintain the mappings between log index and corresponding raft configuration.
+ * Initialized when starting the raft peer. The mappings are loaded from the
+ * raft log, and updated while appending/truncating configuration related log
+ * entries.
+ */
+public class ConfigurationManager {
+  private final RaftPeerId id;
+  private final RaftConfiguration initialConf;
+  private final NavigableMap<Long, RaftConfiguration> configurations = new TreeMap<>();
+  /**
+   * The current raft configuration. If configurations is not empty, should be
+   * the last entry of the map. Otherwise is initialConf.
+   */
+  private RaftConfiguration currentConf;
+  /** Cache the peer corresponding to {@link #id}. */
+  private RaftPeer currentPeer;
+
+  ConfigurationManager(RaftPeerId id, RaftConfiguration initialConf) {
+    this.id = id;
+    this.initialConf = initialConf;
+    setCurrentConf(initialConf);
+  }
+
+  private void setCurrentConf(RaftConfiguration currentConf) {
+    this.currentConf = currentConf;
+    final RaftPeer peer = currentConf.getPeer(id, RaftPeerRole.FOLLOWER, RaftPeerRole.LISTENER);
+    if (peer != null) {
+      this.currentPeer = peer;
+    }
+  }
+
+  synchronized void addConfiguration(RaftConfiguration conf) {
+    final long logIndex = conf.getLogEntryIndex();
+    final RaftConfiguration found = configurations.get(logIndex);
+    if (found != null) {
+      Preconditions.assertTrue(found.equals(conf));
+      return;
+    }
+    addRaftConfiguration(logIndex, conf);
+  }
+
+  private void addRaftConfiguration(long logIndex, RaftConfiguration conf) {
+    configurations.put(logIndex, conf);
+    if (logIndex == configurations.lastEntry().getKey()) {
+      setCurrentConf(conf);
+    }
+  }
+
+  synchronized RaftConfiguration getCurrent() {
+    return currentConf;
+  }
+
+  synchronized RaftPeer getCurrentPeer() {
+    return currentPeer;
+  }
+
+  /**
+   * Remove all the configurations whose log index is >= the given index.
+   *
+   * @param index The given index. All the configurations whose log index is >=
+   *              this value will be removed.
+   */
+  synchronized void removeConfigurations(long index) {
+    // remove all configurations starting at the index
+    final SortedMap<Long, RaftConfiguration> tail = configurations.tailMap(index);
+    if (tail.isEmpty()) {
+      return;
+    }
+    tail.clear();
+    setCurrentConf(configurations.isEmpty() ? initialConf : configurations.lastEntry().getValue());
+  }
+
+  synchronized int numOfConf() {
+    return 1 + configurations.size();
+  }
+
+  @Override
+  public synchronized String toString() {
+    return JavaUtils.getClassSimpleName(getClass())
+        + ", init=" + initialConf
+        + ", confs=" + StringUtils.map2String(configurations);
+  }
+
+  // TODO: remove Configuration entries after they are committed
+}

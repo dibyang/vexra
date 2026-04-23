@@ -1,0 +1,47 @@
+syntax = "proto3";
+option java_package = "net.xdob.vexra.proto.sm";
+option java_multiple_files = true;
+option java_generate_equals_and_hash = true;
+
+package vexra.sm;
+
+import "Base.proto";
+import "Adb.proto";
+
+message CommandRequestProto{
+  string name = 1;
+  string cmd = 2;
+  base.MapProto args = 3;
+}
+
+message CommandReplyProto{
+  base.ValueProto response = 3;
+  base.ListProto list = 4;
+}
+
+message ErrorProto{
+  int32 code = 1;
+  string message = 2;
+}
+
+message WrapRequestProto{
+  string type = 1;
+  string xid = 2;
+  oneof request {
+    bytes body = 10;
+    CommandRequestProto command_request = 12;
+    adb.ReadRequest read_request = 13;
+    adb.WriteRequest write_request = 14;
+  }
+}
+
+message WrapReplyProto{
+  string type = 1;
+  base.Throwable2Proto ex = 3;
+  oneof relay{
+    bytes body = 10;
+    CommandReplyProto cmd_response = 12;
+    adb.ReadResponse read_response = 13;
+    adb.WriteResponse write_response = 14;
+  }
+}

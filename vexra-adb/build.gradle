@@ -1,0 +1,28 @@
+dependencies {
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    api project(':vexra-client')
+    api project(':vexra-server')
+    api project(':vexra-grpc')
+    api project(':vexra-ldb')
+
+    //api 'com.zaxxer:HikariCP:4.0.3'
+    api("jline:jline:2.14.6")
+    implementation 'org.osgi:org.osgi.core:5.0.0'
+    implementation 'org.locationtech.jts:jts-core:1.17.0'
+    implementation 'javax.servlet:javax.servlet-api:4.0.1'
+    implementation 'jakarta.servlet:jakarta.servlet-api:5.0.0'
+    compileOnly 'org.apache.lucene:lucene-core:8.5.2'
+    compileOnly 'org.apache.lucene:lucene-analyzers-common:8.5.2'
+    compileOnly 'org.apache.lucene:lucene-queryparser:8.5.2'
+    compileOnly "ch.qos.logback:logback-core:${logback_version}"
+    compileOnly "ch.qos.logback:logback-classic:${logback_version}"
+    compileOnly("org.rocksdb:rocksdbjni:9.1.0")
+    implementation("org.lz4:lz4-java:1.8.0")
+    //testImplementation 'org.testng:testng:7.1.0'
+    compileOnly 'org.osgi:org.osgi.service.jdbc:1.1.0'
+}
+
+test {
+    useJUnitPlatform()
+}

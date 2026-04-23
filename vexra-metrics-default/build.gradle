@@ -1,0 +1,15 @@
+
+dependencies {
+    api project(':vexra-metrics-api')
+    api project(':vexra-proto')
+    api project(':vexra-common')
+    implementation "io.dropwizard.metrics:metrics-core:${dropwizard_version}"
+    implementation "io.dropwizard.metrics:metrics-jvm:${dropwizard_version}"
+    implementation "io.dropwizard.metrics:metrics-jmx:${dropwizard_version}"
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}

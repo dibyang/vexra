@@ -1,0 +1,192 @@
+syntax = "proto3";
+option java_package = "net.xdob.vexra.proto.adb";
+option java_multiple_files = true;
+option java_generate_equals_and_hash = true;
+
+package adb;
+
+import "Base.proto";
+
+enum OpProto {
+  OP_UNSPECIFIED = 0;
+  OP_PUT = 1;
+  OP_DELETE = 2;
+  OP_DELETE_RANGE = 3;
+  //OP_ADD_LONG = 4;
+}
+
+enum ColumnFamily {
+  CF_UNSPECIFIED = 0;
+  CF_DEFAULT = 1;
+  CF_META = 2;
+  CF_TXN = 3;
+}
+
+message WriteEntry {
+  OpProto op = 1;
+  ColumnFamily cf = 2;
+  bytes key = 3;
+  bytes value = 4;
+  bytes endKey = 5;//DELETE_RANGE 用于限定终点，为排他式终点
+}
+
+message Batch {
+  repeated WriteEntry entries = 1;
+}
+
+message AllocateSegment{
+  ColumnFamily cf = 1;
+  bytes key = 2;
+  int64 step = 3;
+}
+
+message MetaProto {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message Commit {
+  int64 txnId = 1;
+  int64 commitTs = 2;
+  repeated MetaProto metas = 3;
+}
+
+message Rollback {
+  int64 txnId = 1;
+}
+
+message WriteRequest {
+  string dbName = 1;
+  oneof body {
+    Batch batch = 2;
+    AllocateSegment allocateSegment = 3;
+    Commit commit = 4;
+    Rollback rollback = 5;
+  }
+}
+
+message Segment {
+  int64 start = 1;
+  int64 endExclusive = 2;
+}
+
+message WriteResponse {
+  bool success = 1;
+  base.Throwable2Proto ex =  2;
+  Segment segment = 4;
+}
+
+// 读请求
+
+enum Direction {
+  DIR_UNSPECIFIED = 0;
+  DIR_FORWARD = 1;
+  DIR_REVERSE = 2;
+}
+
+message Get {
+  ColumnFamily cf = 1;
+  bytes key = 2;
+}
+
+message Scan {
+  ColumnFamily cf = 1;
+  bytes startKey = 2;
+  bytes endKey = 3;
+  uint32 limit = 4;
+  bytes resumeKey = 5;//从该 key 之后继续扫描，不重复返回该 key 本身
+  Direction direction = 6;
+}
+
+message PrefixScan {
+  ColumnFamily cf = 1;
+  bytes prefix = 2;
+  uint32 limit = 3;
+  bytes resumeKey = 4;//从该 key 之后继续扫描，不重复返回该 key 本身
+  Direction direction = 5;
+}
+
+message Exists {
+  ColumnFamily cf = 1;
+  bytes key = 2;
+}
+
+/**
+ * 扫描范围
+ */
+message KeyRange {
+  bytes prefix = 1;   // 可选；为空表示整个 CF，非空时，仅匹配此前缀范围内的 key
+  bytes startKey = 2; // 可选；用于限定起点，为包含式起点
+  bytes endKey = 3;   // 可选；用于限定终点，为排他式终点
+}
+
+message First {
+  ColumnFamily cf = 1;
+  KeyRange range = 2; //扫描范围
+}
+
+message Last {
+  ColumnFamily cf = 1;
+  KeyRange range = 2; //扫描范围
+}
+
+message Count {
+  ColumnFamily cf = 1;
+  KeyRange range = 2; //扫描范围
+  uint32 limit = 3;   // 可选；最多统计多少条，0 表示不限制
+}
+
+message ReadRequest {
+  string dbName = 1;
+  oneof req {
+    Get get = 2;
+    Scan scan = 3;
+    PrefixScan prefixScan = 4;
+    Exists exists = 5;
+    First first = 6;
+    Last last = 7;
+    Count count = 8;
+  }
+}
+
+message KvPair {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+message GetResult {
+  bool found = 1;
+  bytes value = 2;
+}
+
+message ScanResult {
+  repeated KvPair entries = 1;
+  bool hasMore = 2;
+  bytes resumeKey = 3;//从该 key 之后继续扫描，不重复返回该 key 本身
+}
+
+message ExistsResult {
+  bool exists = 1;
+}
+
+message KvResult {
+  bool found = 1;
+  KvPair entry = 2;
+}
+
+message CountResult {
+  uint64 count = 1;
+  bool truncated = 2; // 如果 limit 生效且提前截断，则为 true
+}
+
+message ReadResponse {
+  bool success = 1;
+  base.Throwable2Proto ex =  2;
+  oneof resp {
+    GetResult getResult = 3;
+    ScanResult scanResult = 4;
+    ExistsResult existsResult = 5;
+    KvResult kvResult = 6;
+    CountResult countResult = 7;
+  }
+}
