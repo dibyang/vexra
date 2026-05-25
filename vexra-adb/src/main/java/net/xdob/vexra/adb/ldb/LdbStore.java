@@ -40,6 +40,7 @@ public class LdbStore implements DbStore {
   private final File slotADir;
   private final File slotBDir;
   private final File activeFile;
+  private final AdbLdbPlugin adbLdbPlugin;
 
   private String activeSlot;   // "A" or "B"
   private String activeDbPath; // slotA 或 slotB 的绝对路径
@@ -69,6 +70,7 @@ public class LdbStore implements DbStore {
     this.activeSlot = loadActiveSlotOrDefault();   // "A" / "B"
     this.activeDbPath = getSlotDir(activeSlot).getAbsolutePath();
 
+    adbLdbPlugin = new AdbLdbPlugin();
     options = new Options()
         .createIfMissing(true)
         .errorIfExists(false)
@@ -79,33 +81,12 @@ public class LdbStore implements DbStore {
         .blockSize(4096)
         .blockRestartInterval(16)
         .filterPolicy(new BloomFilterPolicy(10))
-        .compressionType(CompressionType.LZ4);
+        .compressionType(CompressionType.LZ4)
+        .addPlugin(adbLdbPlugin);
 
-    for (CF cf : CF.allCfs()) {
-      if (cf.equals(CF.DEFAULT)) {
-        options.addColumnFamily(LdbColumnFamily.DEFAULT);
-      } else {
-        options.addColumnFamily(new LdbColumnFamily() {
-          @Override
-          public int getId() {
-            return cf.getCfId();
-          }
-
-          @Override
-          public String getName() {
-            return cf.name();
-          }
-        });
-      }
-    }
-
-    defCF = LdbColumnFamily.DEFAULT;
-    metaCF = options.getColumnFamilies().stream()
-        .filter(cf -> cf.getId() == CF.META.getCfId())
-        .findFirst().orElseThrow(() -> new IllegalArgumentException("META column family not found"));
-    txnCF = options.getColumnFamilies().stream()
-        .filter(cf -> cf.getId() == CF.TXN.getCfId())
-        .findFirst().orElseThrow(() -> new IllegalArgumentException("TXN column family not found"));
+    defCF = adbLdbPlugin.getDefaultColumnFamily();
+    metaCF = adbLdbPlugin.getMetaColumnFamily();
+    txnCF = adbLdbPlugin.getTxnColumnFamily();
 
     ensureSlotDirExists(getSlotDir(activeSlot));
     persistActiveSlot(activeSlot); // 启动时顺手纠正/初始化 ACTIVE

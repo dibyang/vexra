@@ -4,7 +4,7 @@
 
 Vexra 是一个基于 Raft 协议的分布式数据存储项目，目标是在多节点环境下提供强一致、容错和可恢复的数据复制能力。项目 README 将其定位为“基于 Raft 协议的分布式数据存储”，并强调强一致性、容错性、实时复制、虚拟节点支持、标准 JDBC 访问以及未来水平扩展能力。
 
-本设计文档基于当前代码实现扫描生成，覆盖 Gradle 模块结构、协议定义、服务端 Raft 内核、客户端 API、RPC 传输、状态机插件、ADB 存储插件、LDB 本地存储和快照流程。本文描述当前实现，不直接提出会改变接口、协议、数据库结构、状态机或任务流程的改造方案。
+本设计文档基于当前代码实现扫描生成，覆盖 Gradle 模块结构、协议定义、服务端 Raft 内核、客户端 API、RPC 传输、状态机插件、ADB 存储插件、外部 LDB 本地存储依赖和快照流程。LDB 已从 Vexra 主仓库拆分为独立项目，本文只描述 Vexra 对 LDB 的依赖边界和集成约束，不再把 LDB 作为主仓库内部模块展开。
 
 ## 目标
 
@@ -38,8 +38,7 @@ Vexra 是一个基于 Raft 协议的分布式数据存储项目，目标是在�
 | `vexra-grpc` | gRPC 传输实现 | 服务端、客户端、LogAppender、TLS、指标拦截器 |
 | `vexra-netty` | Netty 传输实现和 DataStream | Protobuf 编解码、Netty RPC、流式数据传输 |
 | `vexra-rmap` | 状态机插件示例：复制 Map | 基于 `SMPlugin`，支持快照 |
-| `vexra-adb` | ADB/JDBC/数据库状态机插件 | 通过 `AdbSMPlugin` 使用 `DbStore` 和 `vexra-ldb` |
-| `vexra-ldb` | 本地 LevelDB 风格 KV 存储实现 | WAL、MemTable、SST、MANIFEST、Compaction、Checkpoint |
+| `vexra-adb` | ADB/JDBC/数据库状态机插件 | 通过 `AdbSMPlugin` 使用 `DbStore`，并依赖独立发布的 LDB 存储库 |
 | `vexra-metrics-api` / `vexra-metrics-default` | 指标接口和默认实现 | Dropwizard/JMX 相关实现 |
 
 ### 运行时主流程
@@ -87,6 +86,7 @@ Vexra 是一个基于 Raft 协议的分布式数据存储项目，目标是在�
 | `DataStreamServerRpc` | `vexra-server-api` | 数据流服务抽象 |
 | `StateMachine` | `vexra-server-api` | 状态机生命周期、事务、查询、快照接口 |
 | `SMPlugin` | `vexra-server-sm` | 状态机插件扩展点 |
+| `LdbPlugin` | 外部 LDB 依赖 | LDB 存储插件扩展点，供 ADB 等上层模块增强列族、写入和 checkpoint 行为 |
 
 ### RPC 与协议接口
 
@@ -124,9 +124,21 @@ Vexra 是一个基于 Raft 协议的分布式数据存储项目，目标是在�
 | `ReadRequest` | get、scan、prefix scan、exists、first、last、count |
 | `ScanResult` | entries、hasMore、resumeKey，用于分页扫描 |
 
-### 本地 LDB 结构
+### 外部 LDB 存储依赖
 
-`vexra-ldb` 实现 LevelDB 风格存储：WAL、MemTable、Immutable MemTable、SST/Table、MANIFEST/VersionSet、TableCache、Compaction、Checkpoint。写入先进入 WAL 和 MemTable，后台 Compaction 负责刷表和层级整理；恢复时读取 MANIFEST 和 WAL 重建状态。
+LDB 已独立为单独项目，Vexra 不再在主仓库内维护其核心实现。ADB 通过 LDB 对外 API 使用 LevelDB 风格本地 KV 存储能力，包括 WAL、MemTable、SST/Table、MANIFEST、Compaction、Checkpoint、repair/check、backup/restore 和工具命令等。LDB 的磁盘格式、可靠性计划和 API 兼容说明以独立 LDB 项目为准；Vexra 侧只约束依赖版本、插件集成、checkpoint/restore 调用和与 ADB 语义相关的兼容性。
+
+### LDB 插件化扩展
+
+外部 LDB 提供插件扩展点，让上层模块在不反向依赖 `vexra-adb` 的前提下增强 LDB 行为。插件通过 `Options` 注册，由 LDB 在打开、写入、checkpoint 和关闭阶段回调。
+
+| 接口 | 职责 |
+| --- | --- |
+| `LdbPlugin` | 插件生命周期接口，支持 `onOpen`、`beforeWrite`、`afterWrite`、`beforeCheckpoint`、`afterCheckpoint`、`beforeClose`、`close` |
+| `LdbPluginContext` | 插件受控访问 LDB 的上下文，暴露数据库目录、配置、列族解析、快照游标、写批次创建和属性查询 |
+| `Options.addPlugin` | 注册插件；不注册插件时 LDB 行为保持旧路径 |
+
+ADB 通过 `AdbLdbPlugin` 使用该扩展点，集中声明 ADB 需要的列族，并为事务索引、扫描、checkpoint/restore 和统计能力提供统一入口。LDB 相关磁盘格式或 API 变更必须先在独立 LDB 项目中完成设计评审和版本发布，Vexra 再升级依赖并补充集成验证。
 
 ## 状态机
 
@@ -231,7 +243,8 @@ sequenceDiagram
 - Raft mixed-version 集群需要保证旧节点能忽略未知字段；对 oneof 新分支需评估旧版本行为。
 - gRPC 与 Netty 两套传输共享 Raft 语义，但封装方式不同；协议字段调整需同时检查 `Grpc.proto`、`Netty.proto` 和 Java 转换逻辑。
 - 状态机插件通过 `WrapRequestProto.type` 路由，新增插件应避免与已有 `rmap`、`adb` 冲突。
-- ADB/LDB 的磁盘格式、MANIFEST、WAL、SST、快照 summary 文件变更需设计迁移和回滚。
+- ADB 数据结构、快照 summary 文件以及 LDB 依赖版本升级都需要设计迁移和回滚；LDB 的 MANIFEST、WAL、SST 等磁盘格式以独立 LDB 项目设计为准。
+- LDB 插件失败通过 `DBException` 暴露，调用方可回退到不注册插件或回退 LDB 依赖版本的路径。
 
 ## 灰度/迁移
 
@@ -249,17 +262,17 @@ sequenceDiagram
 
 ### 已有测试资源
 
-`vexra-ldb` 包含较多测试类，如 API、日志、表、重启可靠性、行计数和 reopen、CRC、编码等测试。但根 `build.gradle` 当前通过 `tasks.withType(Test).configureEach { enabled = false }` 禁用了测试任务。
+LDB 的 API、日志、表、重启可靠性、CRC、编码、repair/check、backup/restore 等测试已迁移到独立 LDB 项目中维护。Vexra 主仓库的测试重点转为 ADB 与外部 LDB 依赖的集成边界；根 `build.gradle` 当前通过 `tasks.withType(Test).configureEach { enabled = false }` 禁用了测试任务，执行验证时需显式启用或使用 CI 专用任务。
 
 ### 建议验证范围
 
 - 构建验证：`.\gradlew.bat clean assemble`。
-- 单元测试：解除或覆盖根测试禁用后，优先运行 `vexra-ldb:test`、`vexra-server-sm:test`、`vexra-server:test`。
+- 单元测试：解除或覆盖根测试禁用后，优先运行 `vexra-server-sm:test`、`vexra-server:test` 和 ADB/LDB 集成测试；LDB 自身测试在独立 LDB 项目执行。
 - 协议测试：Raft/Netty/gRPC proto 转换、异常序列化、oneof 分支兼容。
 - Raft 集成测试：leader 选举、日志复制、leader step down、配置变更、读索引、快照安装。
 - 状态机测试：`CompoundStateMachine` 插件路由、事务边界、快照/恢复、leader 事件。
 - ADB 测试：batch、scan、resumeKey、allocateSegment、commit/rollback、列族隔离。
-- LDB 测试：WAL 恢复、MemTable flush、Compaction、Checkpoint、ColumnFamily、资源关闭。
+- LDB 集成测试：ADB 使用外部 LDB 时的列族声明、WAL/reopen 可见性、Checkpoint/restore、repair/check 调用和资源关闭。
 - 故障注入：网络超时、RPC 失败、磁盘不可用、JVM pause、虚拟节点租约、快照中断。
 
 ## 风险点
@@ -271,6 +284,7 @@ sequenceDiagram
 | RPC 回调阻塞 | P1 | Netty/gRPC 回调路径若执行阻塞 IO 会影响吞吐 | 针对回调线程做专项 review |
 | 快照和事务边界 | P1 | `CompoundStateMachine` 依赖无未完成事务才允许快照 | 补充并发事务与快照竞争测试 |
 | ADB 快照实现待完善 | P1 | `AdbSMPlugin` 当前快照方法使用默认空实现 | ADB 数据恢复能力需专项设计 |
+| LDB 依赖升级影响 ADB | P1 | LDB 已独立发布，插件 hook 和磁盘格式演进可能影响 ADB 写入、checkpoint 和恢复 | 依赖升级前先跑 ADB/LDB 集成矩阵，并核对 LDB release notes |
 | 异步 join/超时 | P2 | 部分路径存在 `join` 或等待，需要确认超时边界 | 梳理所有 Future 等待点 |
 | 资源关闭 | P2 | LDB、迭代器、RPC channel、snapshot 文件均需关闭 | 使用 `java-infra-review` 做专项审查 |
 | 协议兼容 | P2 | proto oneof 和存储格式变更会影响 mixed-version | 建立字段演进规则 |
@@ -279,9 +293,8 @@ sequenceDiagram
 
 本文是当前实现文档，后续建议按以下阶段完善：
 
-1. 阶段一：补充模块级设计文档，优先覆盖 Raft 内核、状态机插件、ADB/LDB 存储。
+1. 阶段一：补充模块级设计文档，优先覆盖 Raft 内核、状态机插件和 ADB 对外部 LDB 的集成边界。
 2. 阶段二：补充中英文协议演进规范，明确 proto 字段、oneof、异常和 mixed-version 规则。
 3. 阶段三：补齐 ADB 快照/恢复设计，并增加端到端恢复测试。
 4. 阶段四：梳理 Gradle/CI 验证策略，恢复或显式配置测试任务。
 5. 阶段五：补充运行手册，覆盖节点部署、虚拟节点、存储健康、快照、扩容和故障恢复。
-

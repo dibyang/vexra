@@ -4,7 +4,7 @@
 
 Vexra is a distributed data storage project based on the Raft consensus protocol. Its README positions the project as distributed storage with strong consistency, fault tolerance, real-time replication, virtual node support, standard JDBC access, and future horizontal scalability.
 
-This document is generated from the current code implementation. It covers the Gradle modules, protocol definitions, Raft server core, client APIs, RPC transports, state machine plugins, the ADB storage plugin, local LDB storage, and snapshot flow. The document describes the current implementation and does not directly propose changes to interfaces, protocols, database structures, state machines, or task flows.
+This document is generated from the current code implementation. It covers the Gradle modules, protocol definitions, Raft server core, client APIs, RPC transports, state machine plugins, the ADB storage plugin, the external LDB local-storage dependency, and snapshot flow. LDB has been split out of the Vexra main repository into an independent project, so this document only describes Vexra's dependency boundary and integration constraints instead of treating LDB as an in-repository module.
 
 ## Goals
 
@@ -38,8 +38,7 @@ The project uses a Gradle multi-module build. The root build sets `sourceCompati
 | `vexra-grpc` | gRPC transport | Server, client, LogAppender, TLS, metrics interceptors |
 | `vexra-netty` | Netty transport and DataStream | Protobuf codec, Netty RPC, stream data transport |
 | `vexra-rmap` | Example replicated map state machine plugin | Based on `SMPlugin`, supports snapshots |
-| `vexra-adb` | ADB/JDBC/database state machine plugin | `AdbSMPlugin` uses `DbStore` and `vexra-ldb` |
-| `vexra-ldb` | Local LevelDB-like KV storage implementation | WAL, MemTable, SST, MANIFEST, Compaction, Checkpoint |
+| `vexra-adb` | ADB/JDBC/database state machine plugin | `AdbSMPlugin` uses `DbStore` and depends on the independently released LDB storage library |
 | `vexra-metrics-api` / `vexra-metrics-default` | Metrics API and default implementation | Dropwizard/JMX related implementation |
 
 ### Runtime Flow
@@ -87,6 +86,7 @@ The project uses a Gradle multi-module build. The root build sets `sourceCompati
 | `DataStreamServerRpc` | `vexra-server-api` | Abstract data stream service |
 | `StateMachine` | `vexra-server-api` | State machine lifecycle, transactions, queries, and snapshots |
 | `SMPlugin` | `vexra-server-sm` | State machine plugin extension point |
+| `LdbPlugin` | External LDB dependency | LDB storage plugin extension point for upper modules such as ADB |
 
 ### RPC And Protocol Interfaces
 
@@ -124,9 +124,21 @@ The project uses a Gradle multi-module build. The root build sets `sourceCompati
 | `ReadRequest` | get, scan, prefix scan, exists, first, last, count |
 | `ScanResult` | entries, hasMore, and resumeKey for paged scans |
 
-### Local LDB Structures
+### External LDB Storage Dependency
 
-`vexra-ldb` implements a LevelDB-like storage engine: WAL, MemTable, immutable MemTable, SST/Table, MANIFEST/VersionSet, TableCache, Compaction, and Checkpoint. Writes first enter WAL and MemTable, background compaction flushes and reorganizes tables, and recovery reads MANIFEST plus WAL to rebuild state.
+LDB is now an independent project, and Vexra no longer owns its core implementation in the main repository. ADB consumes LDB through its public API for LevelDB-like local KV storage, including WAL, MemTable, SST/Table, MANIFEST, compaction, checkpoint, repair/check, backup/restore, and tool commands. LDB disk formats, reliability plans, and API compatibility notes are governed by the independent LDB project. Vexra constrains dependency versions, plugin integration, checkpoint/restore usage, and ADB-facing compatibility.
+
+### LDB Plugin Extension
+
+The external LDB dependency exposes plugin extension points so upper modules can extend LDB behavior without making LDB depend on `vexra-adb`. Plugins are registered through `Options` and invoked by LDB during open, write, checkpoint, and close phases.
+
+| Interface | Responsibility |
+| --- | --- |
+| `LdbPlugin` | Plugin lifecycle interface for `onOpen`, `beforeWrite`, `afterWrite`, `beforeCheckpoint`, `afterCheckpoint`, `beforeClose`, and `close` |
+| `LdbPluginContext` | Controlled LDB context exposing database directory, options, column-family lookup, snapshot cursors, write-batch creation, and property lookup |
+| `Options.addPlugin` | Registers plugins; with no plugin registered, LDB keeps the previous behavior |
+
+ADB uses this extension through `AdbLdbPlugin`, which centralizes ADB column-family declaration and provides a unified location for transaction-index, scan, checkpoint/restore, and statistics extensions. LDB disk-format or API changes must first go through design review and release in the independent LDB project; Vexra then upgrades the dependency and adds integration verification.
 
 ## State Machines
 
@@ -231,7 +243,8 @@ sequenceDiagram
 - Mixed-version Raft clusters require older nodes to ignore unknown fields safely; new oneof branches require special evaluation.
 - gRPC and Netty transports share Raft semantics but use different wrappers; protocol field changes must check `Grpc.proto`, `Netty.proto`, and Java conversion logic together.
 - State machine plugins route through `WrapRequestProto.type`; new plugins must avoid conflicts with existing `rmap` and `adb`.
-- ADB/LDB disk format, MANIFEST, WAL, SST, and snapshot summary changes require migration and rollback design.
+- ADB data structures, snapshot summary files, and LDB dependency upgrades require migration and rollback design; LDB MANIFEST, WAL, and SST formats are governed by the independent LDB project.
+- LDB plugin failures surface as `DBException`; callers can roll back by disabling the plugin or reverting the LDB dependency version.
 
 ## Rollout And Migration
 
@@ -249,17 +262,17 @@ The current code includes configuration change, node suspend/resume, snapshot ma
 
 ### Existing Test Assets
 
-`vexra-ldb` contains tests for API behavior, logs, tables, restart reliability, row count and reopen, CRC, encoding, and related utilities. However, the root `build.gradle` disables all `Test` tasks through `tasks.withType(Test).configureEach { enabled = false }`.
+LDB API, log, table, restart reliability, CRC, encoding, repair/check, and backup/restore tests are now maintained in the independent LDB project. Vexra main-repository tests focus on the ADB integration boundary with the external LDB dependency. The root `build.gradle` still disables all `Test` tasks through `tasks.withType(Test).configureEach { enabled = false }`, so validation must explicitly enable tests or use CI-specific tasks.
 
 ### Recommended Verification Scope
 
 - Build: `.\gradlew.bat clean assemble`.
-- Unit tests: after removing or overriding the root test disablement, prioritize `vexra-ldb:test`, `vexra-server-sm:test`, and `vexra-server:test`.
+- Unit tests: after removing or overriding the root test disablement, prioritize `vexra-server-sm:test`, `vexra-server:test`, and ADB/LDB integration tests; LDB's own test suite runs in the independent LDB project.
 - Protocol tests: Raft/Netty/gRPC conversion, exception serialization, oneof compatibility.
 - Raft integration tests: leader election, log replication, leader step down, configuration change, read index, snapshot installation.
 - State machine tests: `CompoundStateMachine` plugin routing, transaction boundary, snapshot/recovery, leader events.
 - ADB tests: batch, scan, resumeKey, allocateSegment, commit/rollback, column-family isolation.
-- LDB tests: WAL recovery, MemTable flush, Compaction, Checkpoint, ColumnFamily, resource closing.
+- LDB integration tests: ADB column-family declaration, WAL/reopen visibility, checkpoint/restore, repair/check calls, and resource closing through the external LDB dependency.
 - Fault injection: network timeout, RPC failure, disk unavailable, JVM pause, virtual-node lease, interrupted snapshot.
 
 ## Risks
@@ -271,6 +284,7 @@ The current code includes configuration change, node suspend/resume, snapshot ma
 | Blocking RPC callbacks | P1 | Blocking IO in Netty/gRPC callback paths can hurt throughput | Review callback threads specifically |
 | Snapshot and transaction boundary | P1 | `CompoundStateMachine` allows snapshot only when no unfinished transaction exists | Add concurrent transaction and snapshot race tests |
 | ADB snapshot implementation TBD | P1 | `AdbSMPlugin` currently uses default empty snapshot methods | Design ADB data recovery explicitly |
+| LDB dependency upgrades affect ADB | P1 | LDB is independently released, and plugin hooks or disk-format evolution may affect ADB writes, checkpoint, and recovery | Run the ADB/LDB integration matrix and review LDB release notes before dependency upgrades |
 | Async join and timeout boundaries | P2 | Some paths use `join` or waits that need timeout review | Audit all Future wait points |
 | Resource closing | P2 | LDB, iterators, RPC channels, and snapshot files need strict closing | Use `java-infra-review` for a dedicated review |
 | Protocol compatibility | P2 | proto oneof and storage format changes affect mixed-version clusters | Establish field evolution rules |
@@ -279,9 +293,8 @@ The current code includes configuration change, node suspend/resume, snapshot ma
 
 This document describes the current implementation. Suggested follow-up phases:
 
-1. Phase 1: Add module-level design docs, prioritizing the Raft core, state machine plugins, and ADB/LDB storage.
+1. Phase 1: Add module-level design docs, prioritizing the Raft core, state machine plugins, and ADB integration with the external LDB dependency.
 2. Phase 2: Add bilingual protocol evolution rules for proto fields, oneof branches, exceptions, and mixed-version behavior.
 3. Phase 3: Complete ADB snapshot/recovery design and add end-to-end recovery tests.
 4. Phase 4: Clarify Gradle/CI verification strategy and re-enable or explicitly configure test tasks.
 5. Phase 5: Add an operations guide covering deployment, virtual nodes, storage health, snapshots, expansion, and failure recovery.
-

@@ -1,7 +1,0 @@
-
-
-dependencies {
-    api("com.google.guava:guava:${guava_version}")
-    implementation("org.lz4:lz4-java:1.8.0")
-    testImplementation 'org.testng:testng:7.1.0'
-}
