@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Java Rules"
+  short_description: "本项目 Java 开发、设计文档、注释和变更流程规范。"
+  default_prompt: "Use project-java-rules when working on Java code, design docs, comments, or change process decisions in this repository."
