@@ -1,0 +1,16 @@
+Vexra
+Copyright 2025-2026 Vexra contributors
+
+This product includes software developed by the Vexra contributors.
+
+Vexra is licensed under the Apache License, Version 2.0, except where a
+source file, resource file, or notice states otherwise.
+
+The vexra-adb module includes source code and resources derived from the H2
+Database Engine project. Files under the org.adb package and related org.adb
+resources may retain notices from H2 Group and are multiple-licensed under the
+Mozilla Public License 2.0 and the Eclipse Public License 1.0, as indicated in
+their file headers.
+
+For third-party dependency and attribution details, see
+THIRD-PARTY-NOTICES.md.

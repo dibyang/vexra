@@ -1,0 +1,12 @@
+# Copy this file to a local, ignored signing.properties only when publishing.
+# Do not commit real credentials, passwords, secret key files, or tokens.
+
+releasesRepository=https://ossrh-staging-api.central.sonatype.com/service/local/staging/deploy/maven2/
+snapshotsRepository=https://ossrh-staging-api.central.sonatype.com/content/repositories/snapshots/
+
+signing.keyId=YOUR_KEY_ID
+signing.password=YOUR_SIGNING_PASSWORD
+signing.secretKeyRingFile=C:/Users/you/.gnupg/YOUR_SECRET_KEY.gpg
+
+ossrhUsername=YOUR_OSSRH_USERNAME
+ossrhPassword=YOUR_OSSRH_PASSWORD

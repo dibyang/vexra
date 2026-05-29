@@ -67,6 +67,9 @@ LDB's own tests should run in the independent LDB project. In Vexra, testing sho
 
 - [项目设计文档](docs/project-design.md)
 - [Project Design Document](docs/project-design.en.md)
+- [Open source compliance checklist](docs/open-source-compliance.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 
 LDB design, reliability plans, and API compatibility notes are now maintained in the independent LDB project.
 
@@ -79,4 +82,6 @@ LDB design, reliability plans, and API compatibility notes are now maintained in
 
 ## License
 
-See [LICENSE](LICENSE).
+Vexra-owned code is licensed under the Apache License 2.0 by default. See [LICENSE](LICENSE).
+
+Third-party source code, resources, and dependency attributions are documented in [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The `vexra-adb` module includes source code and resources derived from H2 Database Engine; those files retain the H2 Group MPL 2.0 / EPL 1.0 dual-license notices.

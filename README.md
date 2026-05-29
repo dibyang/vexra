@@ -67,6 +67,9 @@ LDB 自身测试应在独立 LDB 项目中执行；Vexra 侧重点验证 ADB 与
 
 - [项目设计文档](docs/project-design.md)
 - [Project Design Document](docs/project-design.en.md)
+- [开源发布合规清单](docs/open-source-compliance.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
 
 LDB 相关设计、可靠性计划和 API 兼容说明已迁移到独立 LDB 项目维护。
 
@@ -79,4 +82,6 @@ LDB 相关设计、可靠性计划和 API 兼容说明已迁移到独立 LDB 项
 
 ## License
 
-见 [LICENSE](LICENSE)。
+Vexra 自有代码默认使用 Apache License 2.0，见 [LICENSE](LICENSE)。
+
+仓库中包含的第三方源码、资源和依赖归属见 [NOTICE](NOTICE) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。其中 `vexra-adb` 模块包含 H2 Database Engine 衍生代码和资源，相关文件保留 H2 Group 的 MPL 2.0 / EPL 1.0 双许可证声明。

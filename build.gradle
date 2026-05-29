@@ -7,9 +7,6 @@ plugins {
     id 'net.researchgate.release' version('2.6.0')
 }
 
-tasks.withType(Test).configureEach {
-    enabled = false
-}
 
 /**
  * signing.properties 文件内容示例如下
@@ -96,6 +93,14 @@ subprojects {
     sourceCompatibility = project.rootProject.jdkVersion
     targetCompatibility = project.rootProject.jdkVersion
 
+    tasks.withType(Jar).configureEach {
+        into('META-INF') {
+            from rootProject.file('LICENSE')
+            from rootProject.file('NOTICE')
+            from rootProject.file('THIRD-PARTY-NOTICES.md')
+        }
+    }
+
 
     repositories {
         mavenCentral()
@@ -171,6 +176,18 @@ subprojects {
                         license {
                             name = 'The Apache License, Version 2.0'
                             url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                        }
+                        if (project.name == 'vexra-adb') {
+                            license {
+                                name = 'Mozilla Public License, Version 2.0'
+                                url = 'https://www.mozilla.org/MPL/2.0/'
+                                distribution = 'repo'
+                            }
+                            license {
+                                name = 'Eclipse Public License, Version 1.0'
+                                url = 'https://www.eclipse.org/legal/epl-v10.html'
+                                distribution = 'repo'
+                            }
                         }
                     }
                     // 开发者信息
