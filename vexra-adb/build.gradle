@@ -9,6 +9,7 @@ dependencies {
     //api 'com.zaxxer:HikariCP:4.0.3'
     api("jline:jline:2.14.6")
     api("net.xdob.vexra:vexra-ldb:${ldb_version}")
+    api("net.xdob.h2db:h2db:${h2db_version}")
     implementation 'org.osgi:org.osgi.core:5.0.0'
     implementation 'org.locationtech.jts:jts-core:1.17.0'
     implementation 'javax.servlet:javax.servlet-api:4.0.1'
