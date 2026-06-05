@@ -4,8 +4,8 @@ import com.google.protobuf.ByteString;
 import net.xdob.vexra.adb.db.*;
 import net.xdob.vexra.adb.*;
 import net.xdob.vexra.proto.adb.*;
-import org.adb.api.ErrorCode;
-import org.adb.message.DbException;
+import org.h2.api.ErrorCode;
+import org.h2.message.DbException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

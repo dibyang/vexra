@@ -6,7 +6,7 @@ import java.util.Random;
 public class JdbcTest {
   public static void main(String[] args) throws Exception {
 
-    Class.forName("org.adb.Driver");
+    Class.forName("org.h2.Driver");
     String user = "remote";
     String password = "hhrhl2016";
     String url = "jdbc:adb:ldb:/test/db/b_db2;AUTO_SERVER=true";

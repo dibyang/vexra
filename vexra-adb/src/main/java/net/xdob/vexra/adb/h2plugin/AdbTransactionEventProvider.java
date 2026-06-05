@@ -7,7 +7,7 @@ import org.h2.api.TransactionEventProvider;
 /**
  * ADB 事务生命周期监听 provider。
  *
- * <p>旧 `org.adb` 分叉把 `TxnMap2` 挂在 H2 `Transaction` 上。迁移到 h2db 后，ADB 使用
+ * <p>旧 H2 分叉把 `TxnMap2` 挂在 H2 `Transaction` 上。迁移到 h2db 后，ADB 使用
  * `TransactionEventProvider` 在 H2 commit / rollback 边界同步提交或回滚 ADB 自有事务。
  */
 public final class AdbTransactionEventProvider implements TransactionEventProvider {

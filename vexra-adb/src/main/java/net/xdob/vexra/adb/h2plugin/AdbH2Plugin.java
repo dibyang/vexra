@@ -8,7 +8,7 @@ import org.h2.api.PluginProvider;
  * ADB 的 H2 插件描述入口。
  *
  * 当前版本先完成插件注册和 provider 暴露，用于验证 h2db 的插件装载链路。
- * 真正的 ADB 建表逻辑仍需后续把现有 org.adb 类型体系迁移到 org.h2 类型体系。
+ * ADB 建表、索引和事务监听逻辑已通过 provider 接入 h2db 类型体系。
  */
 public final class AdbH2Plugin implements H2Plugin {
 

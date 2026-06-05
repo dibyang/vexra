@@ -16,8 +16,8 @@ import net.xdob.vexra.util.Finder;
 import net.xdob.vexra.util.Proto2Util;
 import net.xdob.vexra.util.TimeDuration;
 import net.xdob.vexra.util.Types2;
-import org.adb.api.ErrorCode;
-import org.adb.message.DbException;
+import org.h2.api.ErrorCode;
+import org.h2.message.DbException;
 
 import java.io.IOException;
 import java.sql.SQLException;

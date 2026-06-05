@@ -10,7 +10,7 @@ import org.h2.engine.SessionLocal;
 /**
  * ADB 事务上下文注册表。
  *
- * <p>旧 `org.adb` 分叉把 `TxnMap2` 直接挂在 H2 `Transaction` 上。h2db 2.3.0 通过
+ * <p>旧 H2 分叉把 `TxnMap2` 直接挂在 H2 `Transaction` 上。h2db 2.3.0 通过
  * `TransactionEventProvider` 暴露 commit / rollback 边界，因此这里按 database path 和
  * session id 保存 ADB 事务上下文，并由事务事件 provider 统一提交、回滚和清理。
  */

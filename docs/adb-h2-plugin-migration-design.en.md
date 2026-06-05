@@ -290,14 +290,14 @@ These do not block the current prototype, but they affect the path from "usable 
 | ADB-H2-07 | Done | Rebind primary and secondary index implementations | `AdbPrimaryIndex`, `AdbSecondaryIndex`, and `AdbDelegateIndex` depend on h2db types | Primary lookup, range scan, secondary index query, and delete regressions pass | Revert the index implementation while keeping the old engine path |
 | ADB-H2-08 | Done | Contain transaction, lock, and visibility dependencies on `SessionLocal` / `Database` | `TransactionEventProvider` commits / rolls back ADB transactions; primary-key writes acquire ADB row locks first | Concurrent write, rollback, commit, checkpoint, and reopen tests pass | Disable the new provider and keep the old fork path |
 | ADB-H2-09 | Done | Replace `DBServer` dependency on `org.adb.tools.Server` | `DBServer` starts and stops TCP service through `org.h2.tools.Server` | TCP start/stop test passes; start failures throw explicit exceptions | Keep the old `DBServer` distribution path |
-| ADB-H2-10 | Not Started | Remove non-ADB-differentiating `org.adb.*` directories | Removal list for parser, JDBC, server, tools, mvstore, and related code | Full compile, key integration tests, and open-source compliance docs pass | Revert deletion commits phase by phase |
+| ADB-H2-10 | Done | Remove non-ADB-differentiating `org.adb.*` directories | The old `org.adb` parser, JDBC, server, tools, mvstore, help/resource files, and `java.sql.Driver` service entry were removed; `jdbc:adb:*` is now handled by the h2db Driver/provider path | `:vexra-adb:compileJava` and key integration tests pass; open-source compliance boundaries are updated | Revert the ADB-H2-10 deletion commit |
 
 ### Next Execution Order
 
-1. Start with ADB-H2-05: make `AdbTableProvider.createTable()` call the real table creation path while keeping the old `org.adb.*` code in place.
-2. ADB-H2-06, ADB-H2-07, ADB-H2-08, and ADB-H2-09 are complete; next, handle ADB-H2-10 by removing non-ADB-differentiating `org.adb.*` code.
-3. ADB-H2-08 now uses h2db `TransactionEventProvider` for commit / rollback and includes primary-key write conflict coverage.
-4. Finish with ADB-H2-09 and ADB-H2-10: clean the tooling layer and remove non-differentiating H2-derived code.
+1. ADB-H2-01 through ADB-H2-10 are complete. `vexra-adb` now uses the h2db 2.3.0 dependency and plugin providers as the SQL / JDBC / Server main path.
+2. `jdbc:adb:*` remains as a compatibility URL prefix, but it is no longer handled by the old `org.adb.Driver`.
+3. ADB-H2-08 uses h2db `TransactionEventProvider` for commit / rollback. ADB-H2-10 additionally bridges H2 `DATABASE_EVENT_LISTENER` to release cached `DbStoreEngine` stores on database close.
+4. If h2db later adds an official `DatabaseLifecycleProvider`, migrate the current listener bridge to that plugin SPI to reduce dependence on H2 URL settings.
 
 ### Phase Acceptance Gates
 
@@ -315,22 +315,23 @@ These do not block the current prototype, but they affect the path from "usable 
 - DDL/DML regression for create table, primary key, secondary index, scan, count, update, delete, and reopen.
 - Plugin loading tests for ServiceLoader discovery through `META-INF/services/org.h2.api.H2Plugin`.
 - Recovery tests for checkpoint, reopen, snapshot, and restore.
-- Compatibility tests for whether the old `org.adb.Driver` entry point remains during migration; if it does, declare a deprecation plan.
+- Compatibility tests ensure `jdbc:adb:*` is handled by `org.h2.Driver`; the old `org.adb.Driver` entry point was removed in ADB-H2-10.
 
 ## Risks
 
 | Risk | Severity | Description | Mitigation |
 | --- | --- | --- | --- |
 | Heavy dependency on H2 internals | P0 | ADB may still break on H2 upgrades even without copying source | Pin H2 version and reduce coupling first |
-| JDBC URL and driver compatibility changes | P1 | Existing tests and samples depend on `org.adb.Driver` and `jdbc:adb:` | Keep `jdbc:adb:*` through the h2db URL provider and define a separate deprecation window for `org.adb.Driver` |
-| Loss of DBServer / console behavior | P1 | `DBServer` directly uses `org.adb.tools.Server` | Switch to native H2 server or remove the wrapper |
+| JDBC URL and driver compatibility changes | P1 | Old callers may still explicitly load `org.adb.Driver` | Keep `jdbc:adb:*` through the h2db URL provider; callers should load `org.h2.Driver` or rely on DriverManager / ServiceLoader |
+| Loss of DBServer / console behavior | P1 | The old `org.adb.tools.Server` has been removed | `DBServer` now uses the native H2 Server; console/tool behavior should be validated separately through h2db native tools |
+| Incomplete database lifecycle SPI | P1 | h2db plugin SPI does not yet expose an official database close provider | The current implementation bridges H2 `DATABASE_EVENT_LISTENER` to release ADB stores; request `DatabaseLifecycleProvider` support from h2db later |
 | Accidental removal of ADB-specific transaction logic | P0 | Classes such as `TxnManager` and `RowCodec` are ADB core, not generic H2 code | Establish a keep/remove whitelist before cleanup |
 
 ## Conclusion
 
 The conclusion has two layers:
 
-1. From the target architecture perspective, once `vexra-adb` depends on `h2db` and integrates through the plugin mechanism, it should no longer need to carry and maintain a full H2 fork inside the repository.
-2. From the current implementation perspective, the H2-derived code cannot be removed immediately, because ADB table, index, lock, visibility, and test entry logic still depends directly on the `org.adb.*` type system.
+1. From the target architecture perspective, `vexra-adb` now uses the h2db dependency and plugin mechanism for the SQL parser, JDBC, Server, transaction-event, and table-provider main paths. It no longer needs to carry a full H2 fork inside the repository.
+2. From the implementation perspective, ADB-owned table, index, lock, transaction-visibility, and low-level store logic remain Vexra-specific capabilities and should stay under the `net.xdob.vexra.adb.*` namespace.
 
-So the correct migration order is not "delete H2 code first". It is "first detach ADB from the `org.adb` fork and make it run against `h2db`, then remove the forked code".
+Therefore the ADB-H2-01 through ADB-H2-10 migration baseline is complete: detach ADB from the old fork type system, run it on h2db, and then remove the forked code. Future work should reduce coupling to h2db internal table/index types and push h2db toward an official database lifecycle plugin SPI.

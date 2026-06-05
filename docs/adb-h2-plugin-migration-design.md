@@ -296,14 +296,14 @@ sequenceDiagram
 | ADB-H2-07 | 已完成 | 迁移主键和二级索引实现 | `AdbPrimaryIndex`、`AdbSecondaryIndex`、`AdbDelegateIndex` 依赖 h2db 类型 | 主键查找、范围扫描、二级索引查询、删除回归通过 | 单独回退索引实现，保留旧引擎路径 |
 | ADB-H2-08 | 已完成 | 收敛事务、锁和可见性对 `SessionLocal` / `Database` 的依赖 | `TransactionEventProvider` 提交/回滚 ADB 事务；主键写入先拿 ADB 行锁 | 并发写、回滚、commit、checkpoint/reopen 测试通过 | 禁用新 provider，保留旧分叉路径 |
 | ADB-H2-09 | 已完成 | 替换 `DBServer` 对 `org.adb.tools.Server` 的依赖 | `DBServer` 基于 `org.h2.tools.Server` 启停 TCP 服务 | TCP 启停测试通过；启动失败会抛出明确异常 | 保留旧 `DBServer` 发行路径 |
-| ADB-H2-10 | 待开始 | 删除非 ADB 差异化 `org.adb.*` 目录 | parser、JDBC、server、tools、mvstore 等删除清单 | 全量编译、关键集成测试和开源合规文档通过 | 分阶段 revert 删除提交 |
+| ADB-H2-10 | 已完成 | 删除非 ADB 差异化 `org.adb.*` 目录 | 已移除旧 `org.adb` parser、JDBC、server、tools、mvstore、help/resource 和旧 `java.sql.Driver` service；`jdbc:adb:*` 改由 h2db Driver/provider 承接 | `:vexra-adb:compileJava` 和关键集成测试通过；开源合规边界已更新 | 回退 ADB-H2-10 删除提交 |
 
 ### 下一阶段执行顺序
 
-1. 先做 ADB-H2-05，把 `AdbTableProvider.createTable()` 从原型错误改成真实建表入口，但仍保留旧 `org.adb.*` 代码不删。
-2. ADB-H2-06、ADB-H2-07、ADB-H2-08 和 ADB-H2-09 已完成；下一步做 ADB-H2-10，清理非 ADB 差异化 `org.adb.*` 代码。
-3. ADB-H2-08 已使用 h2db `TransactionEventProvider` 接管 commit / rollback，并补充主键写锁冲突测试。
-4. 最后做 ADB-H2-09 和 ADB-H2-10，清理工具层和非差异化 H2 衍生代码。
+1. ADB-H2-01 到 ADB-H2-10 已完成，`vexra-adb` 当前以 h2db 2.3.0 依赖和插件 provider 作为 SQL / JDBC / Server 主路径。
+2. `jdbc:adb:*` 保留为兼容 URL 前缀，但不再由旧 `org.adb.Driver` 承接。
+3. ADB-H2-08 使用 h2db `TransactionEventProvider` 承接 commit / rollback；ADB-H2-10 额外通过 H2 `DATABASE_EVENT_LISTENER` 桥接数据库关闭事件，释放 `DbStoreEngine` 中缓存的底层 store。
+4. 后续若 h2db 增加正式 `DatabaseLifecycleProvider`，应把当前 listener 桥接迁移为插件 SPI，减少对 H2 URL setting 的依赖。
 
 ### 阶段验收门槛
 
@@ -321,15 +321,16 @@ sequenceDiagram
 - DDL/DML 回归：覆盖建表、主键、二级索引、扫描、计数、更新、删除、重启恢复。
 - 插件装载测试：验证 `META-INF/services/org.h2.api.H2Plugin` 通过 ServiceLoader 自动发现成功与失败路径。
 - 数据恢复测试：验证 checkpoint、reopen、snapshot/restore 不受迁移影响。
-- 兼容性测试：验证旧版 `org.adb.Driver` 入口在迁移阶段是否保留，若保留则需单独声明弃用计划。
+- 兼容性测试：验证 `jdbc:adb:*` 由 `org.h2.Driver` 承接；旧 `org.adb.Driver` 入口已在 ADB-H2-10 删除。
 
 ## 风险点
 
 | 风险 | 等级 | 说明 | 缓解方式 |
 | --- | --- | --- | --- |
 | ADB 代码大量依赖 H2 内部类 | P0 | 即使不拷贝源码，也可能被 H2 升级破坏 | 固定 H2 版本，先完成边界收敛再升级 |
-| JDBC URL 和 Driver 兼容性变化 | P1 | 现有测试和示例依赖 `org.adb.Driver`、`jdbc:adb:` | `jdbc:adb:*` 通过 h2db URL provider 保留，`org.adb.Driver` 单独声明弃用窗口 |
-| DBServer 与控制台能力丢失 | P1 | 当前 `DBServer` 直接依赖 `org.adb.tools.Server` | 改用 H2 原生 Server 或删除自定义封装 |
+| JDBC URL 和 Driver 兼容性变化 | P1 | 旧调用方可能仍显式加载 `org.adb.Driver` | `jdbc:adb:*` 通过 h2db URL provider 保留；调用方应改为加载 `org.h2.Driver` 或依赖 DriverManager / ServiceLoader |
+| DBServer 与控制台能力丢失 | P1 | 旧 `org.adb.tools.Server` 已移除 | `DBServer` 改用 H2 原生 Server；控制台/工具能力以后按 h2db 原生能力单独验收 |
+| 数据库生命周期 SPI 不完整 | P1 | h2db 插件 SPI 暂无正式 database close provider | 当前通过 H2 `DATABASE_EVENT_LISTENER` 桥接释放 ADB store；后续向 h2db 提 `DatabaseLifecycleProvider` 诉求 |
 | 误把 ADB 事务逻辑当作 H2 通用能力删除 | P0 | `TxnManager`、`RowCodec` 等是 ADB 核心 | 在 Phase 2 先完成保留/删除白名单 |
 
 ## 分阶段实施计划
@@ -353,7 +354,7 @@ sequenceDiagram
 
 结论分两层：
 
-1. 从目标架构上看，`vexra-adb` 引用 `h2db` 并通过插件机制扩展后，确实没有必要继续在仓库中包含并维护完整的 H2 分叉代码。
-2. 从当前实现上看，还不能直接删除 H2 衍生代码，因为 ADB 的表、索引、锁、事务可见性和测试入口仍直接建立在 `org.adb.*` 类型体系之上。
+1. 从目标架构看，`vexra-adb` 已经通过 h2db 依赖和插件机制承接 SQL parser、JDBC、Server、事务事件和表 provider 主路径，不再需要在仓库内携带完整 H2 分叉。
+2. 从当前实现看，ADB 自有表、索引、锁、事务可见性和底层 store 仍属于 Vexra 差异化能力，应继续保留在 `net.xdob.vexra.adb.*` 命名空间中。
 
-因此，正确的迁移顺序不是“先删 H2 代码”，而是“先把 ADB 从 `org.adb` 分叉里剥出来，改成依赖 `h2db` 运行，再删除分叉代码”。
+因此，ADB-H2-01 到 ADB-H2-10 的迁移基线已经完成：先把 ADB 从旧分叉类型体系剥离并跑通 h2db，再删除旧分叉代码。后续重点转为减少对 h2db 内部表/索引类型的耦合，并推动 h2db 补齐正式数据库生命周期插件 SPI。
