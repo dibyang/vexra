@@ -3,9 +3,11 @@ package net.xdob.vexra.adb.h2plugin;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Properties;
 import java.sql.Statement;
 import net.xdob.vexra.adb.db.DbStoreEngine;
+import net.xdob.vexra.adb.db.DbStoreType;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -67,6 +69,72 @@ class AdbTableProviderIntegrationTest {
                 statement.executeUpdate("DELETE FROM TEST WHERE ID = 2");
                 Assertions.assertEquals(2L, countRows(statement));
                 Assertions.assertEquals(1L, singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE NAME = 'b'"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rollsBackAndCommitsAdbRowsThroughTransactionEvents() throws Exception {
+        String databasePath = tempDir.resolve("adb-txn").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'rollback')");
+                connection.rollback();
+                Assertions.assertEquals(0L, countRows(statement));
+
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (2, 'commit')");
+                connection.commit();
+                Assertions.assertEquals(1L, countRows(statement));
+                String checkpointPath = tempDir.resolve("adb-txn-checkpoint").toAbsolutePath().toString().replace('\\', '/');
+                DbStoreEngine.getOrCreate(DbStoreType.LDB, databasePath, new Properties()).checkpoint(checkpointPath);
+            }
+            DbStoreEngine.close(databasePath);
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(1L, countRows(statement));
+                Assertions.assertEquals("commit", singleString(statement, "SELECT NAME FROM TEST WHERE ID = 2"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rejectsConcurrentDuplicatePrimaryKeyWrites() throws Exception {
+        String databasePath = tempDir.resolve("adb-conflict").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection setup = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = setup.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+            }
+
+            try (Connection first = new org.h2.Driver().connect(url, new Properties());
+                 Connection second = new org.h2.Driver().connect(url, new Properties());
+                 Statement firstStatement = first.createStatement();
+                 Statement secondStatement = second.createStatement()) {
+                first.setAutoCommit(false);
+                second.setAutoCommit(false);
+                firstStatement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'first')");
+
+                Assertions.assertThrows(SQLException.class,
+                        () -> secondStatement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'second')"));
+
+                first.commit();
+                second.rollback();
+            }
+
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(1L, countRows(statement));
+                Assertions.assertEquals("first", singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
             }
         } finally {
             DbStoreEngine.close(databasePath);

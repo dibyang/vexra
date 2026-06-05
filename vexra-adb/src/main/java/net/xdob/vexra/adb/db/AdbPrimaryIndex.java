@@ -95,6 +95,7 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     TxnMap2 map = getTxnMap(session);
     long rowId = row.getKey();
     try {
+      map.lock(table.getId(), rowId, session.getLockTimeout());
       RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
       RowValue old = map.putIfAbsent(rowKey, row);
       if (old != null) {
