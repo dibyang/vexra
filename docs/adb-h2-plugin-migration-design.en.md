@@ -335,3 +335,28 @@ The conclusion has two layers:
 2. From the implementation perspective, ADB-owned table, index, lock, transaction-visibility, and low-level store logic remain Vexra-specific capabilities and should stay under the `net.xdob.vexra.adb.*` namespace.
 
 Therefore the ADB-H2-01 through ADB-H2-10 migration baseline is complete: detach ADB from the old fork type system, run it on h2db, and then remove the forked code. Future work should reduce coupling to h2db internal table/index types and push h2db toward an official database lifecycle plugin SPI.
+
+## Follow-Up Closeout
+
+### Completed and confirmed
+- ADB-H2-01 through ADB-H2-10 migration checkpoints are closed in-code and reflected in test coverage and docs.
+- `jdbc:adb:*` remains a compatibility entry point by way of `JdbcUrlPrefixProvider`; callers should rely on `org.h2.Driver` and plugin auto-registration.
+- Database close lifecycle is currently bridged via `DATABASE_EVENT_LISTENER` with `AdbDatabaseEventListener`, and that path is documented for later replacement.
+
+### Still missing before long-term stability
+- Add full regression and publish-ready validation:
+  - restart/reopen matrix for all supported store types
+  - rollback + checkpoint + restore scenario coverage with long-running locks
+  - CLI/console/tooling smoke checks after migration to native h2db Server
+- Remove one remaining gap: official `DatabaseLifecycleProvider` support upstream in h2db, then replace the current listener bridge.
+- Complete an API-level migration checklist for remaining internal table/index/lock dependency touch points before the next major version of h2db upgrade.
+
+### Upstream request draft
+Issue title: `Provide official DatabaseLifecycleProvider SPI for plugin-managed DB close`
+Key request details:
+- Add plugin SPI invoked on physical DB close to replace URL-level `DATABASE_EVENT_LISTENER` shims.
+- Define deterministic close ordering contract and listener registration flow for non-default engines.
+- Provide failure reporting for close listeners and a migration path for existing listener-based integrations.
+
+Tracking doc for follow-up tasks:
+- `docs/h2db-plugin-upstream-request.md`

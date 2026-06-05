@@ -358,3 +358,16 @@ sequenceDiagram
 2. 从当前实现看，ADB 自有表、索引、锁、事务可见性和底层 store 仍属于 Vexra 差异化能力，应继续保留在 `net.xdob.vexra.adb.*` 命名空间中。
 
 因此，ADB-H2-01 到 ADB-H2-10 的迁移基线已经完成：先把 ADB 从旧分叉类型体系剥离并跑通 h2db，再删除旧分叉代码。后续重点转为减少对 h2db 内部表/索引类型的耦合，并推动 h2db 补齐正式数据库生命周期插件 SPI。
+
+## Follow-Up Closeout
+
+### 已完成（已合入）
+- ADB-H2-01 到 ADB-H2-10 已在代码与文档层面完成。
+- `jdbc:adb:*` 已保持兼容入口，底层改由 h2db Driver + Plugin + `JdbcUrlPrefixProvider` 处理。
+- 数据库关闭生命周期目前通过 `DATABASE_EVENT_LISTENER` + `AdbDatabaseEventListener` 桥接并有文档说明。
+
+### 仍需收口
+- 增补全量回归：重启/恢复场景、并发提交回滚、快照恢复、服务器工具链路自测。
+- 将桥接关闭逻辑替换为 h2db 官方 `DatabaseLifecycleProvider`，移除 `DATABASE_EVENT_LISTENER` 的依赖写法。
+- 增补跨版本升级风险清单与回滚演练说明（含 `.trace.db/.h2.sql` 的清理边界）。
+- 把上游能力缺口提报整理成可直接提交的 issue。
