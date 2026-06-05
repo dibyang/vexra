@@ -36,4 +36,8 @@ public final class IndexPrefix extends PrefixKey {
 
     return new IndexPrefix(data);
   }
+
+  public static IndexPrefix fromBytes(byte[] data) {
+    return new IndexPrefix(data);
+  }
 }

@@ -18,4 +18,8 @@ public final class RowPrefix extends PrefixKey {
     wrap.put(OFFSET_TYPE, KeyType.ROW.getCode());
     return new RowPrefix(data);
   }
+
+  public static RowPrefix fromBytes(byte[] data) {
+    return new RowPrefix(data);
+  }
 }
