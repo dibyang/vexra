@@ -1,6 +1,7 @@
 package net.xdob.vexra.adb.h2plugin;
 
 import java.util.Locale;
+import net.xdob.vexra.adb.db.DbStoreType;
 import org.h2.api.JdbcUrlPrefixProvider;
 
 /**
@@ -81,16 +82,19 @@ public final class AdbJdbcUrlPrefixProvider implements JdbcUrlPrefixProvider {
             return null;
         }
         String name = url.substring(URL_PREFIX.length());
+        DbStoreType storeType = DbStoreType.LDB;
         if (startsWithIgnoreCase(name, LDB_STORE_PREFIX)) {
             name = name.substring(LDB_STORE_PREFIX.length());
         } else if (startsWithIgnoreCase(name, ROCKSDB_STORE_PREFIX)) {
             name = name.substring(ROCKSDB_STORE_PREFIX.length());
+            storeType = DbStoreType.ROCKSDB;
         }
         String h2Url = H2_URL_PREFIX + name;
-        if (containsSetting(h2Url, DEFAULT_TABLE_ENGINE_SETTING)) {
-            return h2Url;
+        if (!containsSetting(h2Url, DEFAULT_TABLE_ENGINE_SETTING)) {
+            h2Url = h2Url + ";" + DEFAULT_TABLE_ENGINE_SETTING + "=" + AdbTableProvider.ID;
         }
-        return h2Url + ";" + DEFAULT_TABLE_ENGINE_SETTING + "=" + AdbTableProvider.ID;
+        AdbUrlStoreTypeRegistry.register(h2Url, storeType);
+        return h2Url;
     }
 
     private static boolean startsWithIgnoreCase(String value, String prefix) {

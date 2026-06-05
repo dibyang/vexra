@@ -1,17 +1,23 @@
 package net.xdob.vexra.adb.h2plugin;
 
+import net.xdob.vexra.adb.db.AdbTable;
+import net.xdob.vexra.adb.db.DbStoreEngine;
+import net.xdob.vexra.adb.db.DbStoreType;
+import net.xdob.vexra.adb.db.TxnManager;
 import org.h2.api.PluginCapability;
 import org.h2.api.TableEngineContext;
 import org.h2.api.TableEngineProvider;
 import org.h2.command.ddl.CreateTableData;
 import org.h2.message.DbException;
+import org.h2.mvstore.db.MVStoreBackedStorageEngine;
 import org.h2.table.Table;
 
 /**
- * ADB 的 H2 表引擎 provider 原型。
+ * ADB 的 H2 表引擎 provider。
  *
- * 当前 provider 只负责把 ADB 表引擎 provider 注册到 h2db。
- * 真正的建表逻辑要等 ADB 表/索引实现迁移到 org.h2 类型体系后再接入。
+ * <p>该 provider 是 h2db 建表流程进入 ADB 表实现的唯一入口。调用方可以通过 SQL `ENGINE`
+ * 或 URL `DEFAULT_TABLE_ENGINE=adb_table` 选择它；h2db 主存储继续使用 MVStore，ADB 表数据
+ * 由 `DbStoreEngine` 打开。
  */
 public final class AdbTableProvider implements TableEngineProvider {
 
@@ -51,8 +57,7 @@ public final class AdbTableProvider implements TableEngineProvider {
     /**
      * 创建 ADB 表。
      *
-     * 当前原型只验证 provider 装载，暂不创建真实表。等 `AdbTable` 迁移到
-     * `org.h2` 类型体系后，这里再接入真实建表逻辑。
+     * <p>当前实现让 h2db 的 MVStore 主路径继续承载系统元数据，ADB 自有 `DbStore` 承载业务表数据。
      *
      * @param data 建表数据
      * @param context 表引擎上下文
@@ -60,7 +65,23 @@ public final class AdbTableProvider implements TableEngineProvider {
      */
     @Override
     public Table createTable(CreateTableData data, TableEngineContext context) {
-        throw DbException.getUnsupportedException(
-                "ADB table provider prototype is registered, but AdbTable is not migrated to org.h2 types yet");
+        if (isH2SystemTable(data)) {
+            if (context.getStorageEngine() instanceof MVStoreBackedStorageEngine) {
+                MVStoreBackedStorageEngine storageEngine = (MVStoreBackedStorageEngine) context.getStorageEngine();
+                return storageEngine.getStore().createTable(data);
+            }
+            throw DbException.getUnsupportedException("ADB table provider requires MVStore-backed system tables");
+        }
+        String databasePath = context.getDatabase().getDatabasePath();
+        DbStoreType storeType = AdbUrlStoreTypeRegistry.getStoreType(databasePath);
+        net.xdob.vexra.adb.DbStore dbStore = DbStoreEngine.getOrCreate(storeType, databasePath, new java.util.Properties());
+        TxnManager txnManager = new TxnManager(dbStore);
+        return new AdbTable(data, context.getDatabase().getStore(), dbStore, txnManager);
+    }
+
+    private static boolean isH2SystemTable(CreateTableData data) {
+        String tableName = data.tableName;
+        return tableName != null
+                && (tableName.startsWith("SYS") || "INFORMATION_SCHEMA".equals(data.schema.getName()));
     }
 }

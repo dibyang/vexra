@@ -1,8 +1,8 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.key.*;
-import org.adb.result.Row;
-import org.adb.value.Value;
+import org.h2.result.Row;
+import org.h2.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -94,14 +94,14 @@ public class TxnMap2 {
   public UniqueCheckResult checkUniqueConflict(IndexKey indexKey, long newRowId) throws SQLException {
     long existingRowId = indexKey.getRowId();
 
-    // 同一行，直接跳过
+    // 鍚屼竴琛岋紝鐩存帴璺宠繃
     if (existingRowId == newRowId) {
       return UniqueCheckResult.IGNORE;
     }
 
     DataKey rowKey = RowKey.of(getTabId(indexKey.getTableId()), existingRowId);
 
-    // 只基于当前事务可见视图判断
+    // 鍙熀浜庡綋鍓嶄簨鍔″彲瑙佽鍥惧垽鏂?
     RowValue visible = getVisible(rowKey);
     if (isUsableRow(visible)) {
       return UniqueCheckResult.DUPLICATE;

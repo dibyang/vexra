@@ -250,7 +250,7 @@ The updated SPI turns part of the previous request list into executable assumpti
 | Item | Assessment | ADB-side action |
 | --- | --- | --- |
 | `TableBase` / `Index` migration | Usable as managed migration APIs | Migrate imports and construction paths first, pin the h2db minor version, and add contract tests |
-| `SessionLocal` dependency | Still a high-risk internal API | Keep it only where locks, transactions, or permissions require it, and do not expose it through ADB public APIs |
+| `SessionLocal` dependency | Still a high-risk internal API; transaction boundaries can now be observed through `TransactionEventProvider` | Keep it only where locks, permissions, and table/index operations require it; route commit / rollback through the transaction event provider |
 | `SystemCatalogProvider` | Can be registered and validated, but does not own system tables yet | Do not move LDB/Rocks into the H2 primary storage path yet; keep the table provider prototype first |
 | Non-MVStore primary path | Still not production-ready | Wait for system table, LOB, transaction log, and temporary result contracts |
 | Parser / optimizer / JDBC server | Explicitly not open | Reuse native h2db behavior instead of requesting custom extensions here |
@@ -284,8 +284,8 @@ These do not block the current prototype, but they affect the path from "usable 
 | ADB-H2-01 | Done | Add the `h2db 2.3.0` dependency while keeping the old implementation | `h2db` dependency in `vexra-adb/build.gradle` | `:vexra-adb:compileJava` passes | Remove the dependency and return to the old `org.adb.*` compile path |
 | ADB-H2-02 | Done | Add the H2 plugin ServiceLoader entry | `AdbH2Plugin`, `META-INF/services/org.h2.api.H2Plugin` | H2 discovers the plugin through ServiceLoader | Remove the ServiceLoader file and plugin entry class |
 | ADB-H2-03 | Done | Add the `jdbc:adb:*` URL prefix compatibility provider | `AdbJdbcUrlPrefixProvider` | `org.h2.Driver.acceptsURL("jdbc:adb:...")` and URL mapping tests pass | Remove the URL provider and require callers to use `jdbc:h2:*` |
-| ADB-H2-04 | In Progress | Add the ADB table provider prototype | `AdbTableProvider` | Provider can be registered; real table creation still returns a clear unsupported error | Remove the provider prototype and stop exposing `adb_table` |
-| ADB-H2-05 | Not Started | Move `AdbTableEngine` to `TableEngineProvider` | Old `org.adb.AdbTableEngine` logic moved into `net.xdob.vexra.adb.h2plugin` or another ADB-owned package | `CREATE TABLE ... ENGINE "adb_table"` or `DEFAULT_TABLE_ENGINE=adb_table` reaches real `AdbTable` creation | Keep the old `org.adb.AdbTableEngine` path |
+| ADB-H2-04 | Done | Add the ADB table provider prototype | `AdbTableProvider` | Provider is registered through ServiceLoader and exposes `adb_table` | Remove the provider prototype and stop exposing `adb_table` |
+| ADB-H2-05 | Done | Move `AdbTableEngine` to `TableEngineProvider` | `AdbTableProvider.createTable()` creates a real `AdbTable`; old `org.adb.AdbTableEngine` remains only as a deprecated compatibility error entry | `jdbc:adb:ldb:*` maps through the h2db Driver and can execute `CREATE TABLE` | Revert the provider table creation path and restore the old `org.adb.AdbTableEngine` route |
 | ADB-H2-06 | Not Started | Rebind `AdbTable` imports from `org.adb.*` to `org.h2.*` | `AdbTable` and its construction path depend on h2db types | Minimal create table, reopen, and row count tests pass | Revert `AdbTable` imports and construction path |
 | ADB-H2-07 | Not Started | Rebind primary and secondary index implementations | `AdbPrimaryIndex`, `AdbSecondaryIndex`, and `AdbDelegateIndex` depend on h2db types | Primary lookup, range scan, secondary index query, and delete regressions pass | Revert the index implementation while keeping the old engine path |
 | ADB-H2-08 | Not Started | Contain transaction, lock, and visibility dependencies on `SessionLocal` / `Database` | Internal ADB adapter layer or explicit managed h2db API usage points | Concurrent write, read/write conflict, rollback, checkpoint, and reopen tests pass | Disable the new provider and keep the old fork path |
@@ -296,7 +296,7 @@ These do not block the current prototype, but they affect the path from "usable 
 
 1. Start with ADB-H2-05: make `AdbTableProvider.createTable()` call the real table creation path while keeping the old `org.adb.*` code in place.
 2. Continue with ADB-H2-06 and ADB-H2-07: move table and index imports, construction parameters, and exception handling to `org.h2.*`.
-3. Then handle ADB-H2-08: contain high-risk transaction, lock, and visibility dependencies so they do not leak into ADB public APIs.
+3. Then handle ADB-H2-08: continue containing high-risk lock and visibility dependencies; commit / rollback already prefer h2db `TransactionEventProvider`.
 4. Finish with ADB-H2-09 and ADB-H2-10: clean the tooling layer and remove non-differentiating H2-derived code.
 
 ### Phase Acceptance Gates

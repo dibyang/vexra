@@ -8,37 +8,38 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import net.xdob.vexra.adb.DbStore;
+import net.xdob.vexra.adb.h2plugin.AdbTransactionRegistry;
 import net.xdob.vexra.adb.key.IndexBuildState;
-import org.adb.api.DatabaseEventListener;
-import org.adb.api.ErrorCode;
-import org.adb.command.ddl.CreateTableData;
-import org.adb.constraint.Constraint;
-import org.adb.constraint.ConstraintReferential;
-import org.adb.engine.Constants;
-import org.adb.engine.Database;
-import org.adb.engine.SessionLocal;
-import org.adb.engine.SysProperties;
-import org.adb.index.Cursor;
-import org.adb.index.Index;
-import org.adb.index.IndexType;
-import org.adb.message.DbException;
-import org.adb.message.Trace;
-import org.adb.mode.DefaultNullOrdering;
-import org.adb.mvstore.db.Store;
-import org.adb.mvstore.tx.Transaction;
-import org.adb.mvstore.tx.TransactionStore;
-import org.adb.result.Row;
-import org.adb.result.SearchRow;
-import org.adb.result.SortOrder;
-import org.adb.table.Column;
-import org.adb.table.IndexColumn;
-import org.adb.table.Table;
-import org.adb.table.TableBase;
-import org.adb.table.TableType;
-import org.adb.util.DebuggingThreadLocal;
-import org.adb.util.Utils;
-import org.adb.value.DataType;
-import org.adb.value.TypeInfo;
+import org.h2.api.DatabaseEventListener;
+import org.h2.api.ErrorCode;
+import org.h2.command.ddl.CreateTableData;
+import org.h2.constraint.Constraint;
+import org.h2.constraint.ConstraintReferential;
+import org.h2.engine.Constants;
+import org.h2.engine.Database;
+import org.h2.engine.SessionLocal;
+import org.h2.engine.SysProperties;
+import org.h2.index.Cursor;
+import org.h2.index.Index;
+import org.h2.index.IndexType;
+import org.h2.message.DbException;
+import org.h2.message.Trace;
+import org.h2.mode.DefaultNullOrdering;
+import org.h2.mvstore.db.Store;
+import org.h2.mvstore.tx.Transaction;
+import org.h2.mvstore.tx.TransactionStore;
+import org.h2.result.Row;
+import org.h2.result.SearchRow;
+import org.h2.result.SortOrder;
+import org.h2.table.Column;
+import org.h2.table.IndexColumn;
+import org.h2.table.Table;
+import org.h2.table.TableBase;
+import org.h2.table.TableType;
+import org.h2.util.DebuggingThreadLocal;
+import org.h2.util.Utils;
+import org.h2.value.DataType;
+import org.h2.value.TypeInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -134,11 +135,13 @@ public class AdbTable extends TableBase {
   private final Store store;
   private final TransactionStore transactionStore;
   private final DbStore dbStore;
+  private final TxnManager txnManager;
   private final KeyGenerator keyGenerator;
 
-  public AdbTable(CreateTableData data, Store store, DbStore dbStore) {
+  public AdbTable(CreateTableData data, Store store, DbStore dbStore, TxnManager txnManager) {
     super(data);
     this.dbStore = dbStore;
+    this.txnManager = txnManager;
     this.keyGenerator = new KeyGenerator(dbStore, getId());
     this.isHidden = data.isHidden;
     boolean b = false;
@@ -176,12 +179,12 @@ public class AdbTable extends TableBase {
 
 
   public TxnMap2 getTxnMap(SessionLocal sessionLocal){
-   return sessionLocal.getTransaction().getTxnMap2();
+   return AdbTransactionRegistry.getOrCreate(sessionLocal, txnManager);
   }
 
   @Override
   public long getRowCount(SessionLocal session){
-    TxnMap2 map = session.getTransaction().getTxnMap2();
+    TxnMap2 map = getTxnMap(session);
     try {
       return map.getRowCount(getId());
     } catch (SQLException e) {

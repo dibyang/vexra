@@ -1,9 +1,9 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.key.RowLockKey;
-import org.adb.api.ErrorCode;
-import org.adb.engine.Constants;
-import org.adb.message.DbException;
+import org.h2.api.ErrorCode;
+import org.h2.engine.Constants;
+import org.h2.message.DbException;
 
 import java.util.HashMap;
 import java.util.HashSet;

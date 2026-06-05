@@ -97,8 +97,8 @@ public final class DefaultVersionResolver implements VersionResolver {
           return visible;
         }
 
-        // 上面的 resolveVisibleInCurrentLogicalRow 返回时，
-        // scan 已经走到下一 logical row 或越界了，所以这里不用再额外 skip
+        // 涓婇潰鐨?resolveVisibleInCurrentLogicalRow 杩斿洖鏃讹紝
+        // scan 宸茬粡璧板埌涓嬩竴 logical row 鎴栬秺鐣屼簡锛屾墍浠ヨ繖閲屼笉鐢ㄥ啀棰濆 skip
       }
 
       return null;
@@ -134,7 +134,7 @@ public final class DefaultVersionResolver implements VersionResolver {
           return visible;
         }
 
-        // 同理，reverse 版本在返回时也已经跳到前一个 logical row 了
+        // 鍚岀悊锛宺everse 鐗堟湰鍦ㄨ繑鍥炴椂涔熷凡缁忚烦鍒板墠涓€涓?logical row 浜?
       }
 
       return null;
@@ -148,8 +148,8 @@ public final class DefaultVersionResolver implements VersionResolver {
 
   /**
    * FORWARD:
-   * scan 进入时应位于某个 logical row 的第一条版本记录；
-   * 返回时，scan 已移动到“下一 logical row 的第一条记录”或越界。
+   * scan 杩涘叆鏃跺簲浣嶄簬鏌愪釜 logical row 鐨勭涓€鏉＄増鏈褰曪紱
+   * 杩斿洖鏃讹紝scan 宸茬Щ鍔ㄥ埌鈥滀笅涓€ logical row 鐨勭涓€鏉¤褰曗€濇垨瓒婄晫銆?
    */
   private RowValue resolveVisibleInCurrentLogicalRow(
       VersionScanSource scan,
@@ -167,7 +167,7 @@ public final class DefaultVersionResolver implements VersionResolver {
       VersionKey vk = VersionKey.fromBytes(rawKey);
       RowValue rowValue = RowValue.decodeValue(scan.value());
 
-      // 自己的 intent 优先
+      // 鑷繁鐨?intent 浼樺厛
       if (!vk.isCommited()) {
         if (vk.getTxnId() == txn.getTxnId()) {
           return rowValue.deleted ? null : rowValue;
@@ -176,7 +176,7 @@ public final class DefaultVersionResolver implements VersionResolver {
         continue;
       }
 
-      // 第一条满足 snapshot 的 committed 就是要的
+      // 绗竴鏉℃弧瓒?snapshot 鐨?committed 灏辨槸瑕佺殑
       if (rowValue.commitTs <= txn.getStartTs()) {
         firstCommittedVisible = rowValue.deleted ? null : rowValue;
         skipCurrentLogicalRowForward(scan, rowPrefix);
@@ -191,8 +191,8 @@ public final class DefaultVersionResolver implements VersionResolver {
 
   /**
    * REVERSE:
-   * scan 进入时位于某个 logical row 的某条版本记录；
-   * 返回时，scan 已移动到“前一个 logical row 的某条记录”或越界。
+   * scan 杩涘叆鏃朵綅浜庢煇涓?logical row 鐨勬煇鏉＄増鏈褰曪紱
+   * 杩斿洖鏃讹紝scan 宸茬Щ鍔ㄥ埌鈥滃墠涓€涓?logical row 鐨勬煇鏉¤褰曗€濇垨瓒婄晫銆?
    */
   private RowValue resolveVisibleInCurrentLogicalRowReverse(
       VersionScanSource scan,
@@ -230,8 +230,8 @@ public final class DefaultVersionResolver implements VersionResolver {
   }
 
   /**
-   * scan 进入时位于该 row 的第一条记录；
-   * 返回时位于下一 row 的第一条记录或越界。
+   * scan 杩涘叆鏃朵綅浜庤 row 鐨勭涓€鏉¤褰曪紱
+   * 杩斿洖鏃朵綅浜庝笅涓€ row 鐨勭涓€鏉¤褰曟垨瓒婄晫銆?
    */
   private RowValue resolveCommittedInCurrentLogicalRow(
       VersionScanSource scan,

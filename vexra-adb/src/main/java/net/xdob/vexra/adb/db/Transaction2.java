@@ -19,10 +19,10 @@ public class Transaction2 {
   private final List<OLdEntry> undoLogs = new ArrayList<>();
   private final Map<String, Savepoint2> savepoints = new HashMap<>();
 
-  // key -> 读到的 committed version(commitTs), 不存在记 0
+  // key -> 璇诲埌鐨?committed version(commitTs), 涓嶅瓨鍦ㄨ 0
   private final Map<DataKey, Long> readVersions = new HashMap<>();
 
-  // key -> 当前事务最终准备提交的值
+  // key -> 褰撳墠浜嬪姟鏈€缁堝噯澶囨彁浜ょ殑鍊?
   private final Map<DataKey, RowValue> writeSet = new LinkedHashMap<>();
 
   private final ConcurrentHashMap<Integer, Epoch> tableEpochs = new ConcurrentHashMap<>();

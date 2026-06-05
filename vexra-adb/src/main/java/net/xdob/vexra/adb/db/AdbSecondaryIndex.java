@@ -4,21 +4,21 @@ import net.xdob.vexra.adb.key.IndexKey;
 import net.xdob.vexra.adb.key.IndexPrefix;
 import net.xdob.vexra.adb.key.IndexPrefix2;
 import net.xdob.vexra.adb.key.TabId;
-import org.adb.api.ErrorCode;
-import org.adb.command.query.AllColumnsForPlan;
-import org.adb.engine.Database;
-import org.adb.engine.SessionLocal;
-import org.adb.index.Cursor;
-import org.adb.index.IndexType;
-import org.adb.index.SingleRowCursor;
-import org.adb.message.DbException;
-import org.adb.mvstore.MVStoreException;
-import org.adb.mvstore.type.DataType;
-import org.adb.result.*;
-import org.adb.table.IndexColumn;
-import org.adb.table.TableFilter;
-import org.adb.value.Value;
-import org.adb.value.ValueNull;
+import org.h2.api.ErrorCode;
+import org.h2.command.query.AllColumnsForPlan;
+import org.h2.engine.Database;
+import org.h2.engine.SessionLocal;
+import org.h2.index.Cursor;
+import org.h2.index.IndexType;
+import org.h2.index.SingleRowCursor;
+import org.h2.message.DbException;
+import org.h2.mvstore.MVStoreException;
+import org.h2.mvstore.type.DataType;
+import org.h2.result.*;
+import org.h2.table.IndexColumn;
+import org.h2.table.TableFilter;
+import org.h2.value.Value;
+import org.h2.value.ValueNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -112,7 +112,7 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
 
   @Override
   public TxnMap2 getTxnMap(SessionLocal session) {
-    return session.getTransaction().getTxnMap2();
+    return adbTable.getTxnMap(session);
   }
 
   @Override
@@ -151,8 +151,8 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
     from.copyFrom(row);
 
     if (repeatableRead) {
-      //为了保证可重复读，需要对语句或事务开始时获取的快照进行额外检查，
-      // 因为即使之后该键已被另一个（可能已提交的）事务删除，也必须考虑键的存在性。暂不支持
+      //涓轰簡淇濊瘉鍙噸澶嶈锛岄渶瑕佸璇彞鎴栦簨鍔″紑濮嬫椂鑾峰彇鐨勫揩鐓ц繘琛岄澶栨鏌ワ紝
+      // 鍥犱负鍗充娇涔嬪悗璇ラ敭宸茶鍙︿竴涓紙鍙兘宸叉彁浜ょ殑锛変簨鍔″垹闄わ紝涔熷繀椤昏€冭檻閿殑瀛樺湪鎬с€傛殏涓嶆敮鎸?
 //      TransactionMap.TMIterator<SearchRow, Value, SearchRow> it = map.keyIterator(from, to);
 //      for (SearchRow k; (k = it.fetchNext()) != null;) {
 //        if (newKey != k.getKey() && !map.isDeletedByCurrentTransaction(k)) {
@@ -342,7 +342,7 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
 
         Row row = table.getRow(session, rowId);
         if (row == null) continue;
-        // 如果要严格语义，还要过滤 NULL
+        // 濡傛灉瑕佷弗鏍艰涔夛紝杩樿杩囨护 NULL
         if (row.getValue(columnIds[0]) == ValueNull.INSTANCE) {
           continue;
         }

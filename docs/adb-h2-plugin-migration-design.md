@@ -254,7 +254,7 @@ sequenceDiagram
 | 事项 | 判断 | ADB 侧动作 |
 | --- | --- | --- |
 | `TableBase` / `Index` 迁移 | 可作为受管迁移 API 使用 | 先迁移 import 和构造路径，固定 h2db 小版本并补契约测试 |
-| `SessionLocal` 依赖 | 仍是高风险内部 API | 只在锁、事务、权限必须使用处保留，不传播到 ADB 公共 API |
+| `SessionLocal` 依赖 | 仍是高风险内部 API；事务边界已可通过 `TransactionEventProvider` 监听 | 只在锁、权限和表/索引操作必须使用处保留；commit / rollback 交给事务事件 provider |
 | `SystemCatalogProvider` | 已可注册和校验，但尚不接管系统表 | 暂不把 LDB/Rocks 作为 H2 主 storage engine，先保持 table provider 原型 |
 | 非 MVStore 主路径 | 仍未生产可用 | 等 system catalog 的系统表、LOB、事务日志和临时结果契约补齐后再推进 |
 | parser / optimizer / JDBC server | 明确不开放 | ADB 不再要求自定义这些层，目标是复用 h2db 原生实现 |
@@ -290,8 +290,8 @@ sequenceDiagram
 | ADB-H2-01 | 已完成 | 引入 `h2db 2.3.0` 依赖并保留当前旧实现 | `vexra-adb/build.gradle` 中的 `h2db` 依赖 | `:vexra-adb:compileJava` 通过 | 删除依赖并回到旧 `org.adb.*` 编译路径 |
 | ADB-H2-02 | 已完成 | 建立 H2 插件 ServiceLoader 入口 | `AdbH2Plugin`、`META-INF/services/org.h2.api.H2Plugin` | H2 通过 ServiceLoader 发现插件 | 移除 ServiceLoader 文件和插件入口类 |
 | ADB-H2-03 | 已完成 | 建立 `jdbc:adb:*` URL 前缀兼容 provider | `AdbJdbcUrlPrefixProvider` | `org.h2.Driver.acceptsURL("jdbc:adb:...")` 和 URL 映射单测通过 | 移除 URL provider，要求调用方改用 `jdbc:h2:*` |
-| ADB-H2-04 | 进行中 | 建立 ADB table provider 原型 | `AdbTableProvider` | provider 可注册；真实建表仍返回明确 unsupported 错误 | 移除 provider 原型，不暴露 `adb_table` |
-| ADB-H2-05 | 待开始 | 迁移 `AdbTableEngine` 到 `TableEngineProvider` | 旧 `org.adb.AdbTableEngine` 逻辑进入 `net.xdob.vexra.adb.h2plugin` 或 ADB 自有包 | `CREATE TABLE ... ENGINE "adb_table"` 或 `DEFAULT_TABLE_ENGINE=adb_table` 走到真实 `AdbTable` 创建 | 保持旧 `org.adb.AdbTableEngine` 路径 |
+| ADB-H2-04 | 已完成 | 建立 ADB table provider 原型 | `AdbTableProvider` | provider 可通过 ServiceLoader 注册并暴露 `adb_table` | 移除 provider 原型，不暴露 `adb_table` |
+| ADB-H2-05 | 已完成 | 迁移 `AdbTableEngine` 到 `TableEngineProvider` | `AdbTableProvider.createTable()` 创建真实 `AdbTable`；旧 `org.adb.AdbTableEngine` 保留为 deprecated 兼容错误入口 | `jdbc:adb:ldb:*` 经 h2db Driver 映射后可执行 `CREATE TABLE` | 回退 provider 建表实现，恢复旧 `org.adb.AdbTableEngine` 路径 |
 | ADB-H2-06 | 待开始 | 将 `AdbTable` 从 `org.adb.*` import 迁移到 `org.h2.*` | `AdbTable` 及构造路径依赖 h2db 类型 | 最小建表、重启 reopen、行计数测试通过 | 回退 `AdbTable` import 与构造路径 |
 | ADB-H2-07 | 待开始 | 迁移主键和二级索引实现 | `AdbPrimaryIndex`、`AdbSecondaryIndex`、`AdbDelegateIndex` 依赖 h2db 类型 | 主键查找、范围扫描、二级索引查询、删除回归通过 | 单独回退索引实现，保留旧引擎路径 |
 | ADB-H2-08 | 待开始 | 收敛事务、锁和可见性对 `SessionLocal` / `Database` 的依赖 | ADB 内部适配层或明确的受管 h2db API 使用点 | 并发写、读写冲突、回滚、checkpoint/reopen 测试通过 | 禁用新 provider，保留旧分叉路径 |
@@ -302,7 +302,7 @@ sequenceDiagram
 
 1. 先做 ADB-H2-05，把 `AdbTableProvider.createTable()` 从原型错误改成真实建表入口，但仍保留旧 `org.adb.*` 代码不删。
 2. 再做 ADB-H2-06 和 ADB-H2-07，把表和索引实现的 import、构造参数、异常模型逐步切到 `org.h2.*`。
-3. 然后做 ADB-H2-08，集中处理事务、锁和可见性里的高风险内部 API 依赖，避免这些依赖扩散到 ADB 公共 API。
+3. 然后做 ADB-H2-08，继续收敛锁和可见性里的高风险内部 API 依赖；commit / rollback 已优先使用 h2db `TransactionEventProvider`。
 4. 最后做 ADB-H2-09 和 ADB-H2-10，清理工具层和非差异化 H2 衍生代码。
 
 ### 阶段验收门槛

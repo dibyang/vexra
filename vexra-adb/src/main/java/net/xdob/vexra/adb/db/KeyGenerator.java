@@ -12,8 +12,8 @@ public class KeyGenerator {
 
   private final AtomicLong next = new AtomicLong(0);
   /**
-   * 本地已申请号段的结束位置（开区间）
-   * 可分配区间为 [next, maxExclusive)
+   * 鏈湴宸茬敵璇峰彿娈电殑缁撴潫浣嶇疆锛堝紑鍖洪棿锛?
+   * 鍙垎閰嶅尯闂翠负 [next, maxExclusive)
    */
   private volatile long maxExclusive = 0;
 
@@ -52,17 +52,17 @@ public class KeyGenerator {
   private void allocateSegment() throws SQLException {
     byte[] key = tableNextRowIdKey.toBytes();
 
-    // 全局计数器推进 STEP
+    // 鍏ㄥ眬璁℃暟鍣ㄦ帹杩?STEP
     dbStore.addLong(CF.META.getCfId(), key, STEP);
 
-    // 读出推进后的新上界：表示“已分配到的最大 rowId”
+    // 璇诲嚭鎺ㄨ繘鍚庣殑鏂颁笂鐣岋細琛ㄧず鈥滃凡鍒嗛厤鍒扮殑鏈€澶?rowId鈥?
     long newMax = dbStore.getLong(CF.META.getCfId(), key).orElse(0L);
     if (newMax < STEP) {
       throw new IllegalStateException("invalid rowId counter value: " + newMax);
     }
 
-    long start = newMax - STEP + 1;   // 包含
-    long endExclusive = newMax + 1;   // 不包含
+    long start = newMax - STEP + 1;   // 鍖呭惈
+    long endExclusive = newMax + 1;   // 涓嶅寘鍚?
 
     next.set(start);
     maxExclusive = endExclusive;

@@ -1,9 +1,9 @@
 package net.xdob.vexra.adb.db;
 
-import org.adb.result.DefaultRow;
-import org.adb.result.Row;
-import org.adb.result.SearchRow;
-import org.adb.value.*;
+import org.h2.result.DefaultRow;
+import org.h2.result.Row;
+import org.h2.result.SearchRow;
+import org.h2.value.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -12,7 +12,7 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-import static org.adb.value.Value.*;
+import static org.h2.value.Value.*;
 
 public interface RowCodec {
   Logger LOG = LoggerFactory.getLogger(RowCodec.class);

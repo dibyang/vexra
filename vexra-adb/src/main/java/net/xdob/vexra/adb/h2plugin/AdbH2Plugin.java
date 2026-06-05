@@ -20,6 +20,8 @@ public final class AdbH2Plugin implements H2Plugin {
 
     private static final PluginProvider JDBC_URL_PREFIX_PROVIDER = new AdbJdbcUrlPrefixProvider();
 
+    private static final PluginProvider TRANSACTION_EVENT_PROVIDER = new AdbTransactionEventProvider();
+
     /**
      * 返回 ADB 插件在 H2 插件注册表中的稳定标识。
      *
@@ -57,7 +59,7 @@ public final class AdbH2Plugin implements H2Plugin {
      */
     @Override
     public Iterable<? extends PluginProvider> getProviders() {
-        return Arrays.asList(TABLE_PROVIDER, JDBC_URL_PREFIX_PROVIDER);
+        return Arrays.asList(TABLE_PROVIDER, JDBC_URL_PREFIX_PROVIDER, TRANSACTION_EVENT_PROVIDER);
     }
 
     /**

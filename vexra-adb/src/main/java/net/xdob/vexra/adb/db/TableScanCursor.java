@@ -74,10 +74,10 @@ public final class TableScanCursor implements AutoCloseable {
 
       RowValue visible = visibleResolver.getVisible(txn, dataKey);
 
-      // 无论可见不可见，都跳过当前逻辑行所有版本
+      // 鏃犺鍙涓嶅彲瑙侊紝閮借烦杩囧綋鍓嶉€昏緫琛屾墍鏈夌増鏈?
       skipCurrentLogicalRow(rowPrefix);
 
-      // 只返回真正可读、可解码的行
+      // 鍙繑鍥炵湡姝ｅ彲璇汇€佸彲瑙ｇ爜鐨勮
       if (visible == null) {
         continue;
       }

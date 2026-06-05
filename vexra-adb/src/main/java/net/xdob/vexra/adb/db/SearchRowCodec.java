@@ -1,60 +1,60 @@
 package net.xdob.vexra.adb.db;
 
-import org.adb.result.SearchRow;
-import org.adb.table.IndexColumn;
-import org.adb.util.DateTimeUtils;
-import org.adb.value.*;
+import org.h2.result.SearchRow;
+import org.h2.table.IndexColumn;
+import org.h2.util.DateTimeUtils;
+import org.h2.value.*;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-import static org.adb.value.Value.*;
-import static org.adb.value.Value.ARRAY;
-import static org.adb.value.Value.BIGINT;
-import static org.adb.value.Value.BINARY;
-import static org.adb.value.Value.BLOB;
-import static org.adb.value.Value.BOOLEAN;
-import static org.adb.value.Value.CLOB;
-import static org.adb.value.Value.DATE;
-import static org.adb.value.Value.DECFLOAT;
-import static org.adb.value.Value.DOUBLE;
-import static org.adb.value.Value.ENUM;
-import static org.adb.value.Value.GEOMETRY;
-import static org.adb.value.Value.INTEGER;
-import static org.adb.value.Value.INTERVAL_DAY;
-import static org.adb.value.Value.INTERVAL_DAY_TO_HOUR;
-import static org.adb.value.Value.INTERVAL_DAY_TO_MINUTE;
-import static org.adb.value.Value.INTERVAL_DAY_TO_SECOND;
-import static org.adb.value.Value.INTERVAL_HOUR;
-import static org.adb.value.Value.INTERVAL_HOUR_TO_MINUTE;
-import static org.adb.value.Value.INTERVAL_HOUR_TO_SECOND;
-import static org.adb.value.Value.INTERVAL_MINUTE;
-import static org.adb.value.Value.INTERVAL_MINUTE_TO_SECOND;
-import static org.adb.value.Value.INTERVAL_MONTH;
-import static org.adb.value.Value.INTERVAL_SECOND;
-import static org.adb.value.Value.INTERVAL_YEAR;
-import static org.adb.value.Value.INTERVAL_YEAR_TO_MONTH;
-import static org.adb.value.Value.JAVA_OBJECT;
-import static org.adb.value.Value.JSON;
-import static org.adb.value.Value.NUMERIC;
-import static org.adb.value.Value.REAL;
-import static org.adb.value.Value.ROW;
-import static org.adb.value.Value.SMALLINT;
-import static org.adb.value.Value.TIME;
-import static org.adb.value.Value.TIMESTAMP;
-import static org.adb.value.Value.TIMESTAMP_TZ;
-import static org.adb.value.Value.TIME_TZ;
-import static org.adb.value.Value.TINYINT;
-import static org.adb.value.Value.UUID;
-import static org.adb.value.Value.VARBINARY;
-import static org.adb.value.Value.VARCHAR_IGNORECASE;
+import static org.h2.value.Value.*;
+import static org.h2.value.Value.ARRAY;
+import static org.h2.value.Value.BIGINT;
+import static org.h2.value.Value.BINARY;
+import static org.h2.value.Value.BLOB;
+import static org.h2.value.Value.BOOLEAN;
+import static org.h2.value.Value.CLOB;
+import static org.h2.value.Value.DATE;
+import static org.h2.value.Value.DECFLOAT;
+import static org.h2.value.Value.DOUBLE;
+import static org.h2.value.Value.ENUM;
+import static org.h2.value.Value.GEOMETRY;
+import static org.h2.value.Value.INTEGER;
+import static org.h2.value.Value.INTERVAL_DAY;
+import static org.h2.value.Value.INTERVAL_DAY_TO_HOUR;
+import static org.h2.value.Value.INTERVAL_DAY_TO_MINUTE;
+import static org.h2.value.Value.INTERVAL_DAY_TO_SECOND;
+import static org.h2.value.Value.INTERVAL_HOUR;
+import static org.h2.value.Value.INTERVAL_HOUR_TO_MINUTE;
+import static org.h2.value.Value.INTERVAL_HOUR_TO_SECOND;
+import static org.h2.value.Value.INTERVAL_MINUTE;
+import static org.h2.value.Value.INTERVAL_MINUTE_TO_SECOND;
+import static org.h2.value.Value.INTERVAL_MONTH;
+import static org.h2.value.Value.INTERVAL_SECOND;
+import static org.h2.value.Value.INTERVAL_YEAR;
+import static org.h2.value.Value.INTERVAL_YEAR_TO_MONTH;
+import static org.h2.value.Value.JAVA_OBJECT;
+import static org.h2.value.Value.JSON;
+import static org.h2.value.Value.NUMERIC;
+import static org.h2.value.Value.REAL;
+import static org.h2.value.Value.ROW;
+import static org.h2.value.Value.SMALLINT;
+import static org.h2.value.Value.TIME;
+import static org.h2.value.Value.TIMESTAMP;
+import static org.h2.value.Value.TIMESTAMP_TZ;
+import static org.h2.value.Value.TIME_TZ;
+import static org.h2.value.Value.TINYINT;
+import static org.h2.value.Value.UUID;
+import static org.h2.value.Value.VARBINARY;
+import static org.h2.value.Value.VARCHAR_IGNORECASE;
 
 public interface SearchRowCodec {
   static byte[] safeEncode(Value v) {
     if (v == null || v == ValueNull.INSTANCE) {
-      return new byte[]{0}; // 空值固定编码
+      return new byte[]{0}; // 绌哄€煎浐瀹氱紪鐮?
     }
     switch (v.getValueType()) {
       case CHAR:
@@ -127,16 +127,16 @@ public interface SearchRowCodec {
 
   static byte[] forTz(ValueTimeTimeZone v) {
     ValueTimeTimeZone tz = v;
-    // 转换到 UTC 纳秒
+    // 杞崲鍒?UTC 绾崇
     long utcNanos = tz.getNanos() - tz.getTimeZoneOffsetSeconds() * DateTimeUtils.NANOS_PER_SECOND;
-    // 翻转符号位，保证排序正确
+    // 缈昏浆绗﹀彿浣嶏紝淇濊瘉鎺掑簭姝ｇ‘
     long sortable = utcNanos ^ Long.MIN_VALUE;
     return ByteBuffer.allocate(8).putLong(sortable).array();
   }
 
   static byte[] forTs(ValueTimestamp v) {
     ValueTimestamp ts = v;
-    // 用 long[] 存两个 long：dateValue + timeNanos
+    // 鐢?long[] 瀛樹袱涓?long锛歞ateValue + timeNanos
     ByteBuffer buf = ByteBuffer.allocate(16);
     buf.putLong(ts.getDateValue());
     buf.putLong(ts.getTimeNanos());
@@ -145,7 +145,7 @@ public interface SearchRowCodec {
 
   static byte[] forTsTz(ValueTimestampTimeZone v) {
     ValueTimestampTimeZone tsTz = v;
-    // 转成 UTC 纳秒，和 compareTypeSafe 一致
+    // 杞垚 UTC 绾崇锛屽拰 compareTypeSafe 涓€鑷?
     long timeUtc = tsTz.getTimeNanos() - tsTz.getTimeZoneOffsetSeconds() * DateTimeUtils.NANOS_PER_SECOND;
     long dateValue = tsTz.getDateValue();
     if (timeUtc < 0) {
@@ -156,7 +156,7 @@ public interface SearchRowCodec {
       dateValue = DateTimeUtils.incrementDateValue(dateValue);
     }
 
-    // 合成一个 long：高 32 位 dateValue，低 32 位 timeNanos（也可以用 16 字节存完整 long+long）
+    // 鍚堟垚涓€涓?long锛氶珮 32 浣?dateValue锛屼綆 32 浣?timeNanos锛堜篃鍙互鐢?16 瀛楄妭瀛樺畬鏁?long+long锛?
     ByteBuffer buf2 = ByteBuffer.allocate(16);
     buf2.putLong(dateValue);
     buf2.putLong(timeUtc);
@@ -171,7 +171,7 @@ public interface SearchRowCodec {
   }
 
   static byte[] forLong(Value v) {
-    long sortable = flipSign(v.getLong());  // 翻转符号位
+    long sortable = flipSign(v.getLong());  // 缈昏浆绗﹀彿浣?
     return ByteBuffer.allocate(8).putLong(sortable).array();
   }
 
@@ -191,9 +191,9 @@ public interface SearchRowCodec {
     long bits = Double.doubleToRawLongBits(v.getDouble());
     long sortable;
     if (bits < 0) {
-      sortable = ~bits;       // 负数按位取反
+      sortable = ~bits;       // 璐熸暟鎸変綅鍙栧弽
     } else {
-      sortable = bits ^ Long.MIN_VALUE; // 正数翻转符号位
+      sortable = bits ^ Long.MIN_VALUE; // 姝ｆ暟缈昏浆绗﹀彿浣?
     }
     return ByteBuffer.allocate(8)
         .putDouble(sortable).array();
@@ -207,13 +207,13 @@ public interface SearchRowCodec {
   }
 
   /**
-   * 符号位翻转
+   * 绗﹀彿浣嶇炕杞?
    */
   static long flipSign(long v) {
     return KeyCodec.flipSign(v);
   }
   /**
-   * 符号位翻转
+   * 绗﹀彿浣嶇炕杞?
    */
   static int flipSign(int v) {
     return KeyCodec.flipSign(v);
@@ -228,7 +228,7 @@ public interface SearchRowCodec {
       }
     }
     if(includeKey){
-      long sortable = flipSign(row.getKey());  // 翻转符号位
+      long sortable = flipSign(row.getKey());  // 缈昏浆绗﹀彿浣?
       out.putLong(sortable);
     }
     return out.toArray();

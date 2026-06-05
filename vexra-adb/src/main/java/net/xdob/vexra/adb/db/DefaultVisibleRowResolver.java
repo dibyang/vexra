@@ -7,16 +7,16 @@ import net.xdob.vexra.adb.key.VersionKey;
 import java.util.Objects;
 
 /**
- * 可见版本解析器。
+ * 鍙鐗堟湰瑙ｆ瀽鍣ㄣ€?
  *
- * 语义：
- * 1. 对指定逻辑行(rowKey)扫描其所有物理版本
- * 2. 返回当前事务可见的最新版本
- * 3. 若该逻辑行当前对事务不可见，或最新可见版本为删除标记，则返回 null
+ * 璇箟锛?
+ * 1. 瀵规寚瀹氶€昏緫琛?rowKey)鎵弿鍏舵墍鏈夌墿鐞嗙増鏈?
+ * 2. 杩斿洖褰撳墠浜嬪姟鍙鐨勬渶鏂扮増鏈?
+ * 3. 鑻ヨ閫昏緫琛屽綋鍓嶅浜嬪姟涓嶅彲瑙侊紝鎴栨渶鏂板彲瑙佺増鏈负鍒犻櫎鏍囪锛屽垯杩斿洖 null
  *
- * 约定：
- * - 同一逻辑行的所有版本 key 必须以 rowKey.toBytes() 为前缀
- * - 版本顺序必须保证“先扫到的就是更新的版本”
+ * 绾﹀畾锛?
+ * - 鍚屼竴閫昏緫琛岀殑鎵€鏈夌増鏈?key 蹇呴』浠?rowKey.toBytes() 涓哄墠缂€
+ * - 鐗堟湰椤哄簭蹇呴』淇濊瘉鈥滃厛鎵埌鐨勫氨鏄洿鏂扮殑鐗堟湰鈥?
  */
 
 
@@ -33,13 +33,13 @@ public final class DefaultVisibleRowResolver implements VisibleRowResolver {
     Objects.requireNonNull(txn, "txn");
     Objects.requireNonNull(rowKey, "rowKey");
 
-    // 1. 先看当前事务本地 writeSet（内存 intent）
+    // 1. 鍏堢湅褰撳墠浜嬪姟鏈湴 writeSet锛堝唴瀛?intent锛?
     RowValue local = txn.getLocalWrite(rowKey);
     if (local != null) {
       return local.deleted ? null : copyWithRowKey(local, rowKey.getRowId());
     }
 
-    // 2. 再扫 store 中的 committed versions
+    // 2. 鍐嶆壂 store 涓殑 committed versions
     byte[] prefix = rowKey.toBytes();
     byte[] end = KeyCodec.prefixEnd(prefix);
 
@@ -49,7 +49,7 @@ public final class DefaultVisibleRowResolver implements VisibleRowResolver {
       while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
         VersionKey versionKey = VersionKey.fromBytes(scan.key());
 
-        // store 里现在只关心 committed；非 committed 直接跳过
+        // store 閲岀幇鍦ㄥ彧鍏冲績 committed锛涢潪 committed 鐩存帴璺宠繃
         if (!versionKey.isCommited()) {
           scan.advance();
           continue;
@@ -57,7 +57,7 @@ public final class DefaultVisibleRowResolver implements VisibleRowResolver {
 
         RowValue rowValue = RowValue.decodeValue(scan.value());
 
-        // 只允许看到 startTs 之前已经提交的版本
+        // 鍙厑璁哥湅鍒?startTs 涔嬪墠宸茬粡鎻愪氦鐨勭増鏈?
         if (rowValue.commitTs <= txn.getStartTs()) {
           if (rowValue.deleted) {
             return null;

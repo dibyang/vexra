@@ -58,17 +58,17 @@ public class CommitTSGenerator {
 
   private void allocateSegment() throws SQLException {
 
-    // 全局计数器推进 STEP
+    // 鍏ㄥ眬璁℃暟鍣ㄦ帹杩?STEP
     dbStore.addLong(CF.META.getCfId(), key, STEP);
 
-    // 读出推进后的新上界：表示“已分配到的最大 rowId”
+    // 璇诲嚭鎺ㄨ繘鍚庣殑鏂颁笂鐣岋細琛ㄧず鈥滃凡鍒嗛厤鍒扮殑鏈€澶?rowId鈥?
     long newMax = dbStore.getLong(CF.META.getCfId(), key).orElse(0L);
     if (newMax < STEP) {
       throw new IllegalStateException("invalid commitTS counter value: " + newMax);
     }
 
-    long start = newMax - STEP + 1;   // 包含
-    long endExclusive = newMax + 1;   // 不包含
+    long start = newMax - STEP + 1;   // 鍖呭惈
+    long endExclusive = newMax + 1;   // 涓嶅寘鍚?
 
     nextCommitTs.set(start);
     maxCommitTsExclusive = endExclusive;

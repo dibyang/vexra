@@ -7,13 +7,13 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /**
- * 基于抽象扫描源的索引扫描游标。
+ * 鍩轰簬鎶借薄鎵弿婧愮殑绱㈠紩鎵弿娓告爣銆?
  *
- * 语义：
- * 1. 底层扫描物理索引版本 key
- * 2. 对同一逻辑索引项，只返回当前事务可见的最新版本
- * 3. 若索引项可见但对应主表行不可见/已删除，则跳过
- * 4. 不直接依赖 RocksIterator
+ * 璇箟锛?
+ * 1. 搴曞眰鎵弿鐗╃悊绱㈠紩鐗堟湰 key
+ * 2. 瀵瑰悓涓€閫昏緫绱㈠紩椤癸紝鍙繑鍥炲綋鍓嶄簨鍔″彲瑙佺殑鏈€鏂扮増鏈?
+ * 3. 鑻ョ储寮曢」鍙浣嗗搴斾富琛ㄨ涓嶅彲瑙?宸插垹闄わ紝鍒欒烦杩?
+ * 4. 涓嶇洿鎺ヤ緷璧?RocksIterator
  */
 public final class IndexScanCursor implements AutoCloseable {
 
@@ -68,7 +68,7 @@ public final class IndexScanCursor implements AutoCloseable {
 
       RowValue visibleIndex = visibleIndexResolver.getVisibleIndex(txn, logicalPrefix);
 
-      // 无论索引版本是否可见，都先跳过当前逻辑索引组
+      // 鏃犺绱㈠紩鐗堟湰鏄惁鍙锛岄兘鍏堣烦杩囧綋鍓嶉€昏緫绱㈠紩缁?
       skipLogicalGroup(logicalPrefix);
 
       if (visibleIndex == null || visibleIndex.deleted) {
@@ -123,7 +123,7 @@ public final class IndexScanCursor implements AutoCloseable {
   }
 
   /**
-   * 跳过当前逻辑索引项的所有物理版本
+   * 璺宠繃褰撳墠閫昏緫绱㈠紩椤圭殑鎵€鏈夌墿鐞嗙増鏈?
    */
   private void skipLogicalGroup(byte[] logicalPrefix) {
     while (scanSource.isValid() && startsWith(scanSource.key(), logicalPrefix)) {

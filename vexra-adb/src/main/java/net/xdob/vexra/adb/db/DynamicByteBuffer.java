@@ -7,14 +7,14 @@ public class DynamicByteBuffer {
 
   private byte[] buf;
 
-  // 写指针
+  // 鍐欐寚閽?
   private int pos;
 
-  // 读指针
+  // 璇绘寚閽?
   private int readPos;
 
   // =========================
-  // 构造
+  // 鏋勯€?
   // =========================
 
   public DynamicByteBuffer() {
@@ -27,7 +27,7 @@ public class DynamicByteBuffer {
     this.readPos = 0;
   }
 
-  // wrap已有数据（用于读取）
+  // wrap宸叉湁鏁版嵁锛堢敤浜庤鍙栵級
   public static DynamicByteBuffer wrap(byte[] data) {
     DynamicByteBuffer buffer = new DynamicByteBuffer(0);
     buffer.buf = data;
@@ -41,7 +41,7 @@ public class DynamicByteBuffer {
   }
 
   // =========================
-  // 基础能力
+  // 鍩虹鑳藉姏
   // =========================
 
   private void ensureCapacity(int additional) {
@@ -77,7 +77,7 @@ public class DynamicByteBuffer {
   }
 
   // =========================
-  // put 方法（写）
+  // put 鏂规硶锛堝啓锛?
   // =========================
 
   public DynamicByteBuffer put(byte b) {
@@ -144,7 +144,7 @@ public class DynamicByteBuffer {
   }
 
   // =========================
-  // get 方法（读）
+  // get 鏂规硶锛堣锛?
   // =========================
 
   public byte get() {
@@ -207,7 +207,7 @@ public class DynamicByteBuffer {
   }
 
   // =========================
-  // 输出
+  // 杈撳嚭
   // =========================
 
   public byte[] toArray() {

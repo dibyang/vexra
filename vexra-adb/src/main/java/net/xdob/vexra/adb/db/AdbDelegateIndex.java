@@ -1,17 +1,17 @@
 package net.xdob.vexra.adb.db;
 
-import org.adb.command.query.AllColumnsForPlan;
-import org.adb.engine.SessionLocal;
-import org.adb.index.Cursor;
-import org.adb.index.IndexType;
-import org.adb.message.DbException;
-import org.adb.result.Row;
-import org.adb.result.RowFactory;
-import org.adb.result.SearchRow;
-import org.adb.result.SortOrder;
-import org.adb.table.Column;
-import org.adb.table.IndexColumn;
-import org.adb.table.TableFilter;
+import org.h2.command.query.AllColumnsForPlan;
+import org.h2.engine.SessionLocal;
+import org.h2.index.Cursor;
+import org.h2.index.IndexType;
+import org.h2.message.DbException;
+import org.h2.result.Row;
+import org.h2.result.RowFactory;
+import org.h2.result.SearchRow;
+import org.h2.result.SortOrder;
+import org.h2.table.Column;
+import org.h2.table.IndexColumn;
+import org.h2.table.TableFilter;
 
 import java.util.List;
 

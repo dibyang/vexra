@@ -3,13 +3,13 @@ package net.xdob.vexra.adb.db;
 import java.nio.ByteBuffer;
 
 public class RowValue {
-  public long txnId;     // 始终表示写入事务
-  public long commitTs;  // 0 = 未提交
+  public long txnId;     // 濮嬬粓琛ㄧず鍐欏叆浜嬪姟
+  public long commitTs;  // 0 = 鏈彁浜?
   public boolean deleted;
-  public byte[] payload; // 行数据，可能为空
-  public long rowKey; //row id不持久化
+  public byte[] payload; // 琛屾暟鎹紝鍙兘涓虹┖
+  public long rowKey; //row id涓嶆寔涔呭寲
 
-  // -------------------- 编码/解码 --------------------
+  // -------------------- 缂栫爜/瑙ｇ爜 --------------------
   public static byte[] encodeValue(RowValue value) {
     DynamicByteBuffer buffer = DynamicByteBuffer.c();
     buffer.putLong(value.txnId);

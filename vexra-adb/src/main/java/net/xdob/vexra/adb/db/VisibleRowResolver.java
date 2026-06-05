@@ -3,15 +3,15 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.key.DataKey;
 
 /**
- * 可见行解析器接口，用于获取事务可见的数据行
+ * 鍙琛岃В鏋愬櫒鎺ュ彛锛岀敤浜庤幏鍙栦簨鍔″彲瑙佺殑鏁版嵁琛?
  */
 public interface VisibleRowResolver {
   /**
-   * 获取事务可见的最新版本数据行
+   * 鑾峰彇浜嬪姟鍙鐨勬渶鏂扮増鏈暟鎹
    *
-   * @param txn 当前事务上下文
-   * @param dataKey 数据键
-   * @return 事务可见的行值，如果不存在则返回null
+   * @param txn 褰撳墠浜嬪姟涓婁笅鏂?
+   * @param dataKey 鏁版嵁閿?
+   * @return 浜嬪姟鍙鐨勮鍊硷紝濡傛灉涓嶅瓨鍦ㄥ垯杩斿洖null
    */
   RowValue getVisible(Transaction2 txn, DataKey dataKey);
 }

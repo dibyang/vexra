@@ -7,21 +7,21 @@ import net.xdob.vexra.adb.key.VersionIndexKey;
 import java.util.Objects;
 
 /**
- * 基于 RocksDB 的索引可见版本解析器。
+ * 鍩轰簬 RocksDB 鐨勭储寮曞彲瑙佺増鏈В鏋愬櫒銆?
  *
- * 语义：
- * 1. 给定一个逻辑索引项前缀 logicalPrefix，扫描该逻辑索引项的所有物理版本
- * 2. 返回当前事务可见的最新版本
- * 3. 若没有可见版本，则返回 null
+ * 璇箟锛?
+ * 1. 缁欏畾涓€涓€昏緫绱㈠紩椤瑰墠缂€ logicalPrefix锛屾壂鎻忚閫昏緫绱㈠紩椤圭殑鎵€鏈夌墿鐞嗙増鏈?
+ * 2. 杩斿洖褰撳墠浜嬪姟鍙鐨勬渶鏂扮増鏈?
+ * 3. 鑻ユ病鏈夊彲瑙佺増鏈紝鍒欒繑鍥?null
  *
- * 可见性规则：
- * - 已提交版本可见
- * - 当前事务自己写入的未提交版本可见
- * - 其他事务未提交版本不可见，继续向后扫描
+ * 鍙鎬ц鍒欙細
+ * - 宸叉彁浜ょ増鏈彲瑙?
+ * - 褰撳墠浜嬪姟鑷繁鍐欏叆鐨勬湭鎻愪氦鐗堟湰鍙
+ * - 鍏朵粬浜嬪姟鏈彁浜ょ増鏈笉鍙锛岀户缁悜鍚庢壂鎻?
  *
- * 前提：
- * - 同一逻辑索引项的所有物理版本 key 都以 logicalPrefix 为前缀
- * - 版本排列顺序保证 seek(logicalPrefix) 后先遇到的是“更新的版本”
+ * 鍓嶆彁锛?
+ * - 鍚屼竴閫昏緫绱㈠紩椤圭殑鎵€鏈夌墿鐞嗙増鏈?key 閮戒互 logicalPrefix 涓哄墠缂€
+ * - 鐗堟湰鎺掑垪椤哄簭淇濊瘉 seek(logicalPrefix) 鍚庡厛閬囧埌鐨勬槸鈥滄洿鏂扮殑鐗堟湰鈥?
  */
 public final class DefaultVisibleIndexResolver implements VisibleIndexResolver {
 

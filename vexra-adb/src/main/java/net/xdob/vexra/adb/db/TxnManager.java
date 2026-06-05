@@ -3,12 +3,12 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.*;
 import net.xdob.vexra.adb.key.*;
 import net.xdob.vexra.adb.util.Utils;
-import org.adb.api.ErrorCode;
-import org.adb.message.DbException;
-import org.adb.value.Value;
-import org.adb.value.ValueBigint;
-import org.adb.value.ValueInteger;
-import org.adb.value.ValueNull;
+import org.h2.api.ErrorCode;
+import org.h2.message.DbException;
+import org.h2.value.Value;
+import org.h2.value.ValueBigint;
+import org.h2.value.ValueInteger;
+import org.h2.value.ValueNull;
 
 import java.sql.SQLException;
 import java.util.*;
@@ -51,7 +51,7 @@ public class TxnManager {
     return txn;
   }
 
-  // -------------------- 写/删除操作 --------------------
+  // -------------------- 鍐?鍒犻櫎鎿嶄綔 --------------------
   public void put(Transaction2 txn, DataKey key, RowValue value) throws SQLException {
     store.writeBatch(s -> {
       txn.put(s, key, value);
@@ -98,7 +98,7 @@ public class TxnManager {
           if (val.deleted) {
             return null;
           }
-          val.commitTs = versionKey.getCommitTs();  // 关键补上
+          val.commitTs = versionKey.getCommitTs();  // 鍏抽敭琛ヤ笂
           return val;
         }
 
@@ -166,7 +166,7 @@ public class TxnManager {
 
   public void addIndexBatch(Transaction2 txn, IndexPrefix indexPrefix, Collection<IndexKey> indexKeys) throws SQLException {
     store.writeBatch(batch -> {
-      //todo 移除老的索引
+      //todo 绉婚櫎鑰佺殑绱㈠紩
 //      byte[] indexPrefixBytes = indexPrefix.toBytes();
 //      byte[] prefixEnd = KeyCodec.prefixEnd(indexPrefixBytes);
 //      batch.deleteRange(indexPrefixBytes, prefixEnd);
@@ -205,13 +205,13 @@ public class TxnManager {
   }
 
   public RowValue getVisible(Transaction2 txn, DataKey rowKey) throws SQLException {
-    // 1. 先看当前事务本地 writeSet
+    // 1. 鍏堢湅褰撳墠浜嬪姟鏈湴 writeSet
     RowValue local = txn.getLocalWrite(rowKey);
     if (local != null) {
       return local;
     }
 
-    // 2. 读 committed 或 Intent
+    // 2. 璇?committed 鎴?Intent
     RowValue visible = this.getVisibleCommitted(txn, rowKey);
 
     long version = visible == null ? 0L : visible.commitTs;
@@ -221,7 +221,7 @@ public class TxnManager {
 
 
 
-  // -------------------- 读操作 --------------------
+  // -------------------- 璇绘搷浣?--------------------
   public RowValue first(Transaction2 txn, PrefixKey prefixKey) throws SQLException {
     VersionResolver resolver = new DefaultVersionResolver(store);
     return resolver.first(txn, prefixKey);
@@ -252,23 +252,23 @@ public class TxnManager {
       long currentVersion = latest == null ? 0L : latest.commitTs;
 
 
-      // 如果版本没变 → OK
+      // 濡傛灉鐗堟湰娌″彉 鈫?OK
       if (currentVersion == readVersion) {
         continue;
       }
 
-      // 如果变了，要判断是不是“自己写的”
+      // 濡傛灉鍙樹簡锛岃鍒ゆ柇鏄笉鏄€滆嚜宸卞啓鐨勨€?
       if (txn.hasWritten(key)) {
         continue;
       }
 
-      // 否则才是冲突
+      // 鍚﹀垯鎵嶆槸鍐茬獊
       throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, key.toString());
     }
   }
 
 
-  // -------------------- 提交事务 --------------------
+  // -------------------- 鎻愪氦浜嬪姟 --------------------
   public void commit(Transaction2 txn) throws SQLException {
     final long commitTs;
     final LinkedHashMap<RowCountDeltaKey, Long> rowCountDeltas;
@@ -331,7 +331,7 @@ public class TxnManager {
     } catch (CompletionException e) {
       Throwable cause = unwrapCompletionException(e);
 
-      // commit 失败后恢复状态，避免事务卡死在 COMMITTING
+      // commit 澶辫触鍚庢仮澶嶇姸鎬侊紝閬垮厤浜嬪姟鍗℃鍦?COMMITTING
       txn.setState(TxnState.PENDING);
 
       if (cause instanceof SQLException) {
@@ -353,7 +353,7 @@ public class TxnManager {
   }
 
 
-  // -------------------- 回滚事务 --------------------
+  // -------------------- 鍥炴粴浜嬪姟 --------------------
   public void rollback(Transaction2 txn, long savepointId) throws SQLException {
     Savepoint2 sp = txn.getSavepoint(String.valueOf(savepointId));
     if(sp!=null){

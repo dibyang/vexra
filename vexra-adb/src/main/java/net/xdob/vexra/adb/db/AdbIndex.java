@@ -1,12 +1,12 @@
 package net.xdob.vexra.adb.db;
 
 
-import org.adb.engine.SessionLocal;
-import org.adb.index.Index;
-import org.adb.index.IndexType;
-import org.adb.result.Row;
-import org.adb.table.IndexColumn;
-import org.adb.table.Table;
+import org.h2.engine.SessionLocal;
+import org.h2.index.Index;
+import org.h2.index.IndexType;
+import org.h2.result.Row;
+import org.h2.table.IndexColumn;
+import org.h2.table.Table;
 
 import java.util.List;
 

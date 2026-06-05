@@ -28,7 +28,7 @@ public class AdbWriteBatch {
   }
 
   // =========================
-  // 扩展能力
+  // 鎵╁睍鑳藉姏
   // =========================
 
   public void put(byte[] key, byte[] value) {
@@ -75,7 +75,7 @@ public class AdbWriteBatch {
   }
   
   // =========================
-  // 批量写入
+  // 鎵归噺鍐欏叆
   // =========================
 
   public void writeTo(DelegateWriteBatch batch) throws SQLException {

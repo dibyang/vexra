@@ -6,13 +6,13 @@ public class KeyCodec {
 
 
   /**
-   * 符号位翻转
+   * 绗﹀彿浣嶇炕杞?
    */
   static long flipSign(long v) {
     return v ^ Long.MIN_VALUE;
   }
   /**
-   * 符号位翻转
+   * 绗﹀彿浣嶇炕杞?
    */
   static int flipSign(int v) {
     return v ^ Integer.MIN_VALUE;
@@ -24,17 +24,17 @@ public class KeyCodec {
 
     byte[] data = Arrays.copyOf(prefix, prefix.length);
 
-    // 从末尾往前找第一个不是 0xff 的字节
+    // 浠庢湯灏惧線鍓嶆壘绗竴涓笉鏄?0xff 鐨勫瓧鑺?
     for (int i = data.length - 1; i >= 0; i--) {
       int v = data[i] & 0xFF;
       if (v != 0xFF) {
         data[i] = (byte) (v + 1);
-        // 保留整个数组长度，不截断
+        // 淇濈暀鏁翠釜鏁扮粍闀垮害锛屼笉鎴柇
         return data;
       }
     }
 
-    // 全是 0xff，没有上界，返回 null
+    // 鍏ㄦ槸 0xff锛屾病鏈変笂鐣岋紝杩斿洖 null
     return null;
   }
 
