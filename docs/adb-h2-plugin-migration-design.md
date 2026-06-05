@@ -371,3 +371,11 @@ sequenceDiagram
 - 将桥接关闭逻辑替换为 h2db 官方 `DatabaseLifecycleProvider`，移除 `DATABASE_EVENT_LISTENER` 的依赖写法。
 - 增补跨版本升级风险清单与回滚演练说明（含 `.trace.db/.h2.sql` 的清理边界）。
 - 把上游能力缺口提报整理成可直接提交的 issue。
+
+## DatabaseLifecycleProvider 已支持后的更新
+
+- h2db 已支持正式的 `DatabaseLifecycleProvider` SPI。
+- `vexra-adb` 已新增 `AdbDatabaseLifecycleProvider`，通过 `AdbH2Plugin` 注册数据库生命周期 provider。
+- `AdbJdbcUrlPrefixProvider` 不再向映射后的 `jdbc:h2:*` URL 追加 `DATABASE_EVENT_LISTENER`。
+- 旧的 `AdbDatabaseEventListener` 桥接类已删除，数据库关闭前释放 `DbStoreEngine` store 的逻辑改由 `AdbDatabaseLifecycleProvider.beforeClose(...)` 承担。
+- 后续风险从“h2db 缺少生命周期 SPI”调整为“需要固定 h2db 小版本并保留 close/reopen 回归覆盖”。

@@ -25,8 +25,6 @@ public final class AdbJdbcUrlPrefixProvider implements JdbcUrlPrefixProvider {
 
     private static final String DEFAULT_TABLE_ENGINE_SETTING = "DEFAULT_TABLE_ENGINE";
 
-    private static final String DATABASE_EVENT_LISTENER_SETTING = "DATABASE_EVENT_LISTENER";
-
     /**
      * 返回 H2 插件注册表中的 provider 类型。
      *
@@ -94,9 +92,6 @@ public final class AdbJdbcUrlPrefixProvider implements JdbcUrlPrefixProvider {
         String h2Url = H2_URL_PREFIX + name;
         if (!containsSetting(h2Url, DEFAULT_TABLE_ENGINE_SETTING)) {
             h2Url = h2Url + ";" + DEFAULT_TABLE_ENGINE_SETTING + "=" + AdbTableProvider.ID;
-        }
-        if (!containsSetting(h2Url, DATABASE_EVENT_LISTENER_SETTING)) {
-            h2Url = h2Url + ";" + DATABASE_EVENT_LISTENER_SETTING + "='" + AdbDatabaseEventListener.class.getName() + "'";
         }
         AdbUrlStoreTypeRegistry.register(h2Url, storeType);
         return h2Url;

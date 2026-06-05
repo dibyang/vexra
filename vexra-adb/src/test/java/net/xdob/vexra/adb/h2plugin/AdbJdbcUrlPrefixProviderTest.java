@@ -9,33 +9,28 @@ class AdbJdbcUrlPrefixProviderTest {
 
     private final AdbJdbcUrlPrefixProvider provider = new AdbJdbcUrlPrefixProvider();
 
-    private static final String ADB_DATABASE_EVENT_LISTENER =
-            ";DATABASE_EVENT_LISTENER='net.xdob.vexra.adb.h2plugin.AdbDatabaseEventListener'";
-
     @Test
     void mapsLdbUrlToH2UrlWithDefaultTableEngine() {
         assertTrue(provider.acceptsURL("jdbc:adb:ldb:/tmp/adb"));
 
-        assertEquals("jdbc:h2:/tmp/adb;DEFAULT_TABLE_ENGINE=adb_table" + ADB_DATABASE_EVENT_LISTENER,
-                provider.toH2Url("jdbc:adb:ldb:/tmp/adb"));
+        assertEquals("jdbc:h2:/tmp/adb;DEFAULT_TABLE_ENGINE=adb_table", provider.toH2Url("jdbc:adb:ldb:/tmp/adb"));
     }
 
     @Test
     void mapsRocksDbUrlToH2UrlWithDefaultTableEngine() {
-        assertEquals("jdbc:h2:/tmp/adb;DEFAULT_TABLE_ENGINE=adb_table" + ADB_DATABASE_EVENT_LISTENER,
+        assertEquals("jdbc:h2:/tmp/adb;DEFAULT_TABLE_ENGINE=adb_table",
                 provider.toH2Url("jdbc:adb:rocksdb:/tmp/adb"));
     }
 
     @Test
     void keepsExplicitDefaultTableEngine() {
-        assertEquals("jdbc:h2:mem:test;DEFAULT_TABLE_ENGINE=custom" + ADB_DATABASE_EVENT_LISTENER,
+        assertEquals("jdbc:h2:mem:test;DEFAULT_TABLE_ENGINE=custom",
                 provider.toH2Url("jdbc:adb:mem:test;DEFAULT_TABLE_ENGINE=custom"));
     }
 
     @Test
     void mapsPlainAdbUrlToH2Url() {
-        assertEquals("jdbc:h2:mem:test;DEFAULT_TABLE_ENGINE=adb_table" + ADB_DATABASE_EVENT_LISTENER,
-                provider.toH2Url("jdbc:adb:mem:test"));
+        assertEquals("jdbc:h2:mem:test;DEFAULT_TABLE_ENGINE=adb_table", provider.toH2Url("jdbc:adb:mem:test"));
     }
 
     @Test

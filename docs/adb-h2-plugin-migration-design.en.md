@@ -296,8 +296,8 @@ These do not block the current prototype, but they affect the path from "usable 
 
 1. ADB-H2-01 through ADB-H2-10 are complete. `vexra-adb` now uses the h2db 2.3.0 dependency and plugin providers as the SQL / JDBC / Server main path.
 2. `jdbc:adb:*` remains as a compatibility URL prefix, but it is no longer handled by the old `org.adb.Driver`.
-3. ADB-H2-08 uses h2db `TransactionEventProvider` for commit / rollback. ADB-H2-10 additionally bridges H2 `DATABASE_EVENT_LISTENER` to release cached `DbStoreEngine` stores on database close.
-4. If h2db later adds an official `DatabaseLifecycleProvider`, migrate the current listener bridge to that plugin SPI to reduce dependence on H2 URL settings.
+3. ADB-H2-08 uses h2db `TransactionEventProvider` for commit / rollback. ADB-H2-10 now uses h2db `DatabaseLifecycleProvider` to release cached `DbStoreEngine` stores on database close.
+4. The previous `DATABASE_EVENT_LISTENER` bridge has been removed from the ADB URL prefix mapping.
 
 ### Phase Acceptance Gates
 
@@ -324,7 +324,7 @@ These do not block the current prototype, but they affect the path from "usable 
 | Heavy dependency on H2 internals | P0 | ADB may still break on H2 upgrades even without copying source | Pin H2 version and reduce coupling first |
 | JDBC URL and driver compatibility changes | P1 | Old callers may still explicitly load `org.adb.Driver` | Keep `jdbc:adb:*` through the h2db URL provider; callers should load `org.h2.Driver` or rely on DriverManager / ServiceLoader |
 | Loss of DBServer / console behavior | P1 | The old `org.adb.tools.Server` has been removed | `DBServer` now uses the native H2 Server; console/tool behavior should be validated separately through h2db native tools |
-| Incomplete database lifecycle SPI | P1 | h2db plugin SPI does not yet expose an official database close provider | The current implementation bridges H2 `DATABASE_EVENT_LISTENER` to release ADB stores; request `DatabaseLifecycleProvider` support from h2db later |
+| Database lifecycle SPI upgrade risk | P1 | ADB now depends on h2db `DatabaseLifecycleProvider` behavior for store cleanup | Pin h2db minor version and keep close/reopen regression tests around store release |
 | Accidental removal of ADB-specific transaction logic | P0 | Classes such as `TxnManager` and `RowCodec` are ADB core, not generic H2 code | Establish a keep/remove whitelist before cleanup |
 
 ## Conclusion
@@ -334,29 +334,28 @@ The conclusion has two layers:
 1. From the target architecture perspective, `vexra-adb` now uses the h2db dependency and plugin mechanism for the SQL parser, JDBC, Server, transaction-event, and table-provider main paths. It no longer needs to carry a full H2 fork inside the repository.
 2. From the implementation perspective, ADB-owned table, index, lock, transaction-visibility, and low-level store logic remain Vexra-specific capabilities and should stay under the `net.xdob.vexra.adb.*` namespace.
 
-Therefore the ADB-H2-01 through ADB-H2-10 migration baseline is complete: detach ADB from the old fork type system, run it on h2db, and then remove the forked code. Future work should reduce coupling to h2db internal table/index types and push h2db toward an official database lifecycle plugin SPI.
+Therefore the ADB-H2-01 through ADB-H2-10 migration baseline is complete: detach ADB from the old fork type system, run it on h2db, and then remove the forked code. Future work should reduce coupling to h2db internal table/index types and keep regression coverage around the official database lifecycle plugin SPI.
 
 ## Follow-Up Closeout
 
 ### Completed and confirmed
 - ADB-H2-01 through ADB-H2-10 migration checkpoints are closed in-code and reflected in test coverage and docs.
 - `jdbc:adb:*` remains a compatibility entry point by way of `JdbcUrlPrefixProvider`; callers should rely on `org.h2.Driver` and plugin auto-registration.
-- Database close lifecycle is currently bridged via `DATABASE_EVENT_LISTENER` with `AdbDatabaseEventListener`, and that path is documented for later replacement.
+- Database close lifecycle now uses `AdbDatabaseLifecycleProvider`; the old `DATABASE_EVENT_LISTENER` bridge has been removed.
 
 ### Still missing before long-term stability
 - Add full regression and publish-ready validation:
   - restart/reopen matrix for all supported store types
   - rollback + checkpoint + restore scenario coverage with long-running locks
   - CLI/console/tooling smoke checks after migration to native h2db Server
-- Remove one remaining gap: official `DatabaseLifecycleProvider` support upstream in h2db, then replace the current listener bridge.
+- Keep lifecycle close/reopen regression coverage because ADB now relies on the official h2db lifecycle SPI.
 - Complete an API-level migration checklist for remaining internal table/index/lock dependency touch points before the next major version of h2db upgrade.
 
 ### Upstream request draft
-Issue title: `Provide official DatabaseLifecycleProvider SPI for plugin-managed DB close`
+Issue title: `DatabaseLifecycleProvider SPI support is available`
 Key request details:
-- Add plugin SPI invoked on physical DB close to replace URL-level `DATABASE_EVENT_LISTENER` shims.
-- Define deterministic close ordering contract and listener registration flow for non-default engines.
-- Provide failure reporting for close listeners and a migration path for existing listener-based integrations.
+- ADB has migrated from the URL-level `DATABASE_EVENT_LISTENER` shim to the official provider.
+- Remaining follow-up is regression coverage and documenting provider behavior in release notes.
 
 Tracking doc for follow-up tasks:
 - `docs/h2db-plugin-upstream-request.md`
