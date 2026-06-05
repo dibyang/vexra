@@ -286,7 +286,7 @@ These do not block the current prototype, but they affect the path from "usable 
 | ADB-H2-03 | Done | Add the `jdbc:adb:*` URL prefix compatibility provider | `AdbJdbcUrlPrefixProvider` | `org.h2.Driver.acceptsURL("jdbc:adb:...")` and URL mapping tests pass | Remove the URL provider and require callers to use `jdbc:h2:*` |
 | ADB-H2-04 | Done | Add the ADB table provider prototype | `AdbTableProvider` | Provider is registered through ServiceLoader and exposes `adb_table` | Remove the provider prototype and stop exposing `adb_table` |
 | ADB-H2-05 | Done | Move `AdbTableEngine` to `TableEngineProvider` | `AdbTableProvider.createTable()` creates a real `AdbTable`; old `org.adb.AdbTableEngine` remains only as a deprecated compatibility error entry | `jdbc:adb:ldb:*` maps through the h2db Driver and can execute `CREATE TABLE` | Revert the provider table creation path and restore the old `org.adb.AdbTableEngine` route |
-| ADB-H2-06 | Not Started | Rebind `AdbTable` imports from `org.adb.*` to `org.h2.*` | `AdbTable` and its construction path depend on h2db types | Minimal create table, reopen, and row count tests pass | Revert `AdbTable` imports and construction path |
+| ADB-H2-06 | Done | Rebind `AdbTable` imports from `org.adb.*` to `org.h2.*` | `AdbTable` and its construction path depend on h2db types | Minimal create table, reopen, and row count tests pass | Revert `AdbTable` imports and construction path |
 | ADB-H2-07 | Not Started | Rebind primary and secondary index implementations | `AdbPrimaryIndex`, `AdbSecondaryIndex`, and `AdbDelegateIndex` depend on h2db types | Primary lookup, range scan, secondary index query, and delete regressions pass | Revert the index implementation while keeping the old engine path |
 | ADB-H2-08 | Not Started | Contain transaction, lock, and visibility dependencies on `SessionLocal` / `Database` | Internal ADB adapter layer or explicit managed h2db API usage points | Concurrent write, read/write conflict, rollback, checkpoint, and reopen tests pass | Disable the new provider and keep the old fork path |
 | ADB-H2-09 | Not Started | Replace `DBServer` dependency on `org.adb.tools.Server` | Wrapper based on `org.h2.tools.Server`, or explicit removal of the custom wrapper | TCP start/stop, port conflict, and shutdown recovery tests pass | Keep the old `DBServer` distribution path |
@@ -295,7 +295,7 @@ These do not block the current prototype, but they affect the path from "usable 
 ### Next Execution Order
 
 1. Start with ADB-H2-05: make `AdbTableProvider.createTable()` call the real table creation path while keeping the old `org.adb.*` code in place.
-2. Continue with ADB-H2-06 and ADB-H2-07: move table and index imports, construction parameters, and exception handling to `org.h2.*`.
+2. ADB-H2-06 is complete; next, finish ADB-H2-07 by validating primary/secondary index lookup, delete, and range scan behavior.
 3. Then handle ADB-H2-08: continue containing high-risk lock and visibility dependencies; commit / rollback already prefer h2db `TransactionEventProvider`.
 4. Finish with ADB-H2-09 and ADB-H2-10: clean the tooling layer and remove non-differentiating H2-derived code.
 
