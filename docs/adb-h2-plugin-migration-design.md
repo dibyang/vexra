@@ -302,8 +302,8 @@ sequenceDiagram
 
 1. ADB-H2-01 到 ADB-H2-10 已完成，`vexra-adb` 当前以 h2db 2.3.0 依赖和插件 provider 作为 SQL / JDBC / Server 主路径。
 2. `jdbc:adb:*` 保留为兼容 URL 前缀，但不再由旧 `org.adb.Driver` 承接。
-3. ADB-H2-08 使用 h2db `TransactionEventProvider` 承接 commit / rollback；ADB-H2-10 额外通过 H2 `DATABASE_EVENT_LISTENER` 桥接数据库关闭事件，释放 `DbStoreEngine` 中缓存的底层 store。
-4. 后续若 h2db 增加正式 `DatabaseLifecycleProvider`，应把当前 listener 桥接迁移为插件 SPI，减少对 H2 URL setting 的依赖。
+3. ADB-H2-08 使用 h2db `TransactionEventProvider` 承接 commit / rollback；ADB-H2-10 已改用 h2db `DatabaseLifecycleProvider` 监听数据库关闭事件，释放 `DbStoreEngine` 中缓存的底层 store。
+4. 旧的 H2 `DATABASE_EVENT_LISTENER` 桥接已从 `jdbc:adb:*` URL 映射路径移除。
 
 ### 阶段验收门槛
 
@@ -330,7 +330,7 @@ sequenceDiagram
 | ADB 代码大量依赖 H2 内部类 | P0 | 即使不拷贝源码，也可能被 H2 升级破坏 | 固定 H2 版本，先完成边界收敛再升级 |
 | JDBC URL 和 Driver 兼容性变化 | P1 | 旧调用方可能仍显式加载 `org.adb.Driver` | `jdbc:adb:*` 通过 h2db URL provider 保留；调用方应改为加载 `org.h2.Driver` 或依赖 DriverManager / ServiceLoader |
 | DBServer 与控制台能力丢失 | P1 | 旧 `org.adb.tools.Server` 已移除 | `DBServer` 改用 H2 原生 Server；控制台/工具能力以后按 h2db 原生能力单独验收 |
-| 数据库生命周期 SPI 不完整 | P1 | h2db 插件 SPI 暂无正式 database close provider | 当前通过 H2 `DATABASE_EVENT_LISTENER` 桥接释放 ADB store；后续向 h2db 提 `DatabaseLifecycleProvider` 诉求 |
+| 数据库生命周期 SPI 升级风险 | P1 | ADB 现在依赖 h2db `DatabaseLifecycleProvider` 行为释放 ADB store | 固定 h2db 小版本，并保留 close/reopen 回归测试覆盖 |
 | 误把 ADB 事务逻辑当作 H2 通用能力删除 | P0 | `TxnManager`、`RowCodec` 等是 ADB 核心 | 在 Phase 2 先完成保留/删除白名单 |
 
 ## 分阶段实施计划
@@ -364,11 +364,11 @@ sequenceDiagram
 ### 已完成（已合入）
 - ADB-H2-01 到 ADB-H2-10 已在代码与文档层面完成。
 - `jdbc:adb:*` 已保持兼容入口，底层改由 h2db Driver + Plugin + `JdbcUrlPrefixProvider` 处理。
-- 数据库关闭生命周期目前通过 `DATABASE_EVENT_LISTENER` + `AdbDatabaseEventListener` 桥接并有文档说明。
+- 数据库关闭生命周期已改用 `AdbDatabaseLifecycleProvider`，旧的 `DATABASE_EVENT_LISTENER` 桥接已删除。
 
 ### 仍需收口
 - 增补全量回归：重启/恢复场景、并发提交回滚、快照恢复、服务器工具链路自测。
-- 将桥接关闭逻辑替换为 h2db 官方 `DatabaseLifecycleProvider`，移除 `DATABASE_EVENT_LISTENER` 的依赖写法。
+- 保留数据库 close/reopen 回归覆盖，确认官方 `DatabaseLifecycleProvider` 关闭回调持续释放 ADB store。
 - 增补跨版本升级风险清单与回滚演练说明（含 `.trace.db/.h2.sql` 的清理边界）。
 - 把上游能力缺口提报整理成可直接提交的 issue。
 
