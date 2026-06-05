@@ -295,13 +295,13 @@ sequenceDiagram
 | ADB-H2-06 | 已完成 | 将 `AdbTable` 从 `org.adb.*` import 迁移到 `org.h2.*` | `AdbTable` 及构造路径依赖 h2db 类型 | 最小建表、重启 reopen、行计数测试通过 | 回退 `AdbTable` import 与构造路径 |
 | ADB-H2-07 | 已完成 | 迁移主键和二级索引实现 | `AdbPrimaryIndex`、`AdbSecondaryIndex`、`AdbDelegateIndex` 依赖 h2db 类型 | 主键查找、范围扫描、二级索引查询、删除回归通过 | 单独回退索引实现，保留旧引擎路径 |
 | ADB-H2-08 | 已完成 | 收敛事务、锁和可见性对 `SessionLocal` / `Database` 的依赖 | `TransactionEventProvider` 提交/回滚 ADB 事务；主键写入先拿 ADB 行锁 | 并发写、回滚、commit、checkpoint/reopen 测试通过 | 禁用新 provider，保留旧分叉路径 |
-| ADB-H2-09 | 待开始 | 替换 `DBServer` 对 `org.adb.tools.Server` 的依赖 | 基于 `org.h2.tools.Server` 的封装或删除自定义封装 | TCP 启停、端口冲突、关闭恢复测试通过 | 保留旧 `DBServer` 发行路径 |
+| ADB-H2-09 | 已完成 | 替换 `DBServer` 对 `org.adb.tools.Server` 的依赖 | `DBServer` 基于 `org.h2.tools.Server` 启停 TCP 服务 | TCP 启停测试通过；启动失败会抛出明确异常 | 保留旧 `DBServer` 发行路径 |
 | ADB-H2-10 | 待开始 | 删除非 ADB 差异化 `org.adb.*` 目录 | parser、JDBC、server、tools、mvstore 等删除清单 | 全量编译、关键集成测试和开源合规文档通过 | 分阶段 revert 删除提交 |
 
 ### 下一阶段执行顺序
 
 1. 先做 ADB-H2-05，把 `AdbTableProvider.createTable()` 从原型错误改成真实建表入口，但仍保留旧 `org.adb.*` 代码不删。
-2. ADB-H2-06、ADB-H2-07 和 ADB-H2-08 已完成；下一步做 ADB-H2-09，替换 `DBServer` 对旧 `org.adb.tools.Server` 的依赖。
+2. ADB-H2-06、ADB-H2-07、ADB-H2-08 和 ADB-H2-09 已完成；下一步做 ADB-H2-10，清理非 ADB 差异化 `org.adb.*` 代码。
 3. ADB-H2-08 已使用 h2db `TransactionEventProvider` 接管 commit / rollback，并补充主键写锁冲突测试。
 4. 最后做 ADB-H2-09 和 ADB-H2-10，清理工具层和非差异化 H2 衍生代码。
 

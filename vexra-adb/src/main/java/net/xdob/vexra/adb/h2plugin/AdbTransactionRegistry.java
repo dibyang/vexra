@@ -79,7 +79,11 @@ public final class AdbTransactionRegistry {
         }
 
         static TransactionKey of(Database database, int sessionId) {
-            return new TransactionKey(database.getDatabasePath(), sessionId);
+            String databasePath = database.getDatabasePath();
+            if (databasePath == null) {
+                databasePath = database.getName();
+            }
+            return new TransactionKey(databasePath == null ? "" : databasePath, sessionId);
         }
 
         @Override

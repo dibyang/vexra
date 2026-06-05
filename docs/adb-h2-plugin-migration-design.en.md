@@ -289,13 +289,13 @@ These do not block the current prototype, but they affect the path from "usable 
 | ADB-H2-06 | Done | Rebind `AdbTable` imports from `org.adb.*` to `org.h2.*` | `AdbTable` and its construction path depend on h2db types | Minimal create table, reopen, and row count tests pass | Revert `AdbTable` imports and construction path |
 | ADB-H2-07 | Done | Rebind primary and secondary index implementations | `AdbPrimaryIndex`, `AdbSecondaryIndex`, and `AdbDelegateIndex` depend on h2db types | Primary lookup, range scan, secondary index query, and delete regressions pass | Revert the index implementation while keeping the old engine path |
 | ADB-H2-08 | Done | Contain transaction, lock, and visibility dependencies on `SessionLocal` / `Database` | `TransactionEventProvider` commits / rolls back ADB transactions; primary-key writes acquire ADB row locks first | Concurrent write, rollback, commit, checkpoint, and reopen tests pass | Disable the new provider and keep the old fork path |
-| ADB-H2-09 | Not Started | Replace `DBServer` dependency on `org.adb.tools.Server` | Wrapper based on `org.h2.tools.Server`, or explicit removal of the custom wrapper | TCP start/stop, port conflict, and shutdown recovery tests pass | Keep the old `DBServer` distribution path |
+| ADB-H2-09 | Done | Replace `DBServer` dependency on `org.adb.tools.Server` | `DBServer` starts and stops TCP service through `org.h2.tools.Server` | TCP start/stop test passes; start failures throw explicit exceptions | Keep the old `DBServer` distribution path |
 | ADB-H2-10 | Not Started | Remove non-ADB-differentiating `org.adb.*` directories | Removal list for parser, JDBC, server, tools, mvstore, and related code | Full compile, key integration tests, and open-source compliance docs pass | Revert deletion commits phase by phase |
 
 ### Next Execution Order
 
 1. Start with ADB-H2-05: make `AdbTableProvider.createTable()` call the real table creation path while keeping the old `org.adb.*` code in place.
-2. ADB-H2-06, ADB-H2-07, and ADB-H2-08 are complete; next, handle ADB-H2-09 by replacing `DBServer` dependency on the old `org.adb.tools.Server`.
+2. ADB-H2-06, ADB-H2-07, ADB-H2-08, and ADB-H2-09 are complete; next, handle ADB-H2-10 by removing non-ADB-differentiating `org.adb.*` code.
 3. ADB-H2-08 now uses h2db `TransactionEventProvider` for commit / rollback and includes primary-key write conflict coverage.
 4. Finish with ADB-H2-09 and ADB-H2-10: clean the tooling layer and remove non-differentiating H2-derived code.
 
