@@ -191,7 +191,8 @@ sequenceDiagram
 | HA-01 | 已完成 | `RaftConfigKeys.Ha`、`HaConfig`、`HaMode` 和 `HaNodeRole` 提供 HA 模式解析和拓扑校验。纯 2 数据节点自动写入会被拒绝，除非显式启用 `shared-storage` 模式且配置 `raft.ha.shared-storage.enabled=true`。 |
 | HA-02 | 已完成 | `ReplicaRole`、`VirtualNodeReplica` 和 `VirtualNodeMetadata` 描述 data voter、witness voter、learner、leader、epoch、term、commit index 和可选 lease 元数据。 |
 | HA-03 | 已完成 | `WitnessState`、`WitnessStateStore`、`FileWitnessStateStore` 和 `WitnessStateManager` 提供 term/vote/epoch/commitIndex/lease 状态、幂等投票校验、epoch/commit 单调更新和本地持久化。 |
-| HA-04 - HA-06 | 规划中 | 仍需实现多数派写入 gate、故障切换/恢复和观测能力。 |
+| HA-04 | 已完成 | `QuorumWriteGate` 和 `WriteGateDecision` 根据虚节点元数据、当前 leader 和已确认投票副本判定可写多数派。缺少多数派或 leader 与元数据不一致时拒绝写入。 |
+| HA-05 - HA-06 | 规划中 | 仍需实现故障切换/恢复和观测能力。 |
 
 ## 测试方案
 

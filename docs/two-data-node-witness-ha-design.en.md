@@ -191,7 +191,8 @@ Only the side that can reach witness may obtain quorum. The data node that canno
 | HA-01 | Done | `RaftConfigKeys.Ha`, `HaConfig`, `HaMode`, and `HaNodeRole` provide HA mode parsing and topology validation. Pure two-data-node automatic writes are rejected unless `shared-storage` mode is explicitly enabled with `raft.ha.shared-storage.enabled=true`. |
 | HA-02 | Done | `ReplicaRole`, `VirtualNodeReplica`, and `VirtualNodeMetadata` describe data voter, witness voter, learner, leader, epoch, term, commit index, and optional lease metadata. |
 | HA-03 | Done | `WitnessState`, `WitnessStateStore`, `FileWitnessStateStore`, and `WitnessStateManager` provide term/vote/epoch/commitIndex/lease state, idempotent vote checks, monotonic epoch/commit updates, and local durable storage. |
-| HA-04 - HA-06 | Planned | The remaining phases still need quorum write gating, failover/recovery, and observability implementation. |
+| HA-04 | Done | `QuorumWriteGate` and `WriteGateDecision` evaluate writable quorum from virtual-node metadata, current leader, and acknowledged voter replicas. Writes are denied when quorum is missing or the leader does not match metadata. |
+| HA-05 - HA-06 | Planned | The remaining phases still need failover/recovery and observability implementation. |
 
 ## Test Plan
 
