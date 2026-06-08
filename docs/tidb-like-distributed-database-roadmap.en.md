@@ -135,6 +135,15 @@ See `docs/two-data-node-witness-ha-design.md` for the dedicated design.
 | ADB-Cluster-06 | Online DDL | schema version, index backfill | add index does not block reads/writes and can recover |
 | ADB-Cluster-07 | Operations and release | metrics, admin, backup/restore, upgrade flow | rolling upgrade and disaster recovery drills pass |
 
+## Milestone Status
+
+| Phase | Status | Deliverables |
+| --- | --- | --- |
+| ADB-Cluster-01 | Done | `KeyRange`, `RegionMetadata`, and `RegionRouter` provide byte-order range metadata, point/range routing, overlap validation, and system-table rows. |
+| ADB-Cluster-02 | Planned | Region Raft group binding, snapshot install, and membership change are still pending. |
+| ADB-Cluster-03 | Partially done | The dedicated witness HA public model is complete through HA-01 to HA-06; runtime RPC integration and fencing hooks still need to be bound to region storage. |
+| ADB-Cluster-04 - ADB-Cluster-07 | Planned | Distributed transactions, distributed SQL execution, Online DDL, and operations/release remain pending. |
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
