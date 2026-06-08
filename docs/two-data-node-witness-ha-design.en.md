@@ -43,12 +43,12 @@ The recommended design is 2 data nodes + 1 lightweight witness. The witness does
 
 | Config | Example | Description |
 | --- | --- | --- |
-| `ha.mode` | `single` / `witness` / `shared-storage` | HA mode |
-| `ha.node.role` | `data` / `witness` | current node role |
-| `ha.replica.id` | `node-a` | replica identifier |
-| `ha.witness.address` | `host:port` | witness endpoint |
-| `ha.sharedStorage.enabled` | `false` | explicit shared-storage switch |
-| `ha.quorum.writeRequired` | `true` | must be true in witness mode |
+| `raft.ha.mode` | `single` / `witness` / `shared-storage` | HA mode |
+| `raft.ha.node.role` | `data` / `witness` | current node role |
+| `raft.ha.replica.id` | `node-a` | replica identifier |
+| `raft.ha.witness.address` | `host:port` | witness endpoint |
+| `raft.ha.shared-storage.enabled` | `false` | explicit shared-storage switch |
+| `raft.ha.quorum.write-required` | `true` | must be true in witness mode |
 
 ### Replica Roles
 
@@ -161,7 +161,7 @@ Only the side that can reach witness may obtain quorum. The data node that canno
 
 ## Rollback Strategy
 
-- Witness mode is enabled explicitly by `ha.mode=witness`; before maturity, `single` can remain default.
+- Witness mode is enabled explicitly by `raft.ha.mode=witness`; before maturity, `single` can remain default.
 - Rollback to `single` requires confirming only one data node is writable.
 - Rollback to `shared-storage` requires explicit shared storage and fencing.
 - If witness has compatibility problems, never auto-downgrade to pure 2-node automatic writes.
@@ -183,6 +183,13 @@ Only the side that can reach witness may obtain quorum. The data node that canno
 | HA-04 | add quorum write gate | writes fail without quorum |
 | HA-05 | implement failover and recovery | either data node can fail and data+witness can write |
 | HA-06 | add observability | system tables/metrics show quorum, leader, epoch |
+
+### Rollout Status
+
+| Phase | Status | Deliverables |
+| --- | --- | --- |
+| HA-01 | Done | `RaftConfigKeys.Ha`, `HaConfig`, `HaMode`, and `HaNodeRole` provide HA mode parsing and topology validation. Pure two-data-node automatic writes are rejected unless `shared-storage` mode is explicitly enabled with `raft.ha.shared-storage.enabled=true`. |
+| HA-02 - HA-06 | Planned | The remaining phases still need replica metadata, witness persistence, quorum write gating, failover/recovery, and observability implementation. |
 
 ## Test Plan
 

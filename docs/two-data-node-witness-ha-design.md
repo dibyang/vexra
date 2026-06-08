@@ -43,12 +43,12 @@
 
 | 配置项 | 示例 | 说明 |
 | --- | --- | --- |
-| `ha.mode` | `single` / `witness` / `shared-storage` | HA 模式 |
-| `ha.node.role` | `data` / `witness` | 当前节点角色 |
-| `ha.replica.id` | `node-a` | 副本节点标识 |
-| `ha.witness.address` | `host:port` | witness 访问地址 |
-| `ha.sharedStorage.enabled` | `false` | 共享存储显式开关 |
-| `ha.quorum.writeRequired` | `true` | witness 模式必须为 true |
+| `raft.ha.mode` | `single` / `witness` / `shared-storage` | HA 模式 |
+| `raft.ha.node.role` | `data` / `witness` | 当前节点角色 |
+| `raft.ha.replica.id` | `node-a` | 副本节点标识 |
+| `raft.ha.witness.address` | `host:port` | witness 访问地址 |
+| `raft.ha.shared-storage.enabled` | `false` | 共享存储显式开关 |
+| `raft.ha.quorum.write-required` | `true` | witness 模式必须为 true |
 
 ### 副本角色
 
@@ -161,7 +161,7 @@ sequenceDiagram
 
 ## 回滚策略
 
-- witness 模式通过 `ha.mode=witness` 显式启用；未成熟前默认仍可为 `single`。
+- witness 模式通过 `raft.ha.mode=witness` 显式启用；未成熟前默认仍可为 `single`。
 - 回滚到 `single` 时必须确认只有一个 data node 对外写入。
 - 回滚到 `shared-storage` 时必须显式启用共享存储和 fencing。
 - 如果 witness 出现兼容问题，禁止自动降级成纯 2 节点自动写入。
@@ -183,6 +183,13 @@ sequenceDiagram
 | HA-04 | 接入多数派写入 gate | 无多数派写入失败 |
 | HA-05 | 故障切换与恢复 | data A/B 任一宕机后剩余 data+witness 可写 |
 | HA-06 | 运维观测 | 系统表/metrics 可展示 quorum、leader、epoch |
+
+### 实施状态
+
+| 阶段 | 状态 | 交付物 |
+| --- | --- | --- |
+| HA-01 | 已完成 | `RaftConfigKeys.Ha`、`HaConfig`、`HaMode` 和 `HaNodeRole` 提供 HA 模式解析和拓扑校验。纯 2 数据节点自动写入会被拒绝，除非显式启用 `shared-storage` 模式且配置 `raft.ha.shared-storage.enabled=true`。 |
+| HA-02 - HA-06 | 规划中 | 仍需实现副本元数据、witness 持久化、多数派写入 gate、故障切换/恢复和观测能力。 |
 
 ## 测试方案
 
