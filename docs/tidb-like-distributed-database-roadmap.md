@@ -140,7 +140,7 @@ flowchart TB
 | 阶段 | 状态 | 交付物 |
 | --- | --- | --- |
 | ADB-Cluster-01 | 已完成 | `KeyRange`、`RegionMetadata` 和 `RegionRouter` 提供字节序 range 元数据、点查/范围路由、重叠校验和系统表行。 |
-| ADB-Cluster-02 | 规划中 | Region Raft group 绑定、snapshot install 和成员变更仍待实现。 |
+| ADB-Cluster-02 | 已完成 | `RegionRaftGroupFactory`、`RegionRaftGroupDescriptor`、`RegionMembershipChangePlan` 和 `RegionSnapshotInstallPlan` 将 region 元数据绑定到现有 RaftGroup、SetConfiguration、learner/listener、witness 元数据和 snapshot install 规划模型。 |
 | ADB-Cluster-03 | 部分完成 | 独立 witness HA 公共模型已完成 HA-01 到 HA-06；仍需把运行时 RPC 集成和 fencing hook 绑定到 region 存储。 |
 | ADB-Cluster-04 - ADB-Cluster-07 | 规划中 | 分布式事务、分布式 SQL 执行、Online DDL 和运维发布仍待实现。 |
 
