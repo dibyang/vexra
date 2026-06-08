@@ -141,7 +141,7 @@ See `docs/two-data-node-witness-ha-design.md` for the dedicated design.
 | --- | --- | --- |
 | ADB-Cluster-01 | Done | `KeyRange`, `RegionMetadata`, and `RegionRouter` provide byte-order range metadata, point/range routing, overlap validation, and system-table rows. |
 | ADB-Cluster-02 | Done | `RegionRaftGroupFactory`, `RegionRaftGroupDescriptor`, `RegionMembershipChangePlan`, and `RegionSnapshotInstallPlan` bind region metadata to the existing RaftGroup, SetConfiguration, learner/listener, witness metadata, and snapshot install planning model. |
-| ADB-Cluster-03 | Partially done | The dedicated witness HA public model is complete through HA-01 to HA-06; runtime RPC integration and fencing hooks still need to be bound to region storage. |
+| ADB-Cluster-03 | Done | `RegionWitnessBinding` binds region metadata to quorum write fencing, failover planning, and durable witness vote state. The dedicated witness HA model is complete through HA-01 to HA-06. |
 | ADB-Cluster-04 - ADB-Cluster-07 | Planned | Distributed transactions, distributed SQL execution, Online DDL, and operations/release remain pending. |
 
 ## Rollback Strategy
