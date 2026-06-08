@@ -192,7 +192,8 @@ sequenceDiagram
 | HA-02 | 已完成 | `ReplicaRole`、`VirtualNodeReplica` 和 `VirtualNodeMetadata` 描述 data voter、witness voter、learner、leader、epoch、term、commit index 和可选 lease 元数据。 |
 | HA-03 | 已完成 | `WitnessState`、`WitnessStateStore`、`FileWitnessStateStore` 和 `WitnessStateManager` 提供 term/vote/epoch/commitIndex/lease 状态、幂等投票校验、epoch/commit 单调更新和本地持久化。 |
 | HA-04 | 已完成 | `QuorumWriteGate` 和 `WriteGateDecision` 根据虚节点元数据、当前 leader 和已确认投票副本判定可写多数派。缺少多数派或 leader 与元数据不一致时拒绝写入。 |
-| HA-05 - HA-06 | 规划中 | 仍需实现故障切换/恢复和观测能力。 |
+| HA-05 | 已完成 | `FailoverPlanner`、`FailoverDecision` 和 `FailoverStatus` 基于可达投票副本集合规划确定性故障切换。可达 data voter 加 witness 多数派可以接管；仅 witness 或无多数派时拒绝自动接管并进入不可用或只读。 |
+| HA-06 | 规划中 | 仍需实现运维观测能力。 |
 
 ## 测试方案
 

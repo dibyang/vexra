@@ -140,6 +140,22 @@ public final class VirtualNodeMetadata {
     return dataVoters == 2 && witnesses >= 1;
   }
 
+  /**
+   * 创建更新 leader 后的新元数据。
+   *
+   * @param newLeaderId 新 leader 副本标识
+   * @param newEpoch 新 epoch，必须不小于当前 epoch
+   * @return 更新 leader 后的元数据快照
+   */
+  public VirtualNodeMetadata withLeader(String newLeaderId, long newEpoch) {
+    if (newEpoch < epoch) {
+      throw new IllegalArgumentException(
+          "epoch regression from " + epoch + " to " + newEpoch);
+    }
+    return new VirtualNodeMetadata(virtualNodeId, newEpoch, newLeaderId,
+        replicas, commitIndex, term, leaseUntilMillis);
+  }
+
   private void validateLeader() {
     Optional<VirtualNodeReplica> leader = getLeaderReplica();
     if (!leaderId.isEmpty() && !leader.isPresent()) {
