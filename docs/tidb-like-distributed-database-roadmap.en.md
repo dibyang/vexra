@@ -1,0 +1,170 @@
+# Roadmap for a TiDB-like Distributed Database
+
+## Background
+
+`vexra-adb` has completed the H2 plugin migration: SQL parsing, JDBC, Server, and tools now come from `h2db`, while ADB keeps table, index, transaction-visibility, and low-level store logic. This solves the single-node SQL integration boundary, but it is still far from a TiDB-like distributed SQL database.
+
+A TiDB-like system needs a SQL layer, distributed execution, distributed transactions, sharded storage, Raft replication, a scheduling control plane, Online DDL, backup/restore, and operational observability. Vexra already has state machine, Raft, ADB/LDB, and plugin-based SQL integration foundations, but these need to be organized into a scalable and fault-tolerant database architecture.
+
+## Goals
+
+- Summarize the remaining work from the current ADB/H2 plugin database to a TiDB-like distributed database.
+- Split the work into reviewable and testable milestones.
+- Make 2 data nodes + lightweight witness the recommended two-data-replica HA model.
+- Avoid making shared storage the default HA direction.
+
+## Non-Goals
+
+- This document does not promise full TiDB, MySQL, or PostgreSQL compatibility.
+- This document does not define a new disk format, RPC protocol, or SQL grammar.
+- This document does not require all distributed database capabilities to be implemented at once.
+- This document does not support pure 2-node strong-consistency automatic failover without a witness.
+
+## Current State
+
+| Module | Current Capability | Gap |
+| --- | --- | --- |
+| `h2db` | SQL parser, JDBC, Server, plugin SPI | Does not understand Vexra shards, Raft regions, or distributed execution |
+| `vexra-adb` | ADB table provider, indexes, transaction visibility, LDB/Rocks adapters | Still close to a single-database/single-node execution model |
+| `vexra-ldb` | Local KV store and plugin hooks | Not a distributed region store yet |
+| Vexra state machine/Raft | State-machine and consensus foundations | Needs region groups, control plane, and multi-group scheduling |
+
+## Core Constraints
+
+- Strongly consistent writes require quorum or equivalent fencing/lease protection.
+- Automatic failover with 2 data nodes and no shared storage requires a witness or external arbiter.
+- SQL execution cannot assume all data is local.
+- ADB key encoding, MVCC, checkpoint, and restore must remain backward-compatible.
+- h2db table/index internals remain managed migration APIs and require contract tests before upgrades.
+
+## Target Architecture
+
+```mermaid
+flowchart TB
+  Client["SQL/JDBC Client"] --> SQL["h2db SQL/JDBC/Server"]
+  SQL --> Planner["Vexra Distributed Planner"]
+  Planner --> Router["Range/Region Router"]
+  Router --> Exec["Distributed Executor"]
+  Exec --> RegionA["Region Raft Group A"]
+  Exec --> RegionB["Region Raft Group B"]
+  RegionA --> StoreA["ADB/LDB or Rocks Store"]
+  RegionB --> StoreB["ADB/LDB or Rocks Store"]
+  PD["Control Plane / PD-like Service"] --> Router
+  PD --> RegionA
+  PD --> RegionB
+  TSO["TSO Service"] --> Planner
+```
+
+## Remaining Work
+
+| Area | Required Capability | Notes |
+| --- | --- | --- |
+| SQL | Distributed planner, distributed explain, statistics | h2db plans need to map to Vexra region tasks |
+| Execution | scan/filter/limit/count pushdown, later agg/join/sort | Start small instead of building full MPP immediately |
+| Routing | table/index key range to region mapping | All reads and writes go through a region router |
+| Storage | region split/merge, range scan, snapshot install | Evolve from one DB store to movable regions |
+| Replication | one Raft group or equivalent group per region | Define leader, term, epoch, and commit index |
+| Transactions | TSO, MVCC, 2PC, lock resolve, GC safe point | This is the core complexity |
+| Control plane | PD-like metadata, scheduling, health, placement rules | Manage regions, nodes, leaders, TSO, and scheduling |
+| Online DDL | schema version, backfill, recovery | Support long-running DDL such as add/drop index |
+| Operations | metrics, tracing, slow query, admin commands | Required for production use |
+| Security | users, roles, privileges, TLS, audit | Can be phased by product goal |
+
+## Key Design Tasks
+
+### SQL and Execution
+
+- Define `DistributedPlan` for region tasks, pushed predicates, returned schema, and merge strategy.
+- Define `RegionScanTask` with key range, projection, filter, limit, and read timestamp.
+- Implement minimal pushdown first: primary-key point lookup, range scan, secondary-index range scan, count.
+- Add `EXPLAIN DISTRIBUTED` or equivalent diagnostics.
+- Build statistics for row count, region size, and index cardinality.
+
+### Sharding and Replication
+
+- Define region metadata: `regionId`, `startKey`, `endKey`, `epoch`, `replicas`, `leader`.
+- Support region split/merge and route epoch updates.
+- Define replica roles: data voter, witness voter, learner.
+- Support snapshot install, leader transfer, membership changes, and replica repair.
+- Start with leader reads, then evaluate read index and follower reads.
+
+### Distributed Transactions
+
+- Add a global TSO service with monotonic `startTs` and `commitTs`.
+- Define MVCC write/default/lock semantics or map existing ADB structures explicitly.
+- Implement 2PC: prewrite, commit, rollback, lock resolve.
+- Clean locks after timeout or client disconnect.
+- Define GC safe point to protect long transactions and backup.
+- Start with Snapshot Isolation unless a stronger level is explicitly required.
+
+### Control Plane
+
+- Build a PD-like service for cluster membership, region metadata, TSO, and scheduling.
+- Support node join/leave, health checks, leader scheduling, and hotspot detection.
+- Expose system tables or admin APIs for nodes, regions, locks, transactions, and plugins.
+- Make the control plane highly available, preferably on the Vexra Raft state machine.
+
+### DDL and Operations
+
+- Define DDL job states: pending, running, backfilling, public, rollback, failed.
+- Bind SQL sessions to schema versions to handle DDL/transaction concurrency.
+- Support resumable and rate-limited index backfill.
+- Define backup/restore semantics for full, incremental, point-in-time restore, and region checksums.
+
+## 2 Data Nodes + Witness Conclusion
+
+Pure 2 data nodes without shared storage cannot safely provide strong-consistency automatic failover. The recommended model is:
+
+- 2 data nodes keep full data replicas.
+- 1 lightweight witness only participates in voting, term/epoch/lease arbitration, and does not store business data.
+- Writes require quorum: `A+B`, `A+W`, or `B+W`.
+- Without quorum, writes are forbidden; the system can degrade to read-only or unavailable.
+- Shared-storage mode remains available but disabled by default as a compatibility/transition mode.
+
+See `docs/two-data-node-witness-ha-design.md` for the dedicated design.
+
+## Milestones
+
+| Phase | Name | Deliverable | Acceptance |
+| --- | --- | --- | --- |
+| ADB-Cluster-01 | Region metadata and range routing | region metadata, router, system table | A primary-key range routes to regions |
+| ADB-Cluster-02 | Region Raft storage | region group, leader, snapshot, membership change | Single-region failure recovery and snapshot install pass |
+| ADB-Cluster-03 | 2 data nodes + witness HA | witness voter, fencing, quorum writes | One data-node failure still allows data+witness writes |
+| ADB-Cluster-04 | Minimal distributed transaction loop | TSO, MVCC, 2PC, lock resolve | Cross-region commit/rollback is consistent |
+| ADB-Cluster-05 | Distributed SQL execution | region scan task, filter/count pushdown | SQL can merge results across regions |
+| ADB-Cluster-06 | Online DDL | schema version, index backfill | add index does not block reads/writes and can recover |
+| ADB-Cluster-07 | Operations and release | metrics, admin, backup/restore, upgrade flow | rolling upgrade and disaster recovery drills pass |
+
+## Rollback Strategy
+
+- Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
+- Do not change old data format before region metadata is versioned and migration tooling exists.
+- If witness mode fails, roll back to `single` or explicit `shared-storage` mode.
+- Gate distributed transactions with a feature flag before general rollout.
+
+## Test Plan
+
+- Unit tests: key encoding, region routing, TSO, 2PC state machine, DDL job state machine.
+- Integration tests: single region, multi region, cross-node scan, leader transfer, snapshot install.
+- Concurrency tests: transaction conflicts, lock cleanup, region split with concurrent reads/writes.
+- Fault injection: node crash, network partition, witness loss, disk error, duplicate commit.
+- Compatibility tests: old `jdbc:adb:*`, old data directory, h2db minor upgrades.
+- Long-running tests: split/merge, GC, checkpoint, backup/restore loops.
+
+## Risks
+
+| Risk | Severity | Description | Mitigation |
+| --- | --- | --- | --- |
+| Distributed transaction complexity | P0 | 2PC, lock resolve, or GC bugs can break consistency | Start with minimal SI and add fault injection/model tests |
+| Pure 2-node misconfiguration | P0 | Automatic failover without witness can split brain | Forbid automatic writes in this configuration |
+| h2db planner mismatch | P1 | Local plan cannot represent region pushdown | Add a Vexra `DistributedPlan` layer |
+| Region metadata corruption | P0 | Wrong routing can read/write wrong shard | Version, validate, replicate, and provide recovery tooling |
+| Operational tooling lag | P1 | Production use is unsafe without observability and recovery | Build metrics/admin/check tools in each phase |
+
+## Open Questions
+
+- Should the control plane be a standalone process or reuse existing Vexra server roles?
+- Should TSO live in the control plane or in a state machine plugin?
+- Should the first transaction phase support only single-table transactions or cross-table transactions?
+- The h2db plan to distributed plan boundary needs prototype validation.
+- Does `vexra-ldb` need new plugin contracts for region snapshot, range split, and learner flows?
