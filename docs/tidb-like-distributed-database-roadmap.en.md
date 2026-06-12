@@ -167,6 +167,26 @@ After the write gate, the read path needs a pluggable region-routing entry point
 - This phase does not change scan cursors, the store API, or result merging; later work can replace this entry point with `RegionScanTask` and a remote executor.
 - If the read router fails, the read operation fails; rollback is to remove the router or switch back to the no-op router.
 
+## Remaining Implementation Phases
+
+At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
+
+There are 9 remaining implementation phases:
+
+| Order | Phase | Goal | Main Deliverables | Acceptance |
+| --- | --- | --- | --- | --- |
+| 1 | ADB-Runtime-03 | Local `RegionScanTask` execution adapter | Convert region read-router results into local ADB scan tasks and reuse existing cursors/store | Primary-key point reads, primary-table range scans, and secondary-index range scans execute as region tasks with unit tests |
+| 2 | ADB-Runtime-04 | Remote region scan executor | Define region scan request/response, timeout, error mapping, and result merge entry point | Multi-region scans can simulate remote execution and merge results |
+| 3 | ADB-Runtime-05 | Region Raft write path | Replace post-`AdbRegionWriteGate` local commit with region leader/Raft apply writes | Single-region writes pass leader, term/epoch validation, apply, and persistence |
+| 4 | ADB-Runtime-06 | Control-plane metadata and TSO integration | PD-like region metadata publishing, route snapshot refresh, and global TSO allocation | SQL sessions can obtain a consistent region route snapshot and monotonic timestamps |
+| 5 | ADB-Runtime-07 | Distributed transaction 2PC integration | prewrite/commit/rollback, primary lock, lock resolve, and timeout cleanup | Cross-region transactions commit/rollback consistently, with fault injection for partial commits |
+| 6 | ADB-Runtime-08 | Region split/merge and snapshot install | split/merge state machine, route epoch advancement, snapshot install into ADB store | Routes are correct after split, and data is readable after snapshot install |
+| 7 | ADB-Runtime-09 | h2db plan to distributed execution plan | plan adapter, `EXPLAIN DISTRIBUTED`, and minimal statistics integration | SQL can produce region task plans and execute basic pushdown |
+| 8 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
+| 9 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
+
+Phases 1 through 3 are the next highest-priority implementation group: first make read tasks executable, then make remote reads replaceable, and then move writes from "fencing before local commit" to real region Raft writes.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
