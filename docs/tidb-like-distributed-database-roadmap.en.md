@@ -316,6 +316,7 @@ After the current phases 1-11, production work continues through the following p
 - `Prewrite` / `PrewriteMutation` proto support is now in place. The PREWRITE phase sends real prewrite requests, and `AdbSMPlugin` persists each mutation as existing ADB uncommitted `VersionKey` intents and `TxnRefKey` references.
 - `RegionScan` / `RegionScanResult` proto support is now in place. `AdbRegionScanReader` performs minimal MVCC visibility merging in the region state machine, and `AdbRaftRegionScanClient` now sends the dedicated region scan request.
 - `LocalRClient` now supports `Prewrite`, `Commit`, `Rollback`, `RegionScan`, and async methods. `AdbRegionRpcSmokeTest` covers the commit/scan RClient protocol loop.
+- `AdbRealRaftRegionRpcSmokeTest` now starts 3 real `RaftServer` + GRPC nodes and uses `RaftRClient` to cover the multi-node Raft/RPC protocol path for prewrite, commit, and region scan.
 - Multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
 
 This `ADB-Prod-01` prewrite increment uses this scope:
@@ -337,6 +338,12 @@ This `ADB-Prod-01` smoke baseline uses this scope:
 - Extend `LocalRClient` to support `Prewrite`, `Commit`, `Rollback`, `RegionScan`, and async methods so single-process smoke tests use the same ADB proto as Raft/RPC.
 - Add an ADB region RPC smoke test covering prewrite and commit through `AdbRpcRegionCommitClient` + `AdbRaftRegionCommitTransport`, followed by visible-row reads through `AdbRaftRegionScanClient`.
 - This smoke baseline only proves the RClient protocol loop. Real multi-process multi-node startup, leader discovery, port allocation, log-directory isolation, and process cleanup still need follow-up scripted verification.
+
+This `ADB-Prod-01` real RaftServer/GRPC smoke baseline uses this scope:
+
+- Start 3 real `RaftServer` instances inside JUnit, each with an isolated GRPC port, storage directory, cache directory, and `AdbStateMachine`.
+- Send ADB proto through the real GRPC Raft client path via `RaftRClient`, covering prewrite, commit, and region scan.
+- This baseline verifies the multi-node Raft/RPC protocol chain and ADB state-machine integration. It is not the same as OS-level multi-process deployment acceptance; process launch scripts, log-directory isolation, port cleanup, and failed-process cleanup remain the final `ADB-Prod-01` follow-up.
 
 ## Rollback Strategy
 

@@ -292,6 +292,9 @@ public class AdbSMPlugin implements SMPlugin {
 
   @Override
   public void close() throws IOException {
-
+    if (store != null) {
+      store.close();
+      store = null;
+    }
   }
 }

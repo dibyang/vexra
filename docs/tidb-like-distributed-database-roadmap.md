@@ -319,6 +319,7 @@ flowchart TB
 - `Prewrite`/`PrewriteMutation` proto 已补齐，`AdbRaftRegionCommitTransport` 的 PREWRITE 阶段已发送真实 prewrite 请求，`AdbSMPlugin` 会将 prewrite mutation 落成现有 ADB 未提交 `VersionKey` intent 和 `TxnRefKey`。
 - `RegionScan`/`RegionScanResult` proto 已补齐，`AdbRegionScanReader` 在 region 状态机侧完成最小 MVCC 可见性归并，`AdbRaftRegionScanClient` 已改为发送专用 region scan 请求。
 - `LocalRClient` 已补齐 `Prewrite`、`Commit`、`Rollback`、`RegionScan` 和 async 方法，`AdbRegionRpcSmokeTest` 已覆盖 commit/scan 的 RClient 协议闭环。
+- `AdbRealRaftRegionRpcSmokeTest` 已启动 3 个真实 `RaftServer` + GRPC 节点，通过 `RaftRClient` 覆盖 prewrite、commit 和 region scan 的多节点 Raft/RPC 协议链路。
 - 当前仍未实现多进程多节点 Raft/RPC 冒烟；它继续属于 `ADB-Prod-01` 后续工作。
 
 本轮 `ADB-Prod-01` 的 prewrite 落地口径：
@@ -340,6 +341,12 @@ flowchart TB
 - 补齐 `LocalRClient` 对 `Prewrite`、`Commit`、`Rollback`、`RegionScan` 和 async 方法的支持，让单进程 smoke 与 Raft/RPC 使用同一 ADB proto。
 - 增加 ADB region RPC smoke 测试，覆盖通过 `AdbRpcRegionCommitClient` + `AdbRaftRegionCommitTransport` 预写、提交，再通过 `AdbRaftRegionScanClient` 读取可见行。
 - 该 smoke 基线只证明 RClient 协议闭环；真正的多进程多节点启动、leader 发现、端口分配、日志目录隔离和进程清理仍需要后续脚本化验证。
+
+本轮 `ADB-Prod-01` 的真实 RaftServer/GRPC smoke 口径：
+
+- 在 JUnit 内启动 3 个真实 `RaftServer`，每个 server 使用独立 GRPC 端口、storage 目录和 cache 目录，并加载 `AdbStateMachine`。
+- 通过 `RaftRClient` 走真实 GRPC Raft client 路径发送 ADB proto，覆盖 prewrite、commit 和 region scan。
+- 该基线验证多节点 Raft/RPC 协议链路和 ADB 状态机接入，不等同于 OS 多进程部署验收；独立进程启动脚本、日志目录隔离、端口回收和异常进程清理仍留在 `ADB-Prod-01` 的最后收尾。
 
 ## 回滚策略
 

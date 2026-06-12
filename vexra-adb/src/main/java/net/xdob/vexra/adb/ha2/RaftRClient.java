@@ -30,6 +30,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * 基于 Raft client 的 ADB RClient 实现。
+ *
+ * <p>该实现把 ADB proto 包装为状态机请求发送到 Raft 集群。`HA2.NODES`
+ * 同时兼容 `node@host` 和 `node@host:port` 两种写法：前者继续使用
+ * `HA2.PORT`，后者用于同机多节点测试和部署中为每个节点声明独立端口。</p>
+ */
 public class RaftRClient implements RClient{
 
   public static final int DEFAULT_PORT = 7800;
@@ -67,7 +74,14 @@ public class RaftRClient implements RClient{
     client = builder.build();
   }
 
-  private List<RaftPeer> parsePeers(String peers,int port) {
+  /**
+   * 解析 ADB HA2 节点列表。
+   *
+   * @param peers 节点列表，格式为 `node@host` 或 `node@host:port`
+   * @param port 未在节点地址中显式声明端口时使用的默认端口
+   * @return 可交给 RaftClient 使用的 peer 列表
+   */
+  static List<RaftPeer> parsePeers(String peers,int port) {
     return Stream.of(peers.split(",")).map(address -> {
           String[] addressParts = address.split("@");
           if (addressParts.length < 2) {
@@ -78,7 +92,13 @@ public class RaftRClient implements RClient{
 
           String id = addressParts[0];
           RaftPeer.Builder builder = RaftPeer.newBuilder();
-          builder.setId(id).setAddress(addressParts[1], port);
+          builder.setId(id);
+          String peerAddress = addressParts[1];
+          if (peerAddress.contains(":")) {
+            builder.setAddress(peerAddress);
+          } else {
+            builder.setAddress(peerAddress, port);
+          }
           return builder.build();
         }).filter(e->!e.isVirtual())
         .collect(Collectors.toList());
