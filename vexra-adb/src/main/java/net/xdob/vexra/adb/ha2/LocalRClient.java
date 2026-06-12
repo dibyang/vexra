@@ -121,6 +121,9 @@ public class LocalRClient implements RClient{
         }
 
         builder.setScanResult(scanResult.build());
+      } else if (readRequest.hasRegionScan()) {
+        builder.setRegionScanResult(AdbRegionScanReader.scan(store,
+            readRequest.getRegionScan()));
       } else {
         builder.setSuccess(false);
         builder.setEx(Proto2Util.toThrowable2Proto(
@@ -145,8 +148,8 @@ public class LocalRClient implements RClient{
   @Override
   public WriteResponse sendWriteRequest(WriteRequest writeRequest) throws SQLException {
     WriteResponse.Builder builder = WriteResponse.newBuilder();
-    if(writeRequest.hasBatch()){
-      try {
+    try {
+      if(writeRequest.hasBatch()){
         this.store.writeBatch(b -> {
           Batch batch = writeRequest.getBatch();
           for (WriteEntry entry : batch.getEntriesList()) {
@@ -167,22 +170,68 @@ public class LocalRClient implements RClient{
           }
         });
         builder.setSuccess(true);
-      } catch (SQLException e) {
+      } else if (writeRequest.hasPrewrite()) {
+        Prewrite prewrite = writeRequest.getPrewrite();
+        java.util.List<AdbRegionMutation> mutations = new java.util.ArrayList<>();
+        for (PrewriteMutation mutation : prewrite.getMutationsList()) {
+          RowValue value = RowValue.decodeValue(mutation.getValue()
+              .toByteArray());
+          if (value == null) {
+            throw new SQLException("prewrite mutation value is empty");
+          }
+          value.deleted = mutation.getDeleted();
+          mutations.add(new AdbRegionMutation(
+              net.xdob.vexra.adb.key.DataKey.fromBytes(
+                  mutation.getKey().toByteArray()), value));
+        }
+        AdbPrewriteApplicator.prewrite(store, prewrite.getTxnId(),
+            prewrite.getStartTs(), mutations);
+        builder.setSuccess(true);
+      } else if (writeRequest.hasCommit()) {
+        Commit commit = writeRequest.getCommit();
+        java.util.List<Meta> metas = new java.util.ArrayList<>();
+        for (MetaProto meta : commit.getMetasList()) {
+          metas.add(Meta.of(meta.getKey().toByteArray(),
+              meta.getValue().toByteArray()));
+        }
+        store.commitAsync(commit.getTxnId(), commit.getCommitTs(), metas)
+            .join();
+        builder.setSuccess(true);
+      } else if (writeRequest.hasRollback()) {
+        store.rollbackAsync(writeRequest.getRollback().getTxnId()).join();
+        builder.setSuccess(true);
+      } else {
+        builder.setSuccess(false);
+        builder.setEx(Proto2Util.toThrowable2Proto(
+            new SQLException("Unsupported write request")));
+      }
+    } catch (Exception e) {
         builder.setSuccess(false);
         builder.setEx(Proto2Util.toThrowable2Proto(e));
-      }
     }
     return builder.build();
   }
 
   @Override
   public CompletableFuture<ReadResponse> sendReadRequestAsync(ReadRequest request) {
-    return null;
+    try {
+      return CompletableFuture.completedFuture(sendReadRequest(request));
+    } catch (SQLException e) {
+      CompletableFuture<ReadResponse> failed = new CompletableFuture<>();
+      failed.completeExceptionally(e);
+      return failed;
+    }
   }
 
   @Override
   public CompletableFuture<WriteResponse> sendWriteRequestAsync(WriteRequest request) {
-    return null;
+    try {
+      return CompletableFuture.completedFuture(sendWriteRequest(request));
+    } catch (SQLException e) {
+      CompletableFuture<WriteResponse> failed = new CompletableFuture<>();
+      failed.completeExceptionally(e);
+      return failed;
+    }
   }
 
   @Override

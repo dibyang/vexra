@@ -308,6 +308,7 @@ After the current phases 1-11, production work continues through the following p
 - `AdbRaftRegionScanClient` now reads region key ranges through the existing `RClient` / `ReadRequest.RegionScan` path, covering pagination, count-only results, and failed-response mapping to `SQLException`; raw `Scan` remains as a low-level KV capability.
 - `Prewrite` / `PrewriteMutation` proto support is now in place. The PREWRITE phase sends real prewrite requests, and `AdbSMPlugin` persists each mutation as existing ADB uncommitted `VersionKey` intents and `TxnRefKey` references.
 - `RegionScan` / `RegionScanResult` proto support is now in place. `AdbRegionScanReader` performs minimal MVCC visibility merging in the region state machine, and `AdbRaftRegionScanClient` now sends the dedicated region scan request.
+- `LocalRClient` now supports `Prewrite`, `Commit`, `Rollback`, `RegionScan`, and async methods. `AdbRegionRpcSmokeTest` covers the commit/scan RClient protocol loop.
 - Multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
 
 This `ADB-Prod-01` prewrite increment uses this scope:
@@ -323,6 +324,12 @@ This `ADB-Prod-01` region scan proto pushdown uses this scope:
 - Perform minimal MVCC visibility merging inside the region state machine and return visible row payloads/counts instead of exposing raw version KVs to the client.
 - Make `AdbRaftRegionScanClient` send the dedicated `RegionScan` request while keeping raw `Scan` as a low-level KV capability and rollback path.
 - This increment does not introduce full filter/projection proto support. Complex SQL pushdown and cost-based selection remain part of `ADB-Prod-03`.
+
+This `ADB-Prod-01` smoke baseline uses this scope:
+
+- Extend `LocalRClient` to support `Prewrite`, `Commit`, `Rollback`, `RegionScan`, and async methods so single-process smoke tests use the same ADB proto as Raft/RPC.
+- Add an ADB region RPC smoke test covering prewrite and commit through `AdbRpcRegionCommitClient` + `AdbRaftRegionCommitTransport`, followed by visible-row reads through `AdbRaftRegionScanClient`.
+- This smoke baseline only proves the RClient protocol loop. Real multi-process multi-node startup, leader discovery, port allocation, log-directory isolation, and process cleanup still need follow-up scripted verification.
 
 ## Rollback Strategy
 

@@ -310,6 +310,7 @@ flowchart TB
 - `AdbRaftRegionScanClient` 已通过现有 `RClient`/`ReadRequest.RegionScan` 读取 region key range，支持分页、count-only 结果和失败响应到 `SQLException` 的映射；raw `Scan` 仍保留为底层 KV 能力。
 - `Prewrite`/`PrewriteMutation` proto 已补齐，`AdbRaftRegionCommitTransport` 的 PREWRITE 阶段已发送真实 prewrite 请求，`AdbSMPlugin` 会将 prewrite mutation 落成现有 ADB 未提交 `VersionKey` intent 和 `TxnRefKey`。
 - `RegionScan`/`RegionScanResult` proto 已补齐，`AdbRegionScanReader` 在 region 状态机侧完成最小 MVCC 可见性归并，`AdbRaftRegionScanClient` 已改为发送专用 region scan 请求。
+- `LocalRClient` 已补齐 `Prewrite`、`Commit`、`Rollback`、`RegionScan` 和 async 方法，`AdbRegionRpcSmokeTest` 已覆盖 commit/scan 的 RClient 协议闭环。
 - 当前仍未实现多进程多节点 Raft/RPC 冒烟；它继续属于 `ADB-Prod-01` 后续工作。
 
 本轮 `ADB-Prod-01` 的 prewrite 落地口径：
@@ -325,6 +326,12 @@ flowchart TB
 - 状态机在 region 内完成最小 MVCC 可见性归并，只返回可见行 payload/count，而不是把原始版本 KV 暴露给 client。
 - `AdbRaftRegionScanClient` 改为发送专用 `RegionScan`，保留 raw `Scan` 作为底层 KV 能力和回滚路径。
 - 本增量不引入完整 filter/projection proto，复杂 SQL pushdown 和代价选择继续留给 `ADB-Prod-03`。
+
+本轮 `ADB-Prod-01` 的 smoke 基线口径：
+
+- 补齐 `LocalRClient` 对 `Prewrite`、`Commit`、`Rollback`、`RegionScan` 和 async 方法的支持，让单进程 smoke 与 Raft/RPC 使用同一 ADB proto。
+- 增加 ADB region RPC smoke 测试，覆盖通过 `AdbRpcRegionCommitClient` + `AdbRaftRegionCommitTransport` 预写、提交，再通过 `AdbRaftRegionScanClient` 读取可见行。
+- 该 smoke 基线只证明 RClient 协议闭环；真正的多进程多节点启动、leader 发现、端口分配、日志目录隔离和进程清理仍需要后续脚本化验证。
 
 ## 回滚策略
 
