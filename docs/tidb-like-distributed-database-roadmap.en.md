@@ -287,12 +287,12 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. By phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance. Each completed phase still requires a local commit.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 6 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed production phases | 0 | `ADB-Prod-01` still lacks multi-process multi-node Raft/RPC smoke acceptance and cannot be marked complete. |
-| In-progress production phases | 2 | `ADB-Prod-01` and `ADB-Prod-02` are in progress. |
+| Completed production phases | 0 | No production phase has reached full acceptance yet. |
+| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` is completing durable locks, batch resolve, and later primary/secondary resolve. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
 | Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
@@ -361,6 +361,12 @@ This `ADB-Prod-02` durable lock record increment uses this scope:
 - Make `AdbPrewriteApplicator` write lock records in the same write batch as durable intents and `TxnRefKey` entries, preserving prewrite atomicity.
 - Make `LdbStore` and `RocksStore` delete lock records for the same txnId during commit/rollback, preventing finished transactions from leaving stale locks that a resolver could misread.
 - This increment still does not start a background lock-resolve/GC worker and does not delete historical committed versions. Primary/secondary resolve and the GC worker remain follow-up work inside `ADB-Prod-02`.
+
+This `ADB-Prod-02` lock scanning and batch resolve increment uses this scope:
+
+- Add a store-agnostic TXN CF lock scanner that scans `TxnKeyType.LOCK` records and decodes them into `AdbTxnLock`, so background workers, diagnostic tools, and manual recovery commands can share the same entry point.
+- Extend `AdbLockResolver` with a batch scanning entry point in addition to single-lock resolve. It checks TTL expiration and reuses `DbStore.rollbackAsync(txnId)` to clean the durable intent, `TxnRefKey`, and lock record.
+- This increment still handles only the expired-lock rollback path. Secondary roll-forward when the primary lock has committed, cross-region primary lookups, and periodic background scheduling remain follow-up work.
 
 ## Rollback Strategy
 

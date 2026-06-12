@@ -287,14 +287,15 @@ flowchart TB
 
 ## Post-Runtime 生产化阶段
 
-当前 1-11 阶段之后继续按以下生产化阶段推进。按阶段验收口径统计，生产化阶段共 6 个，
-当前完成 0 个、进行中 2 个、未开始 4 个；如果只统计尚未开始阶段，则还剩 4 个。
-`ADB-Prod-01` 和 `ADB-Prod-02` 已完成部分子交付，但仍未达到阶段验收。每个阶段完成后仍需本地提交。
+当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
+已完成 0 个、进行中 2 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 6 个；
+如果只统计“尚未启动”的阶段，则还剩 4 个。`ADB-Prod-01` 和 `ADB-Prod-02` 已完成部分子交付，但仍未达到阶段验收。
+每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成生产化阶段 | 0 | `ADB-Prod-01` 仍缺多进程多节点 Raft/RPC 冒烟验收，不能标记完成。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 和 `ADB-Prod-02` 正在推进。 |
+| 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 正在补齐 durable lock、批量 resolve 和后续 primary/secondary resolve。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
@@ -364,6 +365,12 @@ flowchart TB
 - `AdbPrewriteApplicator` 在写 durable intent / `TxnRefKey` 的同一 write batch 内写入 lock record，保持 prewrite 原子性。
 - `LdbStore` 和 `RocksStore` 的 commit/rollback 会同步删除同一 txnId 下的 lock record，避免已结束事务留下可被 resolver 误判的陈旧锁。
 - 本增量仍不启动后台 lock resolve/GC worker，也不删除历史 committed version；primary/secondary resolve 和 GC worker 继续留在 `ADB-Prod-02` 后续增量。
+
+本轮 `ADB-Prod-02` 的 lock 扫描与批量 resolve 口径：
+
+- 新增 store-agnostic 的 TXN CF lock scanner，直接扫描 `TxnKeyType.LOCK` 记录并解码为 `AdbTxnLock`，供后台 worker、诊断工具和手动恢复命令复用。
+- `AdbLockResolver` 在单 lock resolve 之外新增批量扫描入口，按 TTL 判断过期 lock，并复用 `DbStore.rollbackAsync(txnId)` 清理对应 durable intent、`TxnRefKey` 和 lock record。
+- 本增量仍只处理过期 rollback 路径；primary lock 已提交时的 secondary 前滚、跨 region primary 查询和后台周期调度继续留在后续增量。
 
 ## 回滚策略
 

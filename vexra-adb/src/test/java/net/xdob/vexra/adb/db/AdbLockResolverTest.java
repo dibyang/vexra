@@ -70,11 +70,41 @@ class AdbLockResolverTest {
     }
   }
 
+  /**
+   * 验证 resolver 可以从 durable lock scanner 批量清理过期锁。
+   */
+  @Test
+  void shouldResolveExpiredLocksFromStore() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("batch-resolve").toString())) {
+      RowKey expired = rowKey(3);
+      RowKey waiting = rowKey(4);
+      prewrite(store, 12, expired, 1, 5);
+      prewrite(store, 13, waiting, 10, 20);
+
+      AdbLockResolveBatchResult result = new AdbLockResolver(store)
+          .resolveExpiredLocks(7, 0);
+
+      assertEquals(1, result.getScannedLocks());
+      assertEquals(1, result.getRolledBackLocks());
+      assertNull(store.get(VersionKey.of(expired, false, 12).toBytes()));
+      assertNotNull(store.get(VersionKey.of(waiting, false, 13).toBytes()));
+    }
+  }
+
   private static void prewrite(LdbStore store, long txnId, RowKey key)
       throws Exception {
     AdbPrewriteApplicator.prewrite(store, txnId, 1,
         Collections.singletonList(new AdbRegionMutation(key,
             rowValue(txnId, "lock-resolve"))));
+  }
+
+  private static void prewrite(LdbStore store, long txnId, RowKey key,
+      long startTs, long ttlMillis) throws Exception {
+    AdbPrewriteApplicator.prewrite(store, txnId, startTs,
+        Collections.singletonList(new AdbRegionMutation(key,
+            rowValue(txnId, "lock-resolve"))),
+        Collections.singletonList(lock(txnId, key, startTs, ttlMillis)));
   }
 
   private static AdbTxnLock lock(long txnId, RowKey key, long startTs,

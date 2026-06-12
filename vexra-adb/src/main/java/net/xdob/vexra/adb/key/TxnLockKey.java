@@ -68,6 +68,17 @@ public final class TxnLockKey extends Key {
   }
 
   /**
+   * 判断给定 TXN CF key 是否为 lock record key。
+   *
+   * @param data TXN CF key bytes
+   * @return 是 lock key 返回 true，否则返回 false
+   */
+  public static boolean matches(byte[] data) {
+    return data != null && data.length > HEAD_SIZE
+        && data[Long.BYTES] == TxnKeyType.LOCK.getCode();
+  }
+
+  /**
    * 创建 TXN CF lock key。
    *
    * @param txnId 事务 ID
