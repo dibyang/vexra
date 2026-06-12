@@ -285,6 +285,19 @@ flowchart TB
 - 将 Online DDL backfill worker 接到真实索引 KV 回填、失败补偿和长任务调度。
 - 完成证书签发、权限系统、滚动升级执行器、备份介质集成和长稳压测。
 
+## Post-Runtime 生产化阶段
+
+当前 1-11 阶段之后继续按以下生产化阶段推进，每个阶段完成后仍需本地提交：
+
+| 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
+| --- | --- | --- | --- | --- |
+| 1 | ADB-Prod-01 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
+| 2 | ADB-Prod-02 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
+| 3 | ADB-Prod-03 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
+| 4 | ADB-Prod-04 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
+| 5 | ADB-Prod-05 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
+| 6 | ADB-Prod-06 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

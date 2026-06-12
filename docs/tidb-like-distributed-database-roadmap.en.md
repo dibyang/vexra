@@ -285,6 +285,19 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 - Wire Online DDL backfill workers to real index KV backfill, failure compensation, and long-running task scheduling.
 - Complete certificate issuance, the privilege system, rolling-upgrade executor, backup media integration, and long-running stress tests.
 
+## Post-Runtime Production Phases
+
+After the current phases 1-11, production work continues through the following phases. Each completed phase still requires a local commit:
+
+| Order | Phase | Goal | Main Deliverables | Acceptance |
+| --- | --- | --- | --- | --- |
+| 1 | ADB-Prod-01 | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
+| 2 | ADB-Prod-02 | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
+| 3 | ADB-Prod-03 | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
+| 4 | ADB-Prod-04 | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
+| 5 | ADB-Prod-05 | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 6 | ADB-Prod-06 | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
