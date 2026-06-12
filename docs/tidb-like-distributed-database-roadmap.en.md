@@ -171,14 +171,13 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-There are 2 remaining implementation phases:
+There is 1 remaining implementation phase:
 
 | Order | Phase | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
-| 2 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 1 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
 
-The next highest-priority implementation step is Online DDL runtime integration.
+The next highest-priority implementation step is the production operations and security loop.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -255,6 +254,16 @@ The next highest-priority implementation step is Online DDL runtime integration.
 - Provided `EXPLAIN DISTRIBUTED`-style plan text including regionId, key range, limit, read timestamp, and count-only flag. This starts as an internal diagnostic API and does not change h2db SQL syntax.
 - This phase reuses `AdbDistributedRegionScanExecutor` and `AdbLocalRegionScanClient` to validate basic pushdown execution. Real h2db optimizer rules, statistics-based cost selection, and SQL syntax extensions remain follow-up increments.
 - The implementation touches `AdbDistributedPlanAdapter`, covered by `AdbDistributedPlanAdapterTest`.
+
+### ADB-Runtime-10 Implementation Scope
+
+`ADB-Runtime-10` has wired the Online DDL public model into the ADB runtime:
+
+- Provided an ADB Online DDL runtime controller that reuses `DdlJobStateMachine`, `SchemaVersion`, and `IndexBackfillProgress` to manage the ADD_INDEX job lifecycle.
+- During RUNNING, the controller marks the target index as `BUILDING`; during PUBLIC, it marks the index as `READY`. Schema version advancement protects sessions from reading inconsistent metadata.
+- Backfill exposes a recoverable progress-advance API that records lastCompletedKey and completedRows, allowing a rebuilt controller to resume from an existing job.
+- This phase does not implement the real index KV backfill scanner and does not change h2db DDL syntax. Real backfill workers and failure compensation remain follow-up increments.
+- The implementation touches `AdbOnlineDdlRuntimeController`, covered by `AdbOnlineDdlRuntimeControllerTest`.
 
 ## Rollback Strategy
 

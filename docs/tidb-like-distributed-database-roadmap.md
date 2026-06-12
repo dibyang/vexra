@@ -171,14 +171,13 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 2 个：
+剩余实现阶段共 1 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 2 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-下一组优先级最高的落地工作是 Online DDL 运行时接入。
+下一组优先级最高的落地工作是生产化运维与安全闭环。
 
 ### ADB-Runtime-03 实施口径
 
@@ -255,6 +254,16 @@ flowchart TB
 - 已提供 `EXPLAIN DISTRIBUTED` 风格的计划文本，输出 regionId、key range、limit、read timestamp 和 count-only 标记，先作为内部诊断 API，不改 h2db SQL 语法。
 - 本阶段复用 `AdbDistributedRegionScanExecutor` 和 `AdbLocalRegionScanClient` 验证基础 pushdown 执行；真实 h2db optimizer rule、统计信息代价选择和 SQL 语法扩展继续留在后续增量。
 - 实现涉及 `AdbDistributedPlanAdapter`，测试为 `AdbDistributedPlanAdapterTest`。
+
+### ADB-Runtime-10 实施口径
+
+`ADB-Runtime-10` 已将 Online DDL 公共模型接入 ADB 运行时：
+
+- 已提供 ADB Online DDL runtime controller，复用 `DdlJobStateMachine`、`SchemaVersion` 和 `IndexBackfillProgress` 管理 ADD_INDEX job 生命周期。
+- controller 在 RUNNING 阶段把目标索引标记为 `BUILDING`，在 PUBLIC 阶段把索引标记为 `READY`，并通过 schema version 推进保护 session 读到一致元数据。
+- backfill 已实现可恢复进度推进接口，记录 lastCompletedKey 和 completedRows，支持 controller 重建后继续从已有 job 进度恢复。
+- 本阶段不直接实现真实索引 KV 回填扫描器，不改变 h2db DDL 语法；真实 backfill worker 和失败补偿继续在后续增量完善。
+- 实现涉及 `AdbOnlineDdlRuntimeController`，测试为 `AdbOnlineDdlRuntimeControllerTest`。
 
 ## 回滚策略
 
