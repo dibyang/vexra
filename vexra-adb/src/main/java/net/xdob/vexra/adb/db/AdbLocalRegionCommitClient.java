@@ -41,4 +41,21 @@ public final class AdbLocalRegionCommitClient implements AdbRegionCommitClient {
       return failed;
     }
   }
+
+  /**
+   * 通过现有 store rollback 语义回滚本地事务 intent。
+   *
+   * @param request region rollback 请求
+   * @return 回滚完成 future
+   */
+  @Override
+  public CompletableFuture<Void> rollbackAsync(AdbRegionCommitRequest request) {
+    try {
+      return store.rollbackAsync(request.getTxnId());
+    } catch (SQLException e) {
+      CompletableFuture<Void> failed = new CompletableFuture<>();
+      failed.completeExceptionally(e);
+      return failed;
+    }
+  }
 }

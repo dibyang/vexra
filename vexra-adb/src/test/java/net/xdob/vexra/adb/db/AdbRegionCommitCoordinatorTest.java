@@ -18,6 +18,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -76,23 +77,119 @@ class AdbRegionCommitCoordinatorTest {
         client));
 
     Transaction2 txn = txnWithWrites(rowKey(1));
+    long startTs = txn.getStartTs();
     manager.commit(txn);
 
-    assertNotNull(client.request);
-    assertEquals("r1", client.request.getRegionId());
-    assertEquals("node-a", client.request.getLeaderId());
-    assertEquals(3, client.request.getRegionEpoch());
-    assertEquals(txn.getStartTs(), client.request.getCommitTs());
-    assertEquals(1, client.request.getWriteKeys().size());
+    assertEquals(0, client.prewrites.size());
+    assertEquals(1, client.commits.size());
+    assertEquals(0, client.rollbacks.size());
+    AdbRegionCommitRequest request = client.commits.get(0);
+    assertEquals("r1", request.getRegionId());
+    assertEquals("node-a", request.getLeaderId());
+    assertEquals(3, request.getRegionEpoch());
+    assertEquals(txn.getStartTs(), request.getCommitTs());
+    assertEquals(1, request.getWriteKeys().size());
     assertEquals(TxnState.COMMITTED, txn.getState());
   }
 
   /**
-   * 验证跨 region 写入在 2PC 阶段前会被拒绝，事务状态恢复为 PENDING。
+   * 验证跨 region 写入会通过 2PC 完成 prewrite 和 commit。
    */
   @Test
-  void shouldRejectMultiRegionCommitBeforeTwoPhaseCommit() {
+  void shouldCommitMultiRegionWriteThroughTwoPhaseCommit() throws Exception {
     RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    long startTs = txn.getStartTs();
+    manager.commit(txn);
+
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.prewrites));
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.commits));
+    assertEquals(0, client.rollbacks.size());
+    assertTrue(client.prewrites.get(0).isPrimaryRegion());
+    assertEquals("r1", client.prewrites.get(0).getPrimaryRegionId());
+    assertEquals(startTs, client.prewrites.get(0).getStartTs());
+    assertEquals(TxnState.COMMITTED, txn.getState());
+  }
+
+  /**
+   * 验证 prewrite 失败会回滚已经 prewrite 成功的 participant。
+   */
+  @Test
+  void shouldRollbackPrewrittenParticipantsWhenPrewriteFails() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    client.failPrewriteRegionId = "r2";
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> manager.commit(txn));
+
+    assertTrue(error.getMessage().contains("prewrite failed"));
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.prewrites));
+    assertEquals(Collections.singletonList("r1"), client.regionIds(client.rollbacks));
+    assertEquals(0, client.commits.size());
+    assertEquals(TxnState.PENDING, txn.getState());
+  }
+
+  /**
+   * 验证 primary 已提交后 secondary commit 失败会暴露给上层，不能伪装成已回滚。
+   */
+  @Test
+  void shouldExposeSecondaryCommitFailureAfterPrimaryCommitted() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    client.failCommitRegionId = "r2";
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> manager.commit(txn));
+
+    assertTrue(error.getMessage().contains("commit failed"));
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.prewrites));
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.commits));
+    assertEquals(0, client.rollbacks.size());
+    assertEquals(TxnState.PENDING, txn.getState());
+  }
+
+  /**
+   * 验证 commitTs 不大于 startTs 时会在任何 region prewrite 前失败。
+   */
+  @Test
+  void shouldRejectInvalidCommitTimestampBeforePrewrite() {
+    RecordingStore store = new RecordingStore();
+    store.counter = 0;
     RecordingCommitClient client = new RecordingCommitClient();
     RowKey split = rowKey(50);
     TxnManager manager = new TxnManager(store);
@@ -110,8 +207,10 @@ class AdbRegionCommitCoordinatorTest {
         () -> manager.commit(txn));
 
     assertTrue(error.getMessage().contains("Commit failed"));
+    assertEquals(0, client.prewrites.size());
+    assertEquals(0, client.commits.size());
+    assertEquals(0, client.rollbacks.size());
     assertEquals(TxnState.PENDING, txn.getState());
-    assertNull(client.request);
   }
 
   /**
@@ -134,7 +233,7 @@ class AdbRegionCommitCoordinatorTest {
 
     assertTrue(error.getMessage().contains("Commit failed"));
     assertEquals(TxnState.PENDING, txn.getState());
-    assertNull(client.request);
+    assertEquals(0, client.commits.size());
   }
 
   /**
@@ -157,7 +256,7 @@ class AdbRegionCommitCoordinatorTest {
 
     assertTrue(error.getMessage().contains("Commit failed"));
     assertEquals(TxnState.PENDING, txn.getState());
-    assertNull(client.request);
+    assertEquals(0, client.commits.size());
   }
 
   /**
@@ -181,7 +280,7 @@ class AdbRegionCommitCoordinatorTest {
 
     assertEquals("region apply failed", error.getMessage());
     assertEquals(TxnState.PENDING, txn.getState());
-    assertNotNull(client.request);
+    assertEquals(1, client.commits.size());
   }
 
   private static Transaction2 txnWithWrites(DataKey... keys) {
@@ -216,12 +315,31 @@ class AdbRegionCommitCoordinatorTest {
 
   private static final class RecordingCommitClient
       implements AdbRegionCommitClient {
-    private AdbRegionCommitRequest request;
+    private final List<AdbRegionCommitRequest> prewrites = new ArrayList<>();
+    private final List<AdbRegionCommitRequest> commits = new ArrayList<>();
+    private final List<AdbRegionCommitRequest> rollbacks = new ArrayList<>();
     private SQLException failure;
+    private String failPrewriteRegionId;
+    private String failCommitRegionId;
+
+    @Override
+    public CompletableFuture<Void> prewriteAsync(
+        AdbRegionCommitRequest request) {
+      prewrites.add(request);
+      if (request.getRegionId().equals(failPrewriteRegionId)) {
+        return failed(new SQLException("prewrite failed: "
+            + request.getRegionId()));
+      }
+      return CompletableFuture.completedFuture(null);
+    }
 
     @Override
     public CompletableFuture<Void> commitAsync(AdbRegionCommitRequest request) {
-      this.request = request;
+      commits.add(request);
+      if (request.getRegionId().equals(failCommitRegionId)) {
+        return failed(new SQLException("commit failed: "
+            + request.getRegionId()));
+      }
       CompletableFuture<Void> future = new CompletableFuture<>();
       if (failure != null) {
         future.completeExceptionally(failure);
@@ -230,10 +348,31 @@ class AdbRegionCommitCoordinatorTest {
       }
       return future;
     }
+
+    @Override
+    public CompletableFuture<Void> rollbackAsync(
+        AdbRegionCommitRequest request) {
+      rollbacks.add(request);
+      return CompletableFuture.completedFuture(null);
+    }
+
+    private List<String> regionIds(List<AdbRegionCommitRequest> requests) {
+      List<String> regionIds = new ArrayList<>();
+      for (AdbRegionCommitRequest request : requests) {
+        regionIds.add(request.getRegionId());
+      }
+      return regionIds;
+    }
+
+    private static CompletableFuture<Void> failed(Throwable error) {
+      CompletableFuture<Void> future = new CompletableFuture<>();
+      future.completeExceptionally(error);
+      return future;
+    }
   }
 
   private static final class RecordingStore implements DbStore {
-    private long counter;
+    private long counter = 10;
 
     @Override
     public byte[] get(byte[] key) {

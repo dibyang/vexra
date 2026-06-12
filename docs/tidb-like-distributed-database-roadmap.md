@@ -171,17 +171,16 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 5 个：
+剩余实现阶段共 4 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-07 | 分布式事务 2PC 接入 | prewrite/commit/rollback、primary lock、lock resolve、超时清理 | 跨 region 事务提交/回滚一致，故障注入覆盖部分提交 |
-| 2 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
-| 3 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
-| 4 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 5 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
+| 2 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
+| 3 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
+| 4 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-下一组优先级最高的落地工作是把跨 region 写入从单 region commit 扩展到 2PC。
+下一组优先级最高的落地工作是实现 region split/merge 与 snapshot install。
 
 ### ADB-Runtime-03 实施口径
 
@@ -226,6 +225,17 @@ flowchart TB
 - route snapshot 需要携带 epoch，session 可显式刷新，刷新后新事务使用新的 region router。
 - 本阶段不实现独立 PD 进程、不改变 JDBC URL 语义、不要求默认启用分布式模式。
 - 实现类包括 `AdbControlPlaneClient`、`AdbControlPlaneSnapshot`、`InMemoryAdbControlPlaneClient`、`AdbControlPlaneTimestampProvider`、`AdbTimestampProvider` 和 `AdbRuntimeSessionContext`，测试为 `AdbRuntimeSessionContextTest`。
+
+### ADB-Runtime-07 实施口径
+
+`ADB-Runtime-07` 已将跨 region 写入从“单 region commit”扩展为最小 2PC 编排：
+
+- `AdbRegionCommitClient` 已增加 `prewriteAsync`、`commitAsync` 和 `rollbackAsync` 三个阶段，真实 Raft/RPC client 后续在该边界实现 region 内锁写入、提交和回滚。
+- `AdbRegionCommitCoordinator` 已按 write set 路由并分组 region。单 region 事务保持现有 fast path；跨 region 事务选择第一个写入 key 所在 region 作为 primary participant。
+- 跨 region 事务会先对所有 participant 执行 prewrite；prewrite 全部成功后，按 primary 优先顺序执行 commit；prewrite 失败会回滚已 prewrite 的 participant。
+- 如果 primary 已提交后 secondary commit 失败，coordinator 不伪装成已完全回滚，而是把失败暴露给上层；后续 lock resolve/后台清理需要基于 primary commit 结果补齐 secondary。
+- 本阶段完成 coordinator 级别的 2PC 编排、primary participant 校验、失败回滚和故障注入测试；真实 MVCC lock column、后台 lock resolve worker、超时清理和幂等恢复在后续增量继续深化。
+- 实现涉及 `AdbRegionCommitClient`、`AdbRegionCommitRequest`、`AdbLocalRegionCommitClient` 和 `AdbRegionCommitCoordinator`，测试为 `AdbRegionCommitCoordinatorTest`。
 
 ## 回滚策略
 

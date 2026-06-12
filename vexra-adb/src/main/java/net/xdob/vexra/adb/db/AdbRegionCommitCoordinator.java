@@ -3,24 +3,29 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.key.DataKey;
 import net.xdob.vexra.cluster.region.RegionMetadata;
 import net.xdob.vexra.cluster.region.RegionRouter;
+import net.xdob.vexra.cluster.txn.TwoPhaseCommitContext;
+import net.xdob.vexra.cluster.txn.TxnParticipant;
 
-import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * ADB region commit 协调器。
  *
  * <p>该协调器位于 {@link TxnManager} durable commit 前，负责把事务 write set
- * 路由到 region，校验 leader/epoch，并把单 region 提交交给
- * {@link AdbRegionCommitClient}。当前阶段只允许单 region 提交；跨 region 事务由
- * 后续 2PC 阶段接管。</p>
+ * 路由到 region，校验 leader/epoch，并把 region 事务阶段请求交给
+ * {@link AdbRegionCommitClient}。单 region 事务保持旧 commit fast path；跨 region
+ * 事务在这里执行最小 2PC 编排。</p>
  */
 public final class AdbRegionCommitCoordinator {
+  private static final long DEFAULT_LOCK_TTL_MILLIS = 3000;
+
   private final RegionRouter router;
   private final AdbRegionCommitClient client;
 
@@ -37,7 +42,7 @@ public final class AdbRegionCommitCoordinator {
   }
 
   /**
-   * 提交当前事务 write set 对应的单 region 写入。
+   * 提交当前事务 write set 对应的 region 写入。
    *
    * @param txn 当前事务
    * @param commitTs commit timestamp
@@ -48,19 +53,20 @@ public final class AdbRegionCommitCoordinator {
   public CompletableFuture<Void> commitAsync(Transaction2 txn, long commitTs,
       Collection<DataKey> writeKeys, List<Meta> metas) {
     try {
-      AdbRegionCommitRequest request = buildRequest(txn, commitTs, writeKeys,
-          metas);
-      CompletableFuture<Void> future = client.commitAsync(request);
-      if (future != null) {
-        return future;
+      List<RegionWriteSet> participants = buildParticipants(txn, commitTs,
+          writeKeys, metas);
+      if (participants.size() == 1) {
+        return nonNullFuture(client.commitAsync(participants.get(0).request),
+            "commitAsync returned null");
       }
-      return failed(new NullPointerException("commitAsync returned null"));
-    } catch (RuntimeException e) {
-      return failed(e);
+      executeTwoPhaseCommit(txn, commitTs, participants);
+      return CompletableFuture.completedFuture(null);
+    } catch (Throwable e) {
+      return failed(unwrap(e));
     }
   }
 
-  private AdbRegionCommitRequest buildRequest(Transaction2 txn, long commitTs,
+  private List<RegionWriteSet> buildParticipants(Transaction2 txn, long commitTs,
       Collection<DataKey> writeKeys, List<Meta> metas) {
     Objects.requireNonNull(txn, "txn == null");
     Objects.requireNonNull(writeKeys, "writeKeys == null");
@@ -68,16 +74,40 @@ public final class AdbRegionCommitCoordinator {
       throw new IllegalArgumentException("writeKeys is empty");
     }
 
-    Set<RegionMetadata> regions = new LinkedHashSet<>();
+    Map<String, RegionBuilder> builders = new LinkedHashMap<>();
+    DataKey primaryKey = null;
+    String primaryRegionId = null;
     for (DataKey key : writeKeys) {
-      regions.add(router.route(key.toBytes()));
-    }
-    if (regions.size() != 1) {
-      throw new IllegalStateException(
-          "ADB region commit requires single region, actual=" + regions.size());
+      RegionMetadata region = router.route(key.toBytes());
+      validateRegion(region);
+      if (primaryKey == null) {
+        primaryKey = key;
+        primaryRegionId = region.getRegionId();
+      }
+      RegionBuilder builder = builders.get(region.getRegionId());
+      if (builder == null) {
+        builder = new RegionBuilder(region);
+        builders.put(region.getRegionId(), builder);
+      }
+      builder.writeKeys.add(key);
     }
 
-    RegionMetadata region = regions.iterator().next();
+    List<RegionWriteSet> participants = new ArrayList<>();
+    for (RegionBuilder builder : builders.values()) {
+      RegionMetadata region = builder.region;
+      boolean primaryRegion = region.getRegionId().equals(primaryRegionId);
+      AdbRegionCommitRequest request = new AdbRegionCommitRequest(
+          region.getRegionId(), region.getEpoch(),
+          region.getReplicaMetadata().getLeaderId(), txn.getTxnId(),
+          txn.getStartTs(), commitTs, primaryRegionId, primaryKey,
+          DEFAULT_LOCK_TTL_MILLIS, primaryRegion, builder.writeKeys, metas);
+      participants.add(new RegionWriteSet(request, primaryRegion));
+    }
+    return participants;
+  }
+
+  private void validateRegion(RegionMetadata region) {
+    Objects.requireNonNull(region, "region == null");
     String leaderId = region.getReplicaMetadata().getLeaderId();
     if (leaderId == null || leaderId.trim().isEmpty()) {
       throw new IllegalStateException("Region leader is empty, regionId="
@@ -88,14 +118,125 @@ public final class AdbRegionCommitCoordinator {
           + region.getRegionId() + ", regionEpoch=" + region.getEpoch()
           + ", replicaEpoch=" + region.getReplicaMetadata().getEpoch());
     }
+  }
 
-    return new AdbRegionCommitRequest(region.getRegionId(), region.getEpoch(),
-        leaderId, txn.getTxnId(), commitTs, writeKeys, metas);
+  private void executeTwoPhaseCommit(Transaction2 txn, long commitTs,
+      List<RegionWriteSet> participants) {
+    if (commitTs <= txn.getStartTs()) {
+      throw new IllegalArgumentException("commitTs must be greater than startTs");
+    }
+    TwoPhaseCommitContext context = TwoPhaseCommitContext.create(
+        txn.getStartTs(), toTxnParticipants(participants));
+    List<RegionWriteSet> prewritten = new ArrayList<>();
+    boolean primaryCommitted = false;
+    try {
+      for (RegionWriteSet participant : participants) {
+        joinRegionFuture(client.prewriteAsync(participant.request),
+            "prewriteAsync returned null");
+        prewritten.add(participant);
+      }
+      context = context.prewrite();
+
+      RegionWriteSet primary = primaryParticipant(participants);
+      joinRegionFuture(client.commitAsync(primary.request),
+          "commitAsync returned null");
+      primaryCommitted = true;
+      for (RegionWriteSet participant : participants) {
+        if (!participant.primary) {
+          joinRegionFuture(client.commitAsync(participant.request),
+              "commitAsync returned null");
+        }
+      }
+      context.commit(commitTs);
+    } catch (Throwable e) {
+      Throwable cause = unwrap(e);
+      if (!primaryCommitted) {
+        rollbackPrewritten(prewritten, cause);
+      }
+      throw new RegionCommitException(cause);
+    }
+  }
+
+  private List<TxnParticipant> toTxnParticipants(
+      List<RegionWriteSet> participants) {
+    List<TxnParticipant> txnParticipants = new ArrayList<>();
+    for (RegionWriteSet participant : participants) {
+      txnParticipants.add(new TxnParticipant(
+          participant.request.getRegionId(), participant.primary));
+    }
+    return txnParticipants;
+  }
+
+  private RegionWriteSet primaryParticipant(List<RegionWriteSet> participants) {
+    for (RegionWriteSet participant : participants) {
+      if (participant.primary) {
+        return participant;
+      }
+    }
+    throw new IllegalStateException("primary participant is missing");
+  }
+
+  private void rollbackPrewritten(List<RegionWriteSet> prewritten,
+      Throwable primaryFailure) {
+    for (RegionWriteSet participant : prewritten) {
+      try {
+        joinRegionFuture(client.rollbackAsync(participant.request),
+            "rollbackAsync returned null");
+      } catch (Throwable rollbackError) {
+        primaryFailure.addSuppressed(unwrap(rollbackError));
+      }
+    }
+  }
+
+  private static void joinRegionFuture(CompletableFuture<Void> future,
+      String nullMessage) {
+    nonNullFuture(future, nullMessage).join();
+  }
+
+  private static CompletableFuture<Void> nonNullFuture(
+      CompletableFuture<Void> future, String nullMessage) {
+    if (future == null) {
+      throw new NullPointerException(nullMessage);
+    }
+    return future;
+  }
+
+  private static Throwable unwrap(Throwable t) {
+    while ((t instanceof CompletionException || t instanceof RegionCommitException)
+        && t.getCause() != null) {
+      t = t.getCause();
+    }
+    return t;
   }
 
   private static CompletableFuture<Void> failed(Throwable error) {
     CompletableFuture<Void> future = new CompletableFuture<>();
     future.completeExceptionally(error);
     return future;
+  }
+
+  private static final class RegionBuilder {
+    private final RegionMetadata region;
+    private final List<DataKey> writeKeys = new ArrayList<>();
+
+    private RegionBuilder(RegionMetadata region) {
+      this.region = region;
+    }
+  }
+
+  private static final class RegionWriteSet {
+    private final AdbRegionCommitRequest request;
+    private final boolean primary;
+
+    private RegionWriteSet(AdbRegionCommitRequest request, boolean primary) {
+      this.request = request;
+      this.primary = primary;
+    }
+  }
+
+  private static final class RegionCommitException extends RuntimeException {
+    private RegionCommitException(Throwable cause) {
+      super(cause);
+    }
   }
 }
