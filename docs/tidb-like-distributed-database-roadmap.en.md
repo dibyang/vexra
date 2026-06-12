@@ -287,7 +287,7 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. Each completed phase still requires a local commit:
+After the current phases 1-11, production work continues through the following phases. There are 6 remaining production phases, with `ADB-Prod-01` currently in progress. Each completed phase still requires a local commit:
 
 | Order | Phase | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- |
@@ -300,12 +300,13 @@ After the current phases 1-11, production work continues through the following p
 
 ### ADB-Prod-01 Current Progress
 
-`ADB-Prod-01` has completed the first real integration boundary for the region commit RPC client:
+`ADB-Prod-01` has completed the first real integration boundary for the region commit RPC client and the region scan RPC transport:
 
 - `AdbRpcRegionCommitClient` maps 2PC prewrite/commit/rollback phases to a replaceable `AdbRegionCommitTransport` and consistently handles failed responses, transport exceptions, and client-side timeouts.
 - `AdbRaftRegionCommitTransport` now uses the existing `RClient` / `RaftRClient` write path: `COMMIT` maps to the ADB proto `Commit`, `ROLLBACK` maps to `Rollback`, and `PREWRITE` goes through an empty batch as Raft write-path fencing until a dedicated proto message exists.
 - `AdbSMPlugin` now handles `Rollback` write requests, so `RaftStore.rollbackAsync(...)` no longer becomes a no-op at the state machine.
-- Real MVCC prewrite lock proto support and region scan RPC transport are still follow-up work inside `ADB-Prod-01`.
+- `AdbRaftRegionScanClient` now reads region key ranges through the existing `RClient` / `ReadRequest.Scan` path, covering pagination, read-timestamp visibility merging, count-only results, and failed-response mapping to `SQLException`.
+- Real MVCC prewrite lock proto support, dedicated RegionScanTask proto pushdown, and multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
 
 ## Rollback Strategy
 

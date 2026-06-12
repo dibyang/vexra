@@ -287,7 +287,8 @@ flowchart TB
 
 ## Post-Runtime 生产化阶段
 
-当前 1-11 阶段之后继续按以下生产化阶段推进，每个阶段完成后仍需本地提交：
+当前 1-11 阶段之后继续按以下生产化阶段推进，剩余生产化阶段共 6 个，其中
+`ADB-Prod-01` 正在推进中。每个阶段完成后仍需本地提交：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
@@ -300,12 +301,14 @@ flowchart TB
 
 ### ADB-Prod-01 当前进展
 
-`ADB-Prod-01` 已完成 region commit RPC client 的第一组真实接入边界：
+`ADB-Prod-01` 已完成 region commit RPC client 和 region scan RPC transport
+的第一组真实接入边界：
 
 - `AdbRpcRegionCommitClient` 将 2PC prewrite/commit/rollback 阶段映射到可替换 `AdbRegionCommitTransport`，并统一处理失败响应、transport 异常和 client 侧超时。
 - `AdbRaftRegionCommitTransport` 已接到现有 `RClient`/`RaftRClient` 写请求能力：`COMMIT` 映射为 ADB proto `Commit`，`ROLLBACK` 映射为 `Rollback`，`PREWRITE` 在 proto 独立消息补齐前通过空 batch 走 Raft 写路径作为阶段 fencing。
 - `AdbSMPlugin` 已补齐 `Rollback` 写请求处理，避免 `RaftStore.rollbackAsync(...)` 发送到状态机后无效。
-- 当前仍未实现真实 MVCC prewrite lock proto 和 region scan RPC transport；它们继续属于 `ADB-Prod-01` 后续工作。
+- `AdbRaftRegionScanClient` 已通过现有 `RClient`/`ReadRequest.Scan` 读取 region key range，支持分页、read timestamp 可见性归并、count-only 结果和失败响应到 `SQLException` 的映射。
+- 当前仍未实现真实 MVCC prewrite lock proto、专用 RegionScanTask proto 下沉和多进程多节点 Raft/RPC 冒烟；它们继续属于 `ADB-Prod-01` 后续工作。
 
 ## 回滚策略
 
