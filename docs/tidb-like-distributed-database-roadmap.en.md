@@ -171,19 +171,18 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-There are 7 remaining implementation phases:
+There are 6 remaining implementation phases:
 
 | Order | Phase | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-05 | Region Raft write path | Replace post-`AdbRegionWriteGate` local commit with region leader/Raft apply writes | Single-region writes pass leader, term/epoch validation, apply, and persistence |
-| 2 | ADB-Runtime-06 | Control-plane metadata and TSO integration | PD-like region metadata publishing, route snapshot refresh, and global TSO allocation | SQL sessions can obtain a consistent region route snapshot and monotonic timestamps |
-| 3 | ADB-Runtime-07 | Distributed transaction 2PC integration | prewrite/commit/rollback, primary lock, lock resolve, and timeout cleanup | Cross-region transactions commit/rollback consistently, with fault injection for partial commits |
-| 4 | ADB-Runtime-08 | Region split/merge and snapshot install | split/merge state machine, route epoch advancement, snapshot install into ADB store | Routes are correct after split, and data is readable after snapshot install |
-| 5 | ADB-Runtime-09 | h2db plan to distributed execution plan | plan adapter, `EXPLAIN DISTRIBUTED`, and minimal statistics integration | SQL can produce region task plans and execute basic pushdown |
-| 6 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
-| 7 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 1 | ADB-Runtime-06 | Control-plane metadata and TSO integration | PD-like region metadata publishing, route snapshot refresh, and global TSO allocation | SQL sessions can obtain a consistent region route snapshot and monotonic timestamps |
+| 2 | ADB-Runtime-07 | Distributed transaction 2PC integration | prewrite/commit/rollback, primary lock, lock resolve, and timeout cleanup | Cross-region transactions commit/rollback consistently, with fault injection for partial commits |
+| 3 | ADB-Runtime-08 | Region split/merge and snapshot install | split/merge state machine, route epoch advancement, snapshot install into ADB store | Routes are correct after split, and data is readable after snapshot install |
+| 4 | ADB-Runtime-09 | h2db plan to distributed execution plan | plan adapter, `EXPLAIN DISTRIBUTED`, and minimal statistics integration | SQL can produce region task plans and execute basic pushdown |
+| 5 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
+| 6 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
 
-The next highest-priority implementation step is moving writes from "fencing before local commit" to real region Raft writes.
+The next highest-priority implementation step is wiring control-plane region metadata and global TSO into SQL sessions.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -206,6 +205,17 @@ The next highest-priority implementation step is moving writes from "fencing bef
 - Remote failures, timeouts, and interruption must map to `SQLException`, with regionId included in diagnostic messages.
 - This phase does not implement the real network protocol and does not change the public `RegionScanTask` / `RegionQueryResult` models.
 - The implementation includes `AdbRegionScanRequest`, `AdbRegionScanClient`, `AdbLocalRegionScanClient`, and `AdbDistributedRegionScanExecutor`, covered by `AdbDistributedRegionScanExecutorTest`.
+
+### ADB-Runtime-05 Implementation Scope
+
+`ADB-Runtime-05` has connected the ADB commit path to a replaceable region commit client:
+
+- After the write gate passes and `commitTs` is allocated, `TxnManager.commit(...)` can call a region commit coordinator instead of directly calling local `DbStore.commitAsync`.
+- The coordinator routes the current transaction write set to regions. The first runtime step only allows single-region commits; cross-region commit is deferred to ADB-Runtime-07 2PC.
+- The coordinator validates region leader, epoch, and routing results. If validation fails, the transaction must not remain in `COMMITTING`.
+- The commit client abstracts real region Raft apply. This phase provides a local bridge client reusing existing `DbStore.commitAsync`; later work can replace it with a real Raft/RPC client.
+- This phase does not change the ADB intent/version disk format or the public `DbStore` interface.
+- The implementation includes `AdbRegionCommitRequest`, `AdbRegionCommitClient`, `AdbLocalRegionCommitClient`, and `AdbRegionCommitCoordinator`, covered by `AdbRegionCommitCoordinatorTest`.
 
 ## Rollback Strategy
 

@@ -23,6 +23,7 @@ public class TxnManager {
   private final Object commitMutex = new Object();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
+  private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -70,6 +71,23 @@ public class TxnManager {
   public void setRegionReadRouter(AdbRegionReadRouter regionReadRouter) {
     this.regionReadRouter = regionReadRouter == null
         ? AdbRegionReadRouter.NOOP : regionReadRouter;
+  }
+
+  public AdbRegionCommitCoordinator getRegionCommitCoordinator() {
+    return regionCommitCoordinator;
+  }
+
+  /**
+   * 设置 ADB region commit 协调器。
+   *
+   * <p>传入 null 会恢复为直接调用底层 store commit。启用后，事务 durable commit 会先
+   * 按 write set 路由到 region，再交由 coordinator 调用 region commit client。</p>
+   *
+   * @param regionCommitCoordinator 新的 region commit 协调器
+   */
+  public void setRegionCommitCoordinator(
+      AdbRegionCommitCoordinator regionCommitCoordinator) {
+    this.regionCommitCoordinator = regionCommitCoordinator;
   }
 
   public long newTxnId() {
@@ -314,6 +332,7 @@ public class TxnManager {
   // -------------------- 鎻愪氦浜嬪姟 --------------------
   public void commit(Transaction2 txn) throws SQLException {
     final long commitTs;
+    final ArrayList<DataKey> writeKeys;
     final LinkedHashMap<RowCountDeltaKey, Long> rowCountDeltas;
     final LinkedHashMap<Integer, Long> tableEpochUpdates = new LinkedHashMap<>();
 
@@ -329,8 +348,8 @@ public class TxnManager {
       }
 
       validate(txn);
-      regionWriteGate.beforeCommit(txn,
-          new ArrayList<>(txn.getWriteSet().keySet()));
+      writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
+      regionWriteGate.beforeCommit(txn, writeKeys);
       commitTs = tsGen.nextCommitTs();
       txn.setState(TxnState.COMMITTING);
 
@@ -370,7 +389,7 @@ public class TxnManager {
         TableEpochKey tableEpochKey = TableEpochKey.of(entry.getKey());
         metas.add(Meta.of(tableEpochKey.toBytes(), Utils.encodeLong(entry.getValue())));
       }
-      store.commitAsync(txn.getTxnId(), commitTs, metas).join();
+      commitAsync(txn, commitTs, writeKeys, metas).join();
 
       txn.afterCommitSuccess(commitTs);
     } catch (CompletionException e) {
@@ -404,6 +423,16 @@ public class TxnManager {
     } catch (SQLException e) {
       throw DbException.convert(e);
     }
+  }
+
+  private java.util.concurrent.CompletableFuture<Void> commitAsync(
+      Transaction2 txn, long commitTs, Collection<DataKey> writeKeys,
+      List<Meta> metas) throws SQLException {
+    AdbRegionCommitCoordinator coordinator = regionCommitCoordinator;
+    if (coordinator != null && !writeKeys.isEmpty()) {
+      return coordinator.commitAsync(txn, commitTs, writeKeys, metas);
+    }
+    return store.commitAsync(txn.getTxnId(), commitTs, metas);
   }
 
   private static byte[] tableScanStartKey(PrefixKey prefixKey, Long minRowId) {
