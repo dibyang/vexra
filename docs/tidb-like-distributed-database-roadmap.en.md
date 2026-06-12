@@ -287,16 +287,23 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. There are 6 remaining production phases, with `ADB-Prod-01` currently in progress. Each completed phase still requires a local commit:
+After the current phases 1-11, production work continues through the following phases. By phase acceptance status, there are 6 production phases in total: 0 completed, 1 in progress, and 5 not started. If only not-started phases are counted, 5 phases remain. `ADB-Prod-01` has completed several sub-deliverables, but it has not yet met phase acceptance. Each completed phase still requires a local commit.
 
-| Order | Phase | Goal | Main Deliverables | Acceptance |
-| --- | --- | --- | --- | --- |
-| 1 | ADB-Prod-01 | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
-| 2 | ADB-Prod-02 | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
-| 3 | ADB-Prod-03 | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
-| 4 | ADB-Prod-04 | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
-| 5 | ADB-Prod-05 | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
-| 6 | ADB-Prod-06 | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
+| Counting Scope | Count | Notes |
+| --- | --- | --- |
+| Completed production phases | 0 | `ADB-Prod-01` still lacks multi-process multi-node Raft/RPC smoke acceptance and cannot be marked complete. |
+| In-progress production phases | 1 | `ADB-Prod-01` is in progress. |
+| Not-started production phases | 5 | `ADB-Prod-02` through `ADB-Prod-06` have not started. |
+| Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01` plus 5 not-started phases. |
+
+| Order | Phase | Status | Goal | Main Deliverables | Acceptance |
+| --- | --- | --- | --- | --- | --- |
+| 1 | ADB-Prod-01 | In progress | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
+| 2 | ADB-Prod-02 | Not started | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
+| 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
+| 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
+| 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 6 | ADB-Prod-06 | Not started | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
 
 ### ADB-Prod-01 Current Progress
 

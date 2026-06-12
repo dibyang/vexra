@@ -287,17 +287,25 @@ flowchart TB
 
 ## Post-Runtime 生产化阶段
 
-当前 1-11 阶段之后继续按以下生产化阶段推进，剩余生产化阶段共 6 个，其中
-`ADB-Prod-01` 正在推进中。每个阶段完成后仍需本地提交：
+当前 1-11 阶段之后继续按以下生产化阶段推进。按阶段验收口径统计，生产化阶段共 6 个，
+当前完成 0 个、进行中 1 个、未开始 5 个；如果只统计尚未开始阶段，则还剩 5 个。
+`ADB-Prod-01` 已完成多项子交付，但仍未达到阶段验收。每个阶段完成后仍需本地提交。
 
-| 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
-| --- | --- | --- | --- | --- |
-| 1 | ADB-Prod-01 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
-| 2 | ADB-Prod-02 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
-| 3 | ADB-Prod-03 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
-| 4 | ADB-Prod-04 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
-| 5 | ADB-Prod-05 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
-| 6 | ADB-Prod-06 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
+| 口径 | 数量 | 说明 |
+| --- | --- | --- |
+| 已完成生产化阶段 | 0 | `ADB-Prod-01` 仍缺多进程多节点 Raft/RPC 冒烟验收，不能标记完成。 |
+| 进行中生产化阶段 | 1 | `ADB-Prod-01` 正在推进。 |
+| 未开始生产化阶段 | 5 | `ADB-Prod-02` 到 `ADB-Prod-06` 尚未开始。 |
+| 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01` 和后续 5 个未开始阶段。 |
+
+| 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
+| 2 | ADB-Prod-02 | 未开始 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
+| 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
+| 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
+| 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
+| 6 | ADB-Prod-06 | 未开始 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
 
 ### ADB-Prod-01 当前进展
 
