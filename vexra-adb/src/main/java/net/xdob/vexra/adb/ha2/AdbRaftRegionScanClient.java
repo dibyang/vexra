@@ -3,44 +3,33 @@ package net.xdob.vexra.adb.ha2;
 import com.google.protobuf.ByteString;
 import net.xdob.vexra.adb.db.AdbRegionScanClient;
 import net.xdob.vexra.adb.db.AdbRegionScanRequest;
-import net.xdob.vexra.adb.db.CF;
 import net.xdob.vexra.adb.db.RowCodec;
-import net.xdob.vexra.adb.db.RowValue;
-import net.xdob.vexra.adb.key.DataKey;
-import net.xdob.vexra.adb.key.IndexKey;
-import net.xdob.vexra.adb.key.VersionIndexKey;
-import net.xdob.vexra.adb.key.VersionKey;
 import net.xdob.vexra.cluster.region.KeyRange;
 import net.xdob.vexra.cluster.sql.RegionQueryResult;
 import net.xdob.vexra.cluster.sql.RegionScanTask;
-import net.xdob.vexra.proto.adb.ColumnFamily;
-import net.xdob.vexra.proto.adb.Direction;
-import net.xdob.vexra.proto.adb.KvPair;
 import net.xdob.vexra.proto.adb.ReadRequest;
 import net.xdob.vexra.proto.adb.ReadResponse;
-import net.xdob.vexra.proto.adb.Scan;
-import net.xdob.vexra.proto.adb.ScanResult;
+import net.xdob.vexra.proto.adb.RegionScan;
+import net.xdob.vexra.proto.adb.RegionScanResult;
+import net.xdob.vexra.proto.adb.RegionVisibleRow;
 import net.xdob.vexra.util.Proto2Util;
 import org.h2.value.Value;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
 /**
  * 基于现有 ADB Raft read path 的 region scan client。
  *
- * <p>该 client 将 {@link AdbRegionScanRequest} 转换为 ADB proto `ReadRequest.Scan`，
- * 通过 {@link RClient} 拉取 region key range 内的版本 KV，并在 client 侧做最小
- * MVCC 可见版本归并。后续有专用 RegionScanTask proto 后，可把可见性解析下沉到
- * region 状态机内。</p>
+ * <p>该 client 将 {@link AdbRegionScanRequest} 转换为 ADB proto
+ * `ReadRequest.RegionScan`，由 region 状态机在读路径内完成最小 MVCC 可见性归并，
+ * client 只负责分页、错误映射和结果对象适配。</p>
  */
 public final class AdbRaftRegionScanClient implements AdbRegionScanClient {
   private static final int DEFAULT_PAGE_SIZE = 256;
@@ -94,56 +83,66 @@ public final class AdbRaftRegionScanClient implements AdbRegionScanClient {
     KeyRange range = task.getKeyRange();
     byte[] resumeKey = null;
     boolean hasMore;
-    Set<String> visitedLogicalKeys = new LinkedHashSet<>();
     List<Map<String, Object>> rows = new ArrayList<>();
     long count = 0;
     int limit = task.getLimit();
 
     do {
-      ScanResult page = sendScan(range, resumeKey);
-      for (KvPair entry : page.getEntriesList()) {
-        VersionKey versionKey = VersionKey.fromBytes(entry.getKey().toByteArray());
-        DataKey dataKey = versionKey.toDataKey();
-        byte[] logicalKey = dataKey.toBytes();
-        if (!range.contains(logicalKey)) {
-          continue;
-        }
-        RowValue value = RowValue.decodeValue(entry.getValue().toByteArray());
-        if (!isVisibleVersion(request, versionKey, value)) {
-          continue;
-        }
-        String logicalKeyHex = toHex(logicalKey);
-        if (!visitedLogicalKeys.add(logicalKeyHex)) {
-          continue;
-        }
-        if (!isReadable(value)) {
-          continue;
-        }
-        count++;
-        if (!request.isCountOnly()) {
-          rows.add(toRow(versionKey, dataKey, value));
-          if (limit > 0 && rows.size() >= limit) {
-            return new RegionQueryResult(task.getRegionId(), rows, 0);
-          }
-        } else if (limit > 0 && count >= limit) {
-          return new RegionQueryResult(task.getRegionId(), null, count);
+      RegionScanResult page = sendRegionScan(request, resumeKey,
+          nextPageLimit(request, rows.size(), count));
+      if (request.isCountOnly()) {
+        count += page.getCount();
+      } else {
+        for (RegionVisibleRow row : page.getRowsList()) {
+          rows.add(toRow(row));
         }
       }
       hasMore = page.getHasMore();
       resumeKey = page.getResumeKey().isEmpty() ? null
           : page.getResumeKey().toByteArray();
+      if (hasMore && resumeKey == null) {
+        throw new SQLException("ADB raft region scan missing resumeKey");
+      }
+      if (limitReached(request, rows.size(), count)) {
+        break;
+      }
     } while (hasMore && resumeKey != null);
 
     return new RegionQueryResult(task.getRegionId(),
         request.isCountOnly() ? null : rows, request.isCountOnly() ? count : 0);
   }
 
-  private ScanResult sendScan(KeyRange range, byte[] resumeKey)
+  private int nextPageLimit(AdbRegionScanRequest request, int rowCount,
+      long count) {
+    int queryLimit = request.getTask().getLimit();
+    if (queryLimit <= 0) {
+      return pageSize;
+    }
+    long used = request.isCountOnly() ? count : rowCount;
+    long remaining = Math.max(0, queryLimit - used);
+    return (int) Math.min(pageSize, remaining);
+  }
+
+  private boolean limitReached(AdbRegionScanRequest request, int rowCount,
+      long count) {
+    int queryLimit = request.getTask().getLimit();
+    if (queryLimit <= 0) {
+      return false;
+    }
+    return request.isCountOnly() ? count >= queryLimit : rowCount >= queryLimit;
+  }
+
+  private RegionScanResult sendRegionScan(AdbRegionScanRequest request,
+      byte[] resumeKey, int limit)
       throws SQLException {
-    Scan.Builder scan = Scan.newBuilder()
-        .setCf(ColumnFamily.forNumber(CF.DEFAULT.getCfId()))
-        .setDirection(Direction.DIR_FORWARD)
-        .setLimit(pageSize);
+    RegionScanTask task = request.getTask();
+    KeyRange range = task.getKeyRange();
+    RegionScan.Builder scan = RegionScan.newBuilder()
+        .setRegionId(task.getRegionId())
+        .setTxnId(request.getTxnId())
+        .setStartTs(request.getStartTs())
+        .setCountOnly(request.isCountOnly())
+        .setLimit(limit > 0 ? limit : pageSize);
     byte[] startKey = range.getStartKey();
     byte[] endKey = range.getEndKey();
     if (startKey.length > 0) {
@@ -155,32 +154,25 @@ public final class AdbRaftRegionScanClient implements AdbRegionScanClient {
     if (resumeKey != null && resumeKey.length > 0) {
       scan.setResumeKey(ByteString.copyFrom(resumeKey));
     }
-    ReadRequest request = ReadRequest.newBuilder()
+    ReadRequest readRequest = ReadRequest.newBuilder()
         .setDbName(dbName)
-        .setScan(scan)
+        .setRegionScan(scan)
         .build();
     try {
-      ReadResponse response = client.sendReadRequest(request);
+      ReadResponse response = client.sendReadRequest(readRequest);
       if (!response.getSuccess()) {
         throw toSQLException(response);
       }
-      if (!response.hasScanResult()) {
-        throw new SQLException("ADB raft scan response missing scanResult");
+      if (!response.hasRegionScanResult()) {
+        throw new SQLException(
+            "ADB raft region scan response missing regionScanResult");
       }
-      return response.getScanResult();
+      return response.getRegionScanResult();
     } catch (SQLException e) {
       throw e;
     } catch (RuntimeException e) {
       throw new SQLException("ADB raft region scan failed", e);
     }
-  }
-
-  private boolean isVisibleVersion(AdbRegionScanRequest request,
-      VersionKey versionKey, RowValue value) {
-    if (!versionKey.isCommited()) {
-      return false;
-    }
-    return value != null && value.commitTs <= request.getStartTs();
   }
 
   private static SQLException toSQLException(ReadResponse response) {
@@ -199,23 +191,14 @@ public final class AdbRaftRegionScanClient implements AdbRegionScanClient {
     return new SQLException("ADB raft scan failed");
   }
 
-  private static boolean isReadable(RowValue value) {
-    return value != null
-        && !value.deleted
-        && value.payload != null
-        && value.payload.length > 0;
-  }
-
-  private static Map<String, Object> toRow(VersionKey versionKey,
-      DataKey dataKey, RowValue value) {
+  private static Map<String, Object> toRow(RegionVisibleRow visibleRow) {
     Map<String, Object> row = new LinkedHashMap<>();
-    row.put("row_id", dataKey.getRowId());
-    row.put("payload", decodePayload(value.payload));
-    row.put("key_hex", toHex(dataKey.toBytes()));
-    if (versionKey instanceof VersionIndexKey && dataKey instanceof IndexKey) {
-      IndexKey indexKey = (IndexKey) dataKey;
-      row.put("index_id", indexKey.getIndexId());
-      row.put("index_hex", toHex(indexKey.getIndex()));
+    row.put("row_id", visibleRow.getRowId());
+    row.put("payload", decodePayload(visibleRow.getPayload().toByteArray()));
+    row.put("key_hex", toHex(visibleRow.getKey().toByteArray()));
+    if (visibleRow.getIndexRow()) {
+      row.put("index_id", visibleRow.getIndexId());
+      row.put("index_hex", toHex(visibleRow.getIndex().toByteArray()));
     }
     return row;
   }

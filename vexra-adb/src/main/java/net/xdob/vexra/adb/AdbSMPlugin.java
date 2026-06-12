@@ -173,6 +173,9 @@ public class AdbSMPlugin implements SMPlugin {
         }
 
         builder.setScanResult(scanResult.build());
+      } else if (readRequest.hasRegionScan()) {
+        builder.setRegionScanResult(AdbRegionScanReader.scan(store,
+            readRequest.getRegionScan()));
       } else {
         builder.setSuccess(false);
         builder.setEx(Proto2Util.toThrowable2Proto(

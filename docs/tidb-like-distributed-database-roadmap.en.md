@@ -305,9 +305,10 @@ After the current phases 1-11, production work continues through the following p
 - `AdbRpcRegionCommitClient` maps 2PC prewrite/commit/rollback phases to a replaceable `AdbRegionCommitTransport` and consistently handles failed responses, transport exceptions, and client-side timeouts.
 - `AdbRaftRegionCommitTransport` now uses the existing `RClient` / `RaftRClient` write path: `PREWRITE` maps to the ADB proto `Prewrite`, `COMMIT` maps to `Commit`, and `ROLLBACK` maps to `Rollback`.
 - `AdbSMPlugin` now handles `Rollback` write requests, so `RaftStore.rollbackAsync(...)` no longer becomes a no-op at the state machine.
-- `AdbRaftRegionScanClient` now reads region key ranges through the existing `RClient` / `ReadRequest.Scan` path, covering pagination, read-timestamp visibility merging, count-only results, and failed-response mapping to `SQLException`.
+- `AdbRaftRegionScanClient` now reads region key ranges through the existing `RClient` / `ReadRequest.RegionScan` path, covering pagination, count-only results, and failed-response mapping to `SQLException`; raw `Scan` remains as a low-level KV capability.
 - `Prewrite` / `PrewriteMutation` proto support is now in place. The PREWRITE phase sends real prewrite requests, and `AdbSMPlugin` persists each mutation as existing ADB uncommitted `VersionKey` intents and `TxnRefKey` references.
-- Dedicated RegionScanTask proto pushdown and multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
+- `RegionScan` / `RegionScanResult` proto support is now in place. `AdbRegionScanReader` performs minimal MVCC visibility merging in the region state machine, and `AdbRaftRegionScanClient` now sends the dedicated region scan request.
+- Multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
 
 This `ADB-Prod-01` prewrite increment uses this scope:
 
@@ -315,6 +316,13 @@ This `ADB-Prod-01` prewrite increment uses this scope:
 - Make `AdbRaftRegionCommitTransport` send `Prewrite` for the PREWRITE phase instead of the previous empty batch.
 - When the state machine receives `Prewrite`, reuse the existing ADB intent/ref disk semantics: write uncommitted `VersionKey` entries and `TxnRefKey` references, while `Commit` / `Rollback` continue to use the current `DbStore.commitAsync` / `rollbackAsync` paths.
 - This increment only delivers real prewrite requests and durable intent writes. Lock timeout resolution, primary/secondary resolve, GC safe points, and background cleanup remain part of `ADB-Prod-02`.
+
+This `ADB-Prod-01` region scan proto pushdown uses this scope:
+
+- Add `RegionScan` / `RegionScanResult` to the ADB proto so the region state machine receives the read timestamp, limit, count-only flag, and key range directly.
+- Perform minimal MVCC visibility merging inside the region state machine and return visible row payloads/counts instead of exposing raw version KVs to the client.
+- Make `AdbRaftRegionScanClient` send the dedicated `RegionScan` request while keeping raw `Scan` as a low-level KV capability and rollback path.
+- This increment does not introduce full filter/projection proto support. Complex SQL pushdown and cost-based selection remain part of `ADB-Prod-03`.
 
 ## Rollback Strategy
 

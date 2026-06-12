@@ -3,17 +3,15 @@ package net.xdob.vexra.adb.ha2;
 import com.google.protobuf.ByteString;
 import net.xdob.vexra.adb.db.AdbRegionScanRequest;
 import net.xdob.vexra.adb.db.RowCodec;
-import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
-import net.xdob.vexra.adb.key.VersionKey;
 import net.xdob.vexra.cluster.region.KeyRange;
 import net.xdob.vexra.cluster.sql.RegionQueryResult;
 import net.xdob.vexra.cluster.sql.RegionScanTask;
-import net.xdob.vexra.proto.adb.KvPair;
 import net.xdob.vexra.proto.adb.ReadRequest;
 import net.xdob.vexra.proto.adb.ReadResponse;
-import net.xdob.vexra.proto.adb.ScanResult;
+import net.xdob.vexra.proto.adb.RegionScanResult;
+import net.xdob.vexra.proto.adb.RegionVisibleRow;
 import net.xdob.vexra.proto.adb.WriteRequest;
 import net.xdob.vexra.proto.adb.WriteResponse;
 import net.xdob.vexra.util.Proto2Util;
@@ -35,27 +33,27 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * ADB Raft region scan client 测试。
  *
- * <p>测试覆盖 ADB-Prod-01 的 region scan RPC transport：Scan 请求字段映射、分页、
- * read timestamp 可见性归并、count-only 聚合和失败响应映射。</p>
+ * <p>测试覆盖 ADB-Prod-01 的专用 region scan RPC transport：RegionScan 请求字段映射、
+ * 分页、count-only 聚合和失败响应映射。</p>
  */
 class AdbRaftRegionScanClientTest {
   /**
-   * 验证 scan client 会通过 Raft ReadRequest.Scan 分页读取并归并可见行。
+   * 验证 scan client 会通过 Raft ReadRequest.RegionScan 分页读取可见行。
    */
   @Test
-  void shouldScanVisibleRowsThroughRaftReadRequests() {
+  void shouldScanVisibleRowsThroughRaftRegionScanRequests() {
     RecordingRClient client = new RecordingRClient();
     RowKey row1 = rowKey(1);
     RowKey row2 = rowKey(2);
-    client.pages.add(ScanResult.newBuilder()
-        .addEntries(kv(row1, true, 30, "too-new"))
+    client.pages.add(RegionScanResult.newBuilder()
+        .addRows(row(row1, "visible-1"))
+        .setCount(1)
         .setHasMore(true)
-        .setResumeKey(ByteString.copyFrom(VersionKey.of(row1, true, 30)
-            .toBytes()))
+        .setResumeKey(ByteString.copyFrom(row1.toBytes()))
         .build());
-    client.pages.add(ScanResult.newBuilder()
-        .addEntries(kv(row1, true, 10, "visible-1"))
-        .addEntries(kv(row2, true, 11, "visible-2"))
+    client.pages.add(RegionScanResult.newBuilder()
+        .addRows(row(row2, "visible-2"))
+        .setCount(1)
         .build());
     AdbRaftRegionScanClient scanClient =
         new AdbRaftRegionScanClient("adb", client, 1);
@@ -67,23 +65,28 @@ class AdbRaftRegionScanClientTest {
     assertEquals("visible-1", result.getRows().get(0).get("payload"));
     assertEquals("visible-2", result.getRows().get(1).get("payload"));
     assertEquals(2, client.requests.size());
-    assertTrue(client.requests.get(0).hasScan());
+    assertTrue(client.requests.get(0).hasRegionScan());
     assertEquals("adb", client.requests.get(0).getDbName());
-    assertEquals(1, client.requests.get(0).getScan().getLimit());
-    assertTrue(client.requests.get(0).getScan().getResumeKey().isEmpty());
-    assertFalse(client.requests.get(1).getScan().getResumeKey().isEmpty());
+    assertEquals(1, client.requests.get(0).getRegionScan().getLimit());
+    assertTrue(client.requests.get(0).getRegionScan().getResumeKey()
+        .isEmpty());
+    assertFalse(client.requests.get(1).getRegionScan().getResumeKey()
+        .isEmpty());
   }
 
   /**
-   * 验证 count-only 请求只返回 count，并遵守可见性。
+   * 验证 count-only 请求会累加每页 count。
    */
   @Test
   void shouldReturnCountOnlyResult() {
     RecordingRClient client = new RecordingRClient();
-    client.pages.add(ScanResult.newBuilder()
-        .addEntries(kv(rowKey(1), true, 10, "visible-1"))
-        .addEntries(kv(rowKey(2), true, 30, "too-new"))
-        .addEntries(kv(rowKey(3), true, 12, "visible-3"))
+    client.pages.add(RegionScanResult.newBuilder()
+        .setCount(2)
+        .setHasMore(true)
+        .setResumeKey(ByteString.copyFrom(rowKey(2).toBytes()))
+        .build());
+    client.pages.add(RegionScanResult.newBuilder()
+        .setCount(1)
         .build());
     AdbRaftRegionScanClient scanClient =
         new AdbRaftRegionScanClient("adb", client, 10);
@@ -91,20 +94,16 @@ class AdbRaftRegionScanClientTest {
     RegionQueryResult result = scanClient.scanAsync(request(true, 20)).join();
 
     assertTrue(result.getRows().isEmpty());
-    assertEquals(2, result.getCount());
+    assertEquals(3, result.getCount());
   }
 
   /**
-   * 验证删除版本会遮蔽更老版本，并且不会返回行。
+   * 验证可见删除由 region 状态机处理后，client 能接受空行结果。
    */
   @Test
-  void shouldTreatVisibleDeleteAsLogicalKeyResolved() {
+  void shouldAcceptEmptyRowsWhenRegionResolvedVisibleDelete() {
     RecordingRClient client = new RecordingRClient();
-    RowKey row1 = rowKey(1);
-    client.pages.add(ScanResult.newBuilder()
-        .addEntries(kv(row1, true, 15, null, true))
-        .addEntries(kv(row1, true, 10, "older"))
-        .build());
+    client.pages.add(RegionScanResult.newBuilder().build());
     AdbRaftRegionScanClient scanClient =
         new AdbRaftRegionScanClient("adb", client, 10);
 
@@ -138,23 +137,12 @@ class AdbRaftRegionScanClientTest {
         7, readTs, countOnly, 0);
   }
 
-  private static KvPair kv(RowKey key, boolean committed, long version,
-      String payload) {
-    return kv(key, committed, version, payload, false);
-  }
-
-  private static KvPair kv(RowKey key, boolean committed, long version,
-      String payload, boolean deleted) {
-    RowValue rowValue = new RowValue();
-    rowValue.txnId = 1;
-    rowValue.commitTs = committed ? version : 0;
-    rowValue.deleted = deleted;
-    rowValue.payload = payload == null ? new byte[0]
-        : RowCodec.encode(ValueVarchar.get(payload));
-    return KvPair.newBuilder()
-        .setKey(ByteString.copyFrom(VersionKey.of(key, committed, version)
-            .toBytes()))
-        .setValue(ByteString.copyFrom(RowValue.encodeValue(rowValue)))
+  private static RegionVisibleRow row(RowKey key, String payload) {
+    return RegionVisibleRow.newBuilder()
+        .setRowId(key.getRowId())
+        .setKey(ByteString.copyFrom(key.toBytes()))
+        .setPayload(ByteString.copyFrom(RowCodec.encode(
+            ValueVarchar.get(payload))))
         .build();
   }
 
@@ -163,8 +151,9 @@ class AdbRaftRegionScanClientTest {
   }
 
   private static final class RecordingRClient implements RClient {
-    private final Queue<ScanResult> pages = new ArrayDeque<>();
-    private final java.util.List<ReadRequest> requests = new java.util.ArrayList<>();
+    private final Queue<RegionScanResult> pages = new ArrayDeque<>();
+    private final java.util.List<ReadRequest> requests =
+        new java.util.ArrayList<>();
     private SQLException failure;
 
     @Override
@@ -176,11 +165,11 @@ class AdbRaftRegionScanClientTest {
             .setEx(Proto2Util.toThrowable2Proto(failure))
             .build();
       }
-      ScanResult page = pages.isEmpty() ? ScanResult.newBuilder().build()
-          : pages.remove();
+      RegionScanResult page = pages.isEmpty()
+          ? RegionScanResult.newBuilder().build() : pages.remove();
       return ReadResponse.newBuilder()
           .setSuccess(true)
-          .setScanResult(page)
+          .setRegionScanResult(page)
           .build();
     }
 

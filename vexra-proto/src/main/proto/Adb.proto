@@ -153,6 +153,17 @@ message Count {
   uint32 limit = 3;   // 可选；最多统计多少条，0 表示不限制
 }
 
+message RegionScan {
+  string regionId = 1;
+  bytes startKey = 2;
+  bytes endKey = 3;
+  uint32 limit = 4;
+  int64 txnId = 5;
+  int64 startTs = 6;
+  bool countOnly = 7;
+  bytes resumeKey = 8;
+}
+
 message ReadRequest {
   string dbName = 1;
   oneof req {
@@ -163,6 +174,7 @@ message ReadRequest {
     First first = 6;
     Last last = 7;
     Count count = 8;
+    RegionScan regionScan = 9;
   }
 }
 
@@ -196,6 +208,22 @@ message CountResult {
   bool truncated = 2; // 如果 limit 生效且提前截断，则为 true
 }
 
+message RegionVisibleRow {
+  int64 rowId = 1;
+  bytes key = 2;
+  bytes payload = 3;
+  bool indexRow = 4;
+  int32 indexId = 5;
+  bytes index = 6;
+}
+
+message RegionScanResult {
+  repeated RegionVisibleRow rows = 1;
+  uint64 count = 2;
+  bool hasMore = 3;
+  bytes resumeKey = 4;
+}
+
 message ReadResponse {
   bool success = 1;
   base.Throwable2Proto ex =  2;
@@ -205,5 +233,6 @@ message ReadResponse {
     ExistsResult existsResult = 5;
     KvResult kvResult = 6;
     CountResult countResult = 7;
+    RegionScanResult regionScanResult = 8;
   }
 }
