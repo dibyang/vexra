@@ -303,10 +303,18 @@ After the current phases 1-11, production work continues through the following p
 `ADB-Prod-01` has completed the first real integration boundary for the region commit RPC client and the region scan RPC transport:
 
 - `AdbRpcRegionCommitClient` maps 2PC prewrite/commit/rollback phases to a replaceable `AdbRegionCommitTransport` and consistently handles failed responses, transport exceptions, and client-side timeouts.
-- `AdbRaftRegionCommitTransport` now uses the existing `RClient` / `RaftRClient` write path: `COMMIT` maps to the ADB proto `Commit`, `ROLLBACK` maps to `Rollback`, and `PREWRITE` goes through an empty batch as Raft write-path fencing until a dedicated proto message exists.
+- `AdbRaftRegionCommitTransport` now uses the existing `RClient` / `RaftRClient` write path: `PREWRITE` maps to the ADB proto `Prewrite`, `COMMIT` maps to `Commit`, and `ROLLBACK` maps to `Rollback`.
 - `AdbSMPlugin` now handles `Rollback` write requests, so `RaftStore.rollbackAsync(...)` no longer becomes a no-op at the state machine.
 - `AdbRaftRegionScanClient` now reads region key ranges through the existing `RClient` / `ReadRequest.Scan` path, covering pagination, read-timestamp visibility merging, count-only results, and failed-response mapping to `SQLException`.
-- Real MVCC prewrite lock proto support, dedicated RegionScanTask proto pushdown, and multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
+- `Prewrite` / `PrewriteMutation` proto support is now in place. The PREWRITE phase sends real prewrite requests, and `AdbSMPlugin` persists each mutation as existing ADB uncommitted `VersionKey` intents and `TxnRefKey` references.
+- Dedicated RegionScanTask proto pushdown and multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
+
+This `ADB-Prod-01` prewrite increment uses this scope:
+
+- Add a backward-compatible `Prewrite` oneof branch to the ADB proto, carrying txnId, startTs, primary lock metadata, TTL, and the mutation list for the current region.
+- Make `AdbRaftRegionCommitTransport` send `Prewrite` for the PREWRITE phase instead of the previous empty batch.
+- When the state machine receives `Prewrite`, reuse the existing ADB intent/ref disk semantics: write uncommitted `VersionKey` entries and `TxnRefKey` references, while `Commit` / `Rollback` continue to use the current `DbStore.commitAsync` / `rollbackAsync` paths.
+- This increment only delivers real prewrite requests and durable intent writes. Lock timeout resolution, primary/secondary resolve, GC safe points, and background cleanup remain part of `ADB-Prod-02`.
 
 ## Rollback Strategy
 

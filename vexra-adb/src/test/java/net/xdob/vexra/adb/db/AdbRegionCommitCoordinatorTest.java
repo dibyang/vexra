@@ -89,6 +89,9 @@ class AdbRegionCommitCoordinatorTest {
     assertEquals(3, request.getRegionEpoch());
     assertEquals(txn.getStartTs(), request.getCommitTs());
     assertEquals(1, request.getWriteKeys().size());
+    assertEquals(1, request.getMutations().size());
+    assertEquals(request.getWriteKeys().get(0), request.getMutations()
+        .get(0).getKey());
     assertEquals(TxnState.COMMITTED, txn.getState());
   }
 
@@ -120,6 +123,8 @@ class AdbRegionCommitCoordinatorTest {
     assertTrue(client.prewrites.get(0).isPrimaryRegion());
     assertEquals("r1", client.prewrites.get(0).getPrimaryRegionId());
     assertEquals(startTs, client.prewrites.get(0).getStartTs());
+    assertEquals(1, client.prewrites.get(0).getMutations().size());
+    assertEquals(1, client.prewrites.get(1).getMutations().size());
     assertEquals(TxnState.COMMITTED, txn.getState());
   }
 

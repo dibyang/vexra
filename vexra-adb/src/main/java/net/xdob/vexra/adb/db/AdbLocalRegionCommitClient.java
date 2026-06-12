@@ -25,6 +25,25 @@ public final class AdbLocalRegionCommitClient implements AdbRegionCommitClient {
   }
 
   /**
+   * 通过现有 store intent/ref 语义完成本地 prewrite。
+   *
+   * @param request region prewrite 请求
+   * @return 预写完成 future
+   */
+  @Override
+  public CompletableFuture<Void> prewriteAsync(AdbRegionCommitRequest request) {
+    try {
+      AdbPrewriteApplicator.prewrite(store, request.getTxnId(),
+          request.getStartTs(), request.getMutations());
+      return CompletableFuture.completedFuture(null);
+    } catch (SQLException | RuntimeException e) {
+      CompletableFuture<Void> failed = new CompletableFuture<>();
+      failed.completeExceptionally(e);
+      return failed;
+    }
+  }
+
+  /**
    * 通过现有 store commit 语义完成 region commit。
    *
    * @param request region commit 请求

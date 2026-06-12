@@ -3,7 +3,10 @@ package net.xdob.vexra.adb.ha2;
 import net.xdob.vexra.adb.db.AdbRegionCommitPhase;
 import net.xdob.vexra.adb.db.AdbRegionCommitRequest;
 import net.xdob.vexra.adb.db.AdbRegionCommitResponse;
+import net.xdob.vexra.adb.db.AdbRegionMutation;
 import net.xdob.vexra.adb.db.Meta;
+import net.xdob.vexra.adb.db.RowCodec;
+import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.adb.key.DataKey;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
@@ -11,6 +14,7 @@ import net.xdob.vexra.proto.adb.ReadRequest;
 import net.xdob.vexra.proto.adb.ReadResponse;
 import net.xdob.vexra.proto.adb.WriteRequest;
 import net.xdob.vexra.proto.adb.WriteResponse;
+import org.h2.value.ValueVarchar;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -26,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * ADB Raft region commit transport 测试。
  *
  * <p>测试覆盖 ADB-Prod-01 中 region commit transport 到现有 ADB Raft 写请求的映射：
- * PREWRITE 走空 batch fencing，COMMIT 走 Commit proto，ROLLBACK 走 Rollback proto。</p>
+ * PREWRITE 走 Prewrite proto，COMMIT 走 Commit proto，ROLLBACK 走 Rollback proto。</p>
  */
 class AdbRaftRegionCommitTransportTest {
   /**
@@ -47,8 +51,15 @@ class AdbRaftRegionCommitTransportTest {
         .join().isSuccess());
 
     assertEquals(3, client.requests.size());
-    assertTrue(client.requests.get(0).hasBatch());
-    assertEquals(0, client.requests.get(0).getBatch().getEntriesCount());
+    assertTrue(client.requests.get(0).hasPrewrite());
+    assertEquals(10, client.requests.get(0).getPrewrite().getTxnId());
+    assertEquals(10, client.requests.get(0).getPrewrite().getStartTs());
+    assertEquals("r1", client.requests.get(0).getPrewrite()
+        .getPrimaryRegionId());
+    assertEquals(1, client.requests.get(0).getPrewrite()
+        .getMutationsCount());
+    assertFalse(client.requests.get(0).getPrewrite()
+        .getMutations(0).getDeleted());
     assertTrue(client.requests.get(1).hasCommit());
     assertEquals(10, client.requests.get(1).getCommit().getTxnId());
     assertEquals(11, client.requests.get(1).getCommit().getCommitTs());
@@ -94,10 +105,20 @@ class AdbRaftRegionCommitTransportTest {
   }
 
   private static AdbRegionCommitRequest request() {
+    RowKey key = rowKey(1);
     return new AdbRegionCommitRequest("r1", 1, "node-a", 10,
-        10, 11, "r1", rowKey(1), 3000, true,
-        Collections.singletonList((DataKey) rowKey(1)),
+        10, 11, "r1", key, 3000, true,
+        Collections.singletonList((DataKey) key),
+        Collections.singletonList(new AdbRegionMutation(key,
+            rowValue("prewrite-value"))),
         Collections.singletonList(Meta.of(new byte[] {1}, new byte[] {2})));
+  }
+
+  private static RowValue rowValue(String value) {
+    RowValue rowValue = new RowValue();
+    rowValue.txnId = 10;
+    rowValue.payload = RowCodec.encode(ValueVarchar.get(value));
+    return rowValue;
   }
 
   private static RowKey rowKey(long rowId) {

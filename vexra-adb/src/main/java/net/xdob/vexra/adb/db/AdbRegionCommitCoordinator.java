@@ -90,6 +90,12 @@ public final class AdbRegionCommitCoordinator {
         builders.put(region.getRegionId(), builder);
       }
       builder.writeKeys.add(key);
+      RowValue value = txn.getLocalWrite(key);
+      if (value == null) {
+        throw new IllegalStateException("Missing local write value, key="
+            + key);
+      }
+      builder.mutations.add(new AdbRegionMutation(key, value));
     }
 
     List<RegionWriteSet> participants = new ArrayList<>();
@@ -100,7 +106,8 @@ public final class AdbRegionCommitCoordinator {
           region.getRegionId(), region.getEpoch(),
           region.getReplicaMetadata().getLeaderId(), txn.getTxnId(),
           txn.getStartTs(), commitTs, primaryRegionId, primaryKey,
-          DEFAULT_LOCK_TTL_MILLIS, primaryRegion, builder.writeKeys, metas);
+          DEFAULT_LOCK_TTL_MILLIS, primaryRegion, builder.writeKeys,
+          builder.mutations, metas);
       participants.add(new RegionWriteSet(request, primaryRegion));
     }
     return participants;
@@ -218,6 +225,7 @@ public final class AdbRegionCommitCoordinator {
   private static final class RegionBuilder {
     private final RegionMetadata region;
     private final List<DataKey> writeKeys = new ArrayList<>();
+    private final List<AdbRegionMutation> mutations = new ArrayList<>();
 
     private RegionBuilder(RegionMetadata region) {
       this.region = region;

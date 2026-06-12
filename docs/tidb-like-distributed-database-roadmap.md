@@ -305,10 +305,18 @@ flowchart TB
 的第一组真实接入边界：
 
 - `AdbRpcRegionCommitClient` 将 2PC prewrite/commit/rollback 阶段映射到可替换 `AdbRegionCommitTransport`，并统一处理失败响应、transport 异常和 client 侧超时。
-- `AdbRaftRegionCommitTransport` 已接到现有 `RClient`/`RaftRClient` 写请求能力：`COMMIT` 映射为 ADB proto `Commit`，`ROLLBACK` 映射为 `Rollback`，`PREWRITE` 在 proto 独立消息补齐前通过空 batch 走 Raft 写路径作为阶段 fencing。
+- `AdbRaftRegionCommitTransport` 已接到现有 `RClient`/`RaftRClient` 写请求能力：`PREWRITE` 映射为 ADB proto `Prewrite`，`COMMIT` 映射为 `Commit`，`ROLLBACK` 映射为 `Rollback`。
 - `AdbSMPlugin` 已补齐 `Rollback` 写请求处理，避免 `RaftStore.rollbackAsync(...)` 发送到状态机后无效。
 - `AdbRaftRegionScanClient` 已通过现有 `RClient`/`ReadRequest.Scan` 读取 region key range，支持分页、read timestamp 可见性归并、count-only 结果和失败响应到 `SQLException` 的映射。
-- 当前仍未实现真实 MVCC prewrite lock proto、专用 RegionScanTask proto 下沉和多进程多节点 Raft/RPC 冒烟；它们继续属于 `ADB-Prod-01` 后续工作。
+- `Prewrite`/`PrewriteMutation` proto 已补齐，`AdbRaftRegionCommitTransport` 的 PREWRITE 阶段已发送真实 prewrite 请求，`AdbSMPlugin` 会将 prewrite mutation 落成现有 ADB 未提交 `VersionKey` intent 和 `TxnRefKey`。
+- 当前仍未实现专用 RegionScanTask proto 下沉和多进程多节点 Raft/RPC 冒烟；它们继续属于 `ADB-Prod-01` 后续工作。
+
+本轮 `ADB-Prod-01` 的 prewrite 落地口径：
+
+- 在 ADB proto 中新增向后兼容的 `Prewrite` oneof 分支，携带 txnId、startTs、primary lock 信息、TTL 和当前 region 的 mutation 列表。
+- `AdbRaftRegionCommitTransport` 的 PREWRITE 阶段不再发送空 batch，而是发送 `Prewrite` 请求。
+- 状态机收到 `Prewrite` 后复用现有 ADB intent/ref 磁盘语义：写入未提交 `VersionKey` 和 `TxnRefKey`，后续 `Commit`/`Rollback` 继续复用现有 `DbStore.commitAsync`/`rollbackAsync`。
+- 本增量只解决真实 prewrite 请求和 durable intent 写入；锁超时解析、primary/secondary resolve、GC safe point 和后台清理仍归入 `ADB-Prod-02`。
 
 ## 回滚策略
 

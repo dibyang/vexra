@@ -28,6 +28,7 @@ public final class AdbRegionCommitRequest {
   private final long lockTtlMillis;
   private final boolean primaryRegion;
   private final List<DataKey> writeKeys;
+  private final List<AdbRegionMutation> mutations;
   private final List<Meta> metas;
 
   /**
@@ -45,7 +46,7 @@ public final class AdbRegionCommitRequest {
       String leaderId, long txnId, long commitTs, Collection<DataKey> writeKeys,
       List<Meta> metas) {
     this(regionId, regionEpoch, leaderId, txnId, 0, commitTs, null, null, 0,
-        false, writeKeys, metas);
+        false, writeKeys, Collections.emptyList(), metas);
   }
 
   /**
@@ -68,6 +69,33 @@ public final class AdbRegionCommitRequest {
       String leaderId, long txnId, long startTs, long commitTs,
       String primaryRegionId, DataKey primaryKey, long lockTtlMillis,
       boolean primaryRegion, Collection<DataKey> writeKeys, List<Meta> metas) {
+    this(regionId, regionEpoch, leaderId, txnId, startTs, commitTs,
+        primaryRegionId, primaryKey, lockTtlMillis, primaryRegion, writeKeys,
+        Collections.emptyList(), metas);
+  }
+
+  /**
+   * 创建带 mutation 的 region 事务请求。
+   *
+   * @param regionId region 标识
+   * @param regionEpoch region epoch
+   * @param leaderId leader 副本标识
+   * @param txnId ADB 事务 ID
+   * @param startTs ADB start timestamp
+   * @param commitTs ADB commit timestamp
+   * @param primaryRegionId primary participant region 标识
+   * @param primaryKey primary lock key
+   * @param lockTtlMillis primary/secondary lock TTL
+   * @param primaryRegion 当前请求是否属于 primary participant
+   * @param writeKeys 当前 region 的写入 key 快照
+   * @param mutations 当前 region 的预写 mutation
+   * @param metas 提交时附带的元数据更新
+   */
+  public AdbRegionCommitRequest(String regionId, long regionEpoch,
+      String leaderId, long txnId, long startTs, long commitTs,
+      String primaryRegionId, DataKey primaryKey, long lockTtlMillis,
+      boolean primaryRegion, Collection<DataKey> writeKeys,
+      Collection<AdbRegionMutation> mutations, List<Meta> metas) {
     this.regionId = normalize(regionId, "regionId");
     if (regionEpoch < 0) {
       throw new IllegalArgumentException("regionEpoch is negative: "
@@ -97,6 +125,7 @@ public final class AdbRegionCommitRequest {
     this.lockTtlMillis = lockTtlMillis;
     this.primaryRegion = primaryRegion;
     this.writeKeys = immutableKeys(writeKeys);
+    this.mutations = immutableMutations(mutations);
     this.metas = immutableMetas(metas);
   }
 
@@ -144,6 +173,10 @@ public final class AdbRegionCommitRequest {
     return writeKeys;
   }
 
+  public List<AdbRegionMutation> getMutations() {
+    return mutations;
+  }
+
   public List<Meta> getMetas() {
     return metas;
   }
@@ -165,6 +198,18 @@ public final class AdbRegionCommitRequest {
       return Collections.emptyList();
     }
     return Collections.unmodifiableList(new ArrayList<>(metas));
+  }
+
+  private static List<AdbRegionMutation> immutableMutations(
+      Collection<AdbRegionMutation> mutations) {
+    if (mutations == null || mutations.isEmpty()) {
+      return Collections.emptyList();
+    }
+    List<AdbRegionMutation> copy = new ArrayList<>();
+    for (AdbRegionMutation mutation : mutations) {
+      copy.add(Objects.requireNonNull(mutation, "mutation == null"));
+    }
+    return Collections.unmodifiableList(copy);
   }
 
   private static String normalize(String value, String fieldName) {

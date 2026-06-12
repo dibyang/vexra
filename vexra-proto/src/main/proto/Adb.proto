@@ -51,6 +51,22 @@ message Commit {
   repeated MetaProto metas = 3;
 }
 
+message PrewriteMutation {
+  bytes key = 1;
+  bytes value = 2;
+  bool deleted = 3;
+}
+
+message Prewrite {
+  int64 txnId = 1;
+  int64 startTs = 2;
+  string primaryRegionId = 3;
+  bytes primaryKey = 4;
+  int64 lockTtlMillis = 5;
+  bool primaryRegion = 6;
+  repeated PrewriteMutation mutations = 7;
+}
+
 message Rollback {
   int64 txnId = 1;
 }
@@ -62,6 +78,7 @@ message WriteRequest {
     AllocateSegment allocateSegment = 3;
     Commit commit = 4;
     Rollback rollback = 5;
+    Prewrite prewrite = 6;
   }
 }
 

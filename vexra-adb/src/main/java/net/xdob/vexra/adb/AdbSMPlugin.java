@@ -3,6 +3,7 @@ package net.xdob.vexra.adb;
 import com.google.protobuf.ByteString;
 import net.xdob.vexra.adb.db.*;
 import net.xdob.vexra.adb.db.Meta;
+import net.xdob.vexra.adb.key.DataKey;
 import net.xdob.vexra.proto.adb.*;
 import net.xdob.vexra.proto.sm.WrapReplyProto;
 import net.xdob.vexra.proto.sm.WrapRequestProto;
@@ -241,6 +242,22 @@ public class AdbSMPlugin implements SMPlugin {
         }
         store.commitAsync(commit.getTxnId(), commit.getCommitTs(), metas)
             .join();
+        builder.setSuccess(true);
+      } else if (writeRequest.hasPrewrite()) {
+        Prewrite prewrite = writeRequest.getPrewrite();
+        List<AdbRegionMutation> mutations = new ArrayList<>();
+        for (PrewriteMutation mutation : prewrite.getMutationsList()) {
+          RowValue value = RowValue.decodeValue(
+              mutation.getValue().toByteArray());
+          if (value == null) {
+            throw new SQLException("prewrite mutation value is empty");
+          }
+          value.deleted = mutation.getDeleted();
+          mutations.add(new AdbRegionMutation(
+              DataKey.fromBytes(mutation.getKey().toByteArray()), value));
+        }
+        AdbPrewriteApplicator.prewrite(store, prewrite.getTxnId(),
+            prewrite.getStartTs(), mutations);
         builder.setSuccess(true);
       } else if (writeRequest.hasRollback()) {
         Rollback rollback = writeRequest.getRollback();
