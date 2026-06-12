@@ -157,6 +157,16 @@ flowchart TB
 - gate 失败时事务不得进入 durable commit；回滚方式是移除 gate 或切回 no-op gate。
 - 该接入点不改变 ADB key 编码、磁盘格式和旧 store API，后续可替换为真正的 region Raft write path。
 
+## 运行时接入点：ADB region 读路由
+
+写入 gate 之后，读路径需要先建立可插拔 region 路由入口，再逐步替换成本地/远程混合执行：
+
+- `TxnManager.getVisible(...)`、`entryIterator(...)` 和 `indexScanIterator(...)` 在执行本地 store 读取前调用可选的 `AdbRegionReadRouter`。
+- 默认 read router 为 no-op，保持当前单机读路径和 H2 table/index 行为不变。
+- region-aware read router 只负责把点读、主表 range scan、索引 range scan 映射到 region，并可通知诊断/观测组件。
+- 本阶段不改变 scan cursor、store API 和返回结果合并逻辑；后续由该入口替换为 `RegionScanTask` 与远程 executor。
+- read router 失败时读操作失败；回滚方式是移除 router 或切回 no-op router。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

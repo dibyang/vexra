@@ -22,6 +22,7 @@ public class TxnManager {
   private final LockManager lockManager = new LockManager();
   private final Object commitMutex = new Object();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
+  private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -52,6 +53,23 @@ public class TxnManager {
   public void setRegionWriteGate(AdbRegionWriteGate regionWriteGate) {
     this.regionWriteGate = regionWriteGate == null
         ? AdbRegionWriteGate.NOOP : regionWriteGate;
+  }
+
+  public AdbRegionReadRouter getRegionReadRouter() {
+    return regionReadRouter;
+  }
+
+  /**
+   * 设置 ADB region 读路由器。
+   *
+   * <p>传入 null 会恢复为 no-op router。router 在点读和扫描创建本地 cursor 前执行，
+   * 用于分布式 region 模式下记录或校验读请求的 region 路由。</p>
+   *
+   * @param regionReadRouter 新的 region 读路由器
+   */
+  public void setRegionReadRouter(AdbRegionReadRouter regionReadRouter) {
+    this.regionReadRouter = regionReadRouter == null
+        ? AdbRegionReadRouter.NOOP : regionReadRouter;
   }
 
   public long newTxnId() {
@@ -199,12 +217,17 @@ public class TxnManager {
   }
 
   public IndexScanCursor indexScanIterator(Transaction2 txn, PrefixKey prefixKey, TableKey min, TableKey max){
+    routeRangeRead(txn,
+        min != null ? min.toBytes() : prefixKey.toBytes(),
+        max != null ? max.toBytes() : KeyCodec.prefixEnd(prefixKey.toBytes()));
     return new IndexScanCursor(txn, store.openVersionScanSource(ScanDirection.FORWARD),
         new DefaultVisibleIndexResolver(store), new DefaultVisibleRowResolver(store),
         prefixKey, min, max);
   }
 
   public TableScanCursor entryIterator(Transaction2 txn, PrefixKey prefixKey, Long min, Long max){
+    routeRangeRead(txn,
+        tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
     return new TableScanCursor(txn, store.openVersionScanSource(ScanDirection.FORWARD),
         new DefaultVisibleRowResolver(store),
         prefixKey, min, max);
@@ -228,6 +251,8 @@ public class TxnManager {
     if (local != null) {
       return local;
     }
+
+    regionReadRouter.routePointRead(txn, rowKey);
 
     // 2. 璇?committed 鎴?Intent
     RowValue visible = this.getVisibleCommitted(txn, rowKey);
@@ -370,6 +395,33 @@ public class TxnManager {
       t = t.getCause();
     }
     return t;
+  }
+
+  private void routeRangeRead(Transaction2 txn, byte[] startKeyInclusive,
+      byte[] endKeyExclusive) {
+    try {
+      regionReadRouter.routeRangeRead(txn, startKeyInclusive, endKeyExclusive);
+    } catch (SQLException e) {
+      throw DbException.convert(e);
+    }
+  }
+
+  private static byte[] tableScanStartKey(PrefixKey prefixKey, Long minRowId) {
+    return minRowId != null ? buildRowSeekKey(prefixKey, minRowId)
+        : prefixKey.toBytes();
+  }
+
+  private static byte[] tableScanEndKey(PrefixKey prefixKey, Long maxRowId) {
+    return maxRowId != null ? KeyCodec.prefixEnd(
+        buildRowSeekKey(prefixKey, maxRowId))
+        : KeyCodec.prefixEnd(prefixKey.toBytes());
+  }
+
+  private static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
+    DynamicByteBuffer b = DynamicByteBuffer.c();
+    b.put(prefixKey.toBytes());
+    b.putLong(rowId);
+    return b.toArray();
   }
 
 

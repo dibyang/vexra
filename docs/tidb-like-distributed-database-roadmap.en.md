@@ -157,6 +157,16 @@ The next step is to connect the completed region routing and witness quorum-writ
 - If the gate fails, the transaction must not enter durable commit; rollback is to remove the gate or switch back to the no-op gate.
 - This integration point does not change ADB key encoding, disk format, or the existing store API, and can later be replaced by the real region Raft write path.
 
+## Runtime Integration Point: ADB Region Read Routing
+
+After the write gate, the read path needs a pluggable region-routing entry point before it can evolve into mixed local/remote execution:
+
+- `TxnManager.getVisible(...)`, `entryIterator(...)`, and `indexScanIterator(...)` call an optional `AdbRegionReadRouter` before local store reads.
+- The default read router is no-op, preserving the current single-node read path and H2 table/index behavior.
+- A region-aware read router only maps point reads, primary-table range scans, and index range scans to regions, and can notify diagnostics/observability components.
+- This phase does not change scan cursors, the store API, or result merging; later work can replace this entry point with `RegionScanTask` and a remote executor.
+- If the read router fails, the read operation fails; rollback is to remove the router or switch back to the no-op router.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
