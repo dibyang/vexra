@@ -171,16 +171,15 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 4 个：
+剩余实现阶段共 3 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
-| 2 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
-| 3 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 4 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
+| 2 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
+| 3 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-下一组优先级最高的落地工作是实现 region split/merge 与 snapshot install。
+下一组优先级最高的落地工作是把 h2db plan 接到分布式执行计划。
 
 ### ADB-Runtime-03 实施口径
 
@@ -236,6 +235,17 @@ flowchart TB
 - 如果 primary 已提交后 secondary commit 失败，coordinator 不伪装成已完全回滚，而是把失败暴露给上层；后续 lock resolve/后台清理需要基于 primary commit 结果补齐 secondary。
 - 本阶段完成 coordinator 级别的 2PC 编排、primary participant 校验、失败回滚和故障注入测试；真实 MVCC lock column、后台 lock resolve worker、超时清理和幂等恢复在后续增量继续深化。
 - 实现涉及 `AdbRegionCommitClient`、`AdbRegionCommitRequest`、`AdbLocalRegionCommitClient` 和 `AdbRegionCommitCoordinator`，测试为 `AdbRegionCommitCoordinatorTest`。
+
+### ADB-Runtime-08 实施口径
+
+`ADB-Runtime-08` 已将 region split/merge 和 snapshot install 接到 ADB 运行时边界：
+
+- 已定义可发布 route snapshot 的控制面接口，使 split/merge 可以在不依赖内存实现类型的情况下推进 route epoch。
+- 已提供最小 region topology manager：根据父 region 和 split key 生成左右子 region，并发布新的 region 元数据快照；merge 先限定为相邻 region 的元数据合并，不移动数据文件。
+- 已提供 ADB region snapshot installer bridge：接收 `RegionSnapshotInstallPlan`，校验目标副本后调用 `DbStore.restore(...)` 安装快照目录。
+- 本阶段复用现有 `DbStore.checkpoint(...)`/`restore(...)` 能力，不改变 LDB/RocksDB 磁盘格式，不实现真实 Raft snapshot chunk 传输。
+- 验证覆盖 split 后 route epoch 递增且新路由命中正确 region，以及从 checkpoint 安装 snapshot 后数据仍可读。
+- 实现涉及 `AdbRouteSnapshotPublisher`、`AdbRegionTopologyManager`、`AdbRegionSnapshotInstaller` 和 `InMemoryAdbControlPlaneClient`，测试为 `AdbRegionTopologyManagerTest`。
 
 ## 回滚策略
 

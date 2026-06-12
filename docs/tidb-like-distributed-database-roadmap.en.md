@@ -171,16 +171,15 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-There are 4 remaining implementation phases:
+There are 3 remaining implementation phases:
 
 | Order | Phase | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-08 | Region split/merge and snapshot install | split/merge state machine, route epoch advancement, snapshot install into ADB store | Routes are correct after split, and data is readable after snapshot install |
-| 2 | ADB-Runtime-09 | h2db plan to distributed execution plan | plan adapter, `EXPLAIN DISTRIBUTED`, and minimal statistics integration | SQL can produce region task plans and execute basic pushdown |
-| 3 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
-| 4 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 1 | ADB-Runtime-09 | h2db plan to distributed execution plan | plan adapter, `EXPLAIN DISTRIBUTED`, and minimal statistics integration | SQL can produce region task plans and execute basic pushdown |
+| 2 | ADB-Runtime-10 | Online DDL runtime integration | schema-version binding, index backfill execution, and failure recovery | add index does not block reads/writes, and backfill can resume |
+| 3 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
 
-The next highest-priority implementation step is region split/merge and snapshot install.
+The next highest-priority implementation step is wiring h2db plans to distributed execution plans.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -236,6 +235,17 @@ The next highest-priority implementation step is region split/merge and snapshot
 - If the primary has already committed and a secondary commit fails, the coordinator must not pretend the transaction fully rolled back. It surfaces the failure to the caller; later lock resolve/background cleanup must finish or repair the secondary.
 - This phase completed coordinator-level 2PC orchestration, primary participant validation, failure rollback, and fault-injection tests. Real MVCC lock columns, background lock resolve workers, timeout cleanup, and idempotent recovery remain follow-up increments.
 - The implementation touches `AdbRegionCommitClient`, `AdbRegionCommitRequest`, `AdbLocalRegionCommitClient`, and `AdbRegionCommitCoordinator`, covered by `AdbRegionCommitCoordinatorTest`.
+
+### ADB-Runtime-08 Implementation Scope
+
+`ADB-Runtime-08` has wired region split/merge and snapshot install into the ADB runtime boundary:
+
+- Defined a control-plane interface that can publish route snapshots, so split/merge can advance route epochs without depending on the in-memory implementation type.
+- Provided a minimal region topology manager: generate left/right child regions from a parent region and split key, then publish the new region metadata snapshot. Merge is limited to adjacent-region metadata merge first and does not move data files.
+- Provided an ADB region snapshot installer bridge: accept `RegionSnapshotInstallPlan`, validate the target replica, and call `DbStore.restore(...)` to install the snapshot directory.
+- This phase reuses the existing `DbStore.checkpoint(...)` / `restore(...)` capability, does not change the LDB/RocksDB disk format, and does not implement real Raft snapshot chunk transfer.
+- Validation covers route epoch advancement and correct post-split routing, plus data readability after installing a checkpoint snapshot.
+- The implementation touches `AdbRouteSnapshotPublisher`, `AdbRegionTopologyManager`, `AdbRegionSnapshotInstaller`, and `InMemoryAdbControlPlaneClient`, covered by `AdbRegionTopologyManagerTest`.
 
 ## Rollback Strategy
 

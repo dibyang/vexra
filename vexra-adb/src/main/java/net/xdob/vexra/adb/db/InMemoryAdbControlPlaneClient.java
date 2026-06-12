@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 应替换为由 Raft/PD-like 服务持久化和复制的控制面。</p>
  */
 public final class InMemoryAdbControlPlaneClient
-    implements AdbControlPlaneClient {
+    implements AdbRouteSnapshotPublisher {
   private final AtomicLong routeEpoch = new AtomicLong(0);
   private final AtomicReference<Collection<RegionMetadata>> regions;
   private final TimestampOracle timestampOracle;
