@@ -171,18 +171,17 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 6 个：
+剩余实现阶段共 5 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-06 | 控制面元数据与 TSO 服务接入 | PD-like region 元数据发布、路由快照刷新、全局 TSO 分配 | SQL session 可获取一致的 region route snapshot 和单调 timestamp |
-| 2 | ADB-Runtime-07 | 分布式事务 2PC 接入 | prewrite/commit/rollback、primary lock、lock resolve、超时清理 | 跨 region 事务提交/回滚一致，故障注入覆盖部分提交 |
-| 3 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
-| 4 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
-| 5 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 6 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-07 | 分布式事务 2PC 接入 | prewrite/commit/rollback、primary lock、lock resolve、超时清理 | 跨 region 事务提交/回滚一致，故障注入覆盖部分提交 |
+| 2 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
+| 3 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
+| 4 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
+| 5 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-下一组优先级最高的落地工作是把控制面 region 元数据和全局 TSO 接入 SQL session。
+下一组优先级最高的落地工作是把跨 region 写入从单 region commit 扩展到 2PC。
 
 ### ADB-Runtime-03 实施口径
 
@@ -216,6 +215,17 @@ flowchart TB
 - commit client 抽象真实 region Raft apply，本阶段提供本地 bridge client 复用现有 `DbStore.commitAsync`，后续可替换为真实 Raft/RPC client。
 - 本阶段不改变 ADB intent/version 磁盘格式，不改变 `DbStore` 公共接口。
 - 实现类包括 `AdbRegionCommitRequest`、`AdbRegionCommitClient`、`AdbLocalRegionCommitClient` 和 `AdbRegionCommitCoordinator`，测试为 `AdbRegionCommitCoordinatorTest`。
+
+### ADB-Runtime-06 实施口径
+
+`ADB-Runtime-06` 已接入控制面 region 元数据快照和全局 TSO：
+
+- 定义 ADB 控制面客户端，提供 region route snapshot 和全局 timestamp 分配。
+- 定义 session/runtime context，把控制面 route snapshot 安装到 `TxnManager` 的 read router、write commit coordinator 和后续可扩展组件。
+- `TxnManager` 支持可选外部 timestamp provider；启用后 `startTs` 和 `commitTs` 来自控制面 TSO，未启用时保持现有单机计数器。
+- route snapshot 需要携带 epoch，session 可显式刷新，刷新后新事务使用新的 region router。
+- 本阶段不实现独立 PD 进程、不改变 JDBC URL 语义、不要求默认启用分布式模式。
+- 实现类包括 `AdbControlPlaneClient`、`AdbControlPlaneSnapshot`、`InMemoryAdbControlPlaneClient`、`AdbControlPlaneTimestampProvider`、`AdbTimestampProvider` 和 `AdbRuntimeSessionContext`，测试为 `AdbRuntimeSessionContextTest`。
 
 ## 回滚策略
 

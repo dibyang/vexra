@@ -24,6 +24,7 @@ public class TxnManager {
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
+  private volatile AdbTimestampProvider timestampProvider;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -90,19 +91,48 @@ public class TxnManager {
     this.regionCommitCoordinator = regionCommitCoordinator;
   }
 
+  public AdbTimestampProvider getTimestampProvider() {
+    return timestampProvider;
+  }
+
+  /**
+   * 设置外部 timestamp provider。
+   *
+   * <p>传入 null 会恢复为本地 commitTs 计数器。启用后，新事务 startTs 和 commitTs
+   * 都由外部控制面 TSO 分配。</p>
+   *
+   * @param timestampProvider 外部 timestamp provider
+   */
+  public void setTimestampProvider(AdbTimestampProvider timestampProvider) {
+    this.timestampProvider = timestampProvider;
+  }
+
   public long newTxnId() {
     return txnIdGen.nextTxnId();
   }
 
   public long lastCommitTs() {
+    AdbTimestampProvider provider = timestampProvider;
+    if (provider != null) {
+      return provider.lastTimestamp();
+    }
     return tsGen.lastCommitTs();
   }
 
   public Transaction2 beginTransaction() {
-    Transaction2 txn = new Transaction2(txnIdGen.nextTxnId(), tsGen.lastCommitTs());
-    txn.setStartTs(txn.getTxnId());
+    long startTs = nextStartTs();
+    Transaction2 txn = new Transaction2(txnIdGen.nextTxnId(), startTs);
+    txn.setStartTs(startTs);
     txn.setState(TxnState.PENDING);
     return txn;
+  }
+
+  private long nextStartTs() {
+    AdbTimestampProvider provider = timestampProvider;
+    if (provider != null) {
+      return provider.nextStartTimestamp();
+    }
+    return tsGen.lastCommitTs();
   }
 
   // -------------------- 鍐?鍒犻櫎鎿嶄綔 --------------------
@@ -350,7 +380,7 @@ public class TxnManager {
       validate(txn);
       writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
       regionWriteGate.beforeCommit(txn, writeKeys);
-      commitTs = tsGen.nextCommitTs();
+      commitTs = nextCommitTs();
       txn.setState(TxnState.COMMITTING);
 
       rowCountDeltas = new LinkedHashMap<>();
@@ -433,6 +463,14 @@ public class TxnManager {
       return coordinator.commitAsync(txn, commitTs, writeKeys, metas);
     }
     return store.commitAsync(txn.getTxnId(), commitTs, metas);
+  }
+
+  private long nextCommitTs() {
+    AdbTimestampProvider provider = timestampProvider;
+    if (provider != null) {
+      return provider.nextCommitTimestamp();
+    }
+    return tsGen.nextCommitTs();
   }
 
   private static byte[] tableScanStartKey(PrefixKey prefixKey, Long minRowId) {
