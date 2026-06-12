@@ -171,13 +171,13 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-There is 1 remaining implementation phase:
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. There are 0 remaining implementation phases in this roadmap.
 
 | Order | Phase | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-11 | Production operations and security loop | metrics, admin/system tables, backup/restore, rolling upgrade, minimal privileges/TLS | Multi-node smoke, backup/restore drill, and rolling-upgrade drill pass |
+| - | - | - | - | - |
 
-The next highest-priority implementation step is the production operations and security loop.
+The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to real multi-node deployment, real Raft/RPC, certificates/privileges, and long-running stress tests.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -264,6 +264,26 @@ The next highest-priority implementation step is the production operations and s
 - Backfill exposes a recoverable progress-advance API that records lastCompletedKey and completedRows, allowing a rebuilt controller to resume from an existing job.
 - This phase does not implement the real index KV backfill scanner and does not change h2db DDL syntax. Real backfill workers and failure compensation remain follow-up increments.
 - The implementation touches `AdbOnlineDdlRuntimeController`, covered by `AdbOnlineDdlRuntimeControllerTest`.
+
+### ADB-Runtime-11 Implementation Scope
+
+`ADB-Runtime-11` has wired the production operations and security loop to the minimal verifiable ADB runtime boundary:
+
+- Provided an ADB runtime operations bridge that emits `ClusterOperationsSnapshot`, system table rows, and metrics from the control-plane route snapshot.
+- Provided a backup/restore drill bridge that reuses `BackupRestorePlan` and `DbStore.checkpoint(...)` / `restore(...)` to run local full backup/restore drills.
+- Provided distributed runtime options. Distributed mode is disabled by default; explicitly enabling it requires TLS and least-privilege flags to be enabled together, preventing test settings from silently becoming production settings.
+- This phase does not implement real multi-node deployment scripts, certificate issuance, a privilege system, or a rolling-upgrade executor. Those are production release-engineering work, but the runtime facade can host later integrations.
+- The implementation touches `AdbDistributedRuntimeOptions` and `AdbRuntimeOperationsBridge`, covered by `AdbRuntimeOperationsBridgeTest`.
+
+## Remaining Production Work After This Roadmap
+
+The current phases 1-11 have landed the key runtime boundaries required by a TiDB-like distributed database, with code and tests. Production readiness still requires follow-up engineering and verification:
+
+- Replace region scan/commit clients with real Raft/RPC clients and validate them with multi-process, multi-node smoke tests.
+- Add real MVCC lock columns, lock resolve workers, idempotent recovery, and GC safe points to the storage format.
+- Wire h2db optimizer rules, `EXPLAIN DISTRIBUTED` SQL syntax, statistics, and cost selection into the real SQL path.
+- Wire Online DDL backfill workers to real index KV backfill, failure compensation, and long-running task scheduling.
+- Complete certificate issuance, the privilege system, rolling-upgrade executor, backup media integration, and long-running stress tests.
 
 ## Rollback Strategy
 

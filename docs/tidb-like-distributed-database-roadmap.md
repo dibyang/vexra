@@ -171,13 +171,13 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 1 个：
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成，剩余实现阶段共 0 个。
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| - | - | - | - | - |
 
-下一组优先级最高的落地工作是生产化运维与安全闭环。
+下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到真实多节点部署、真实 Raft/RPC、证书/权限系统和长稳压测中。
 
 ### ADB-Runtime-03 实施口径
 
@@ -264,6 +264,26 @@ flowchart TB
 - backfill 已实现可恢复进度推进接口，记录 lastCompletedKey 和 completedRows，支持 controller 重建后继续从已有 job 进度恢复。
 - 本阶段不直接实现真实索引 KV 回填扫描器，不改变 h2db DDL 语法；真实 backfill worker 和失败补偿继续在后续增量完善。
 - 实现涉及 `AdbOnlineDdlRuntimeController`，测试为 `AdbOnlineDdlRuntimeControllerTest`。
+
+### ADB-Runtime-11 实施口径
+
+`ADB-Runtime-11` 已将生产化运维与安全闭环接到 ADB 运行时的最小可验证边界：
+
+- 已提供 ADB runtime operations bridge，基于控制面 route snapshot 输出 `ClusterOperationsSnapshot`、system table row 和 metrics。
+- 已提供 backup/restore drill bridge，复用 `BackupRestorePlan` 和 `DbStore.checkpoint(...)`/`restore(...)` 执行本地全量备份恢复演练。
+- 已提供 distributed runtime options，默认关闭分布式模式；显式启用分布式模式时要求 TLS 和最小权限标记同时开启，避免测试配置误入生产。
+- 本阶段不实现真实多节点部署脚本、证书签发、权限系统或滚动升级执行器；这些属于生产发行工程，但已有运行时门面可以承接后续集成。
+- 实现涉及 `AdbDistributedRuntimeOptions` 和 `AdbRuntimeOperationsBridge`，测试为 `AdbRuntimeOperationsBridgeTest`。
+
+## 当前路线图完成后的剩余生产化工作
+
+当前 1-11 阶段已经把 TiDB-like 分布式数据库所需的关键运行时边界落到代码和测试中，但“生产可用”仍需要后续工程化工作验证：
+
+- 将 region scan/commit client 替换为真实 Raft/RPC client，并通过多进程、多节点冒烟验证。
+- 将 2PC 的 MVCC lock column、lock resolve worker、幂等恢复和 GC safe point 补到真实存储格式。
+- 将 h2db optimizer rule、`EXPLAIN DISTRIBUTED` SQL 语法、统计信息和代价选择接到真实 SQL 路径。
+- 将 Online DDL backfill worker 接到真实索引 KV 回填、失败补偿和长任务调度。
+- 完成证书签发、权限系统、滚动升级执行器、备份介质集成和长稳压测。
 
 ## 回滚策略
 
