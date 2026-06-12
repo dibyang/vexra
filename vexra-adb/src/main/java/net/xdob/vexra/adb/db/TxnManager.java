@@ -21,6 +21,7 @@ public class TxnManager {
   private DbStore store;
   private final LockManager lockManager = new LockManager();
   private final Object commitMutex = new Object();
+  private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -34,6 +35,23 @@ public class TxnManager {
 
   public LockManager getLockManager() {
     return lockManager;
+  }
+
+  public AdbRegionWriteGate getRegionWriteGate() {
+    return regionWriteGate;
+  }
+
+  /**
+   * 设置 ADB region 写入 gate。
+   *
+   * <p>传入 null 会恢复为 no-op gate。gate 在 commitTs 分配和 durable commit 前执行，
+   * 用于分布式 region 模式下阻止缺少多数派的写入。</p>
+   *
+   * @param regionWriteGate 新的 region 写入 gate
+   */
+  public void setRegionWriteGate(AdbRegionWriteGate regionWriteGate) {
+    this.regionWriteGate = regionWriteGate == null
+        ? AdbRegionWriteGate.NOOP : regionWriteGate;
   }
 
   public long newTxnId() {
@@ -286,6 +304,8 @@ public class TxnManager {
       }
 
       validate(txn);
+      regionWriteGate.beforeCommit(txn,
+          new ArrayList<>(txn.getWriteSet().keySet()));
       commitTs = tsGen.nextCommitTs();
       txn.setState(TxnState.COMMITTING);
 

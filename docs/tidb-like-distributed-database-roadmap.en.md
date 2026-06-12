@@ -147,6 +147,16 @@ See `docs/two-data-node-witness-ha-design.md` for the dedicated design.
 | ADB-Cluster-06 | Done | `DdlJob`, `DdlJobState`, `DdlJobStateMachine`, `SchemaVersion`, and `IndexBackfillProgress` provide Online DDL state transitions, schema-version advancement, rollback/failure paths, and resumable index backfill progress. |
 | ADB-Cluster-07 | Done | `ClusterOperationsSnapshot`, `ClusterHealthStatus`, `RollingUpgradePlan`, `BackupRestoreMode`, and `BackupRestorePlan` provide operations metrics/system rows, rolling upgrade sequencing, and backup/restore planning. |
 
+## Runtime Integration Point: ADB Region Write Gate
+
+The next step is to connect the completed region routing and witness quorum-write constraints to the real `vexra-adb` commit path:
+
+- `TxnManager.commit(...)` calls an optional `AdbRegionWriteGate` before allocating `commitTs` and before durable commit.
+- The default gate is no-op, preserving single-node ADB/H2 plugin mode and existing `jdbc:adb:*` behavior.
+- Distributed mode can install a region-aware gate that maps ADB write-set `DataKey` values through `RegionRouter`, then uses `RegionWitnessBinding` for quorum fencing.
+- If the gate fails, the transaction must not enter durable commit; rollback is to remove the gate or switch back to the no-op gate.
+- This integration point does not change ADB key encoding, disk format, or the existing store API, and can later be replaced by the real region Raft write path.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
