@@ -171,21 +171,31 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 9 个：
+剩余实现阶段共 8 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-03 | `RegionScanTask` 本地执行 adapter | 将 region read router 结果转换成本地 ADB scan task，复用现有 cursor/store 执行 | 主键点查、主表 range scan、二级索引 range scan 可按 region task 执行并通过单元测试 |
-| 2 | ADB-Runtime-04 | 远程 region scan executor | 定义 region scan 请求/响应、超时、错误映射和结果合并入口 | 多 region scan 可模拟远程执行并合并结果 |
-| 3 | ADB-Runtime-05 | region Raft 写路径 | 将 `AdbRegionWriteGate` 后续提交替换为 region leader/Raft apply 写入 | 单 region 写入经过 leader、term/epoch 校验和 apply 后持久化 |
-| 4 | ADB-Runtime-06 | 控制面元数据与 TSO 服务接入 | PD-like region 元数据发布、路由快照刷新、全局 TSO 分配 | SQL session 可获取一致的 region route snapshot 和单调 timestamp |
-| 5 | ADB-Runtime-07 | 分布式事务 2PC 接入 | prewrite/commit/rollback、primary lock、lock resolve、超时清理 | 跨 region 事务提交/回滚一致，故障注入覆盖部分提交 |
-| 6 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
-| 7 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
-| 8 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 9 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-04 | 远程 region scan executor | 定义 region scan 请求/响应、超时、错误映射和结果合并入口 | 多 region scan 可模拟远程执行并合并结果 |
+| 2 | ADB-Runtime-05 | region Raft 写路径 | 将 `AdbRegionWriteGate` 后续提交替换为 region leader/Raft apply 写入 | 单 region 写入经过 leader、term/epoch 校验和 apply 后持久化 |
+| 3 | ADB-Runtime-06 | 控制面元数据与 TSO 服务接入 | PD-like region 元数据发布、路由快照刷新、全局 TSO 分配 | SQL session 可获取一致的 region route snapshot 和单调 timestamp |
+| 4 | ADB-Runtime-07 | 分布式事务 2PC 接入 | prewrite/commit/rollback、primary lock、lock resolve、超时清理 | 跨 region 事务提交/回滚一致，故障注入覆盖部分提交 |
+| 5 | ADB-Runtime-08 | region split/merge 与 snapshot install | split/merge 状态机、路由 epoch 推进、snapshot install 到 ADB store | split 后新旧 route 正确，snapshot install 后数据可读 |
+| 6 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
+| 7 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
+| 8 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-阶段 1 到 3 是下一组优先级最高的落地工作：先让读 task 可执行，再让远程读可替换，最后把写入从“本地 commit 前 fencing”推进到真正 region Raft 写入。
+阶段 1 到 2 是下一组优先级最高的落地工作：先让远程读可替换，再把写入从“本地 commit 前 fencing”推进到真正 region Raft 写入。
+
+### ADB-Runtime-03 实施口径
+
+`ADB-Runtime-03` 已完成本地 `RegionScanTask` adapter：
+
+- 输入为 `Transaction2` 和单个 `RegionScanTask`，输出为 `RegionQueryResult`。
+- adapter 使用 `RegionScanTask.keyRange` 对 ADB version key 做范围扫描，并按逻辑 `DataKey` 去重。
+- 主表 row scan 通过 `DefaultVisibleRowResolver` 读取可见行；索引 scan 先通过 `DefaultVisibleIndexResolver` 判断索引项可见，再回查主表行。
+- 本阶段输出最小诊断字段：`row_id`、`payload`、`key_hex`，索引扫描额外输出 `index_id` 和 `index_hex`。
+- 本阶段不做远程 RPC、不做 SQL planner 改造、不改变 store API 或磁盘格式。
+- 实现类为 `AdbLocalRegionScanExecutor`，测试为 `AdbLocalRegionScanExecutorTest`。
 
 ## 回滚策略
 
