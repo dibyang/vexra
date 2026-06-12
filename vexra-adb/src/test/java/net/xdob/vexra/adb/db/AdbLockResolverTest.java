@@ -87,8 +87,57 @@ class AdbLockResolverTest {
 
       assertEquals(1, result.getScannedLocks());
       assertEquals(1, result.getRolledBackLocks());
+      assertEquals(0, result.getRolledForwardLocks());
       assertNull(store.get(VersionKey.of(expired, false, 12).toBytes()));
       assertNotNull(store.get(VersionKey.of(waiting, false, 13).toBytes()));
+    }
+  }
+
+  /**
+   * 验证 primary 已提交时，过期 secondary lock 会按 primary commitTs 前滚。
+   */
+  @Test
+  void shouldRollForwardSecondaryWhenPrimaryCommitted() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("primary-committed").toString())) {
+      RowKey primary = rowKey(5);
+      RowKey secondary = rowKey(6);
+      prewrite(store, 14, primary, 1, 5);
+      store.commitAsync(14, 30, Collections.emptyList()).join();
+      prewrite(store, 14, secondary, primary, 1, 5);
+
+      AdbLockResolveAction action = new AdbLockResolver(store)
+          .resolveExpiredLock(lock(14, secondary, primary, 1, 5), 7);
+
+      assertEquals(AdbLockResolveAction.ROLLED_FORWARD, action);
+      assertNull(store.get(VersionKey.of(secondary, false, 14).toBytes()));
+      assertNotNull(store.get(VersionKey.of(secondary, true, 30).toBytes()));
+    }
+  }
+
+  /**
+   * 验证批量 resolve 能在同一轮统计 rollback 和 roll-forward。
+   */
+  @Test
+  void shouldCountRollForwardInBatchResolve() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("batch-forward").toString())) {
+      RowKey primary = rowKey(7);
+      RowKey secondary = rowKey(8);
+      RowKey rollback = rowKey(9);
+      prewrite(store, 15, primary, 1, 5);
+      store.commitAsync(15, 40, Collections.emptyList()).join();
+      prewrite(store, 15, secondary, primary, 1, 5);
+      prewrite(store, 16, rollback, 1, 5);
+
+      AdbLockResolveBatchResult result = new AdbLockResolver(store)
+          .resolveExpiredLocks(7, 0);
+
+      assertEquals(2, result.getScannedLocks());
+      assertEquals(1, result.getRolledBackLocks());
+      assertEquals(1, result.getRolledForwardLocks());
+      assertNotNull(store.get(VersionKey.of(secondary, true, 40).toBytes()));
+      assertNull(store.get(VersionKey.of(rollback, false, 16).toBytes()));
     }
   }
 
@@ -101,16 +150,27 @@ class AdbLockResolverTest {
 
   private static void prewrite(LdbStore store, long txnId, RowKey key,
       long startTs, long ttlMillis) throws Exception {
+    prewrite(store, txnId, key, key, startTs, ttlMillis);
+  }
+
+  private static void prewrite(LdbStore store, long txnId, RowKey key,
+      RowKey primaryKey, long startTs, long ttlMillis) throws Exception {
     AdbPrewriteApplicator.prewrite(store, txnId, startTs,
         Collections.singletonList(new AdbRegionMutation(key,
             rowValue(txnId, "lock-resolve"))),
-        Collections.singletonList(lock(txnId, key, startTs, ttlMillis)));
+        Collections.singletonList(lock(txnId, key, primaryKey, startTs,
+            ttlMillis)));
   }
 
   private static AdbTxnLock lock(long txnId, RowKey key, long startTs,
       long ttlMillis) {
-    return new AdbTxnLock(txnId, key.toBytes(), key.toBytes(), startTs, "r1",
-        ttlMillis);
+    return lock(txnId, key, key, startTs, ttlMillis);
+  }
+
+  private static AdbTxnLock lock(long txnId, RowKey key, RowKey primaryKey,
+      long startTs, long ttlMillis) {
+    return new AdbTxnLock(txnId, key.toBytes(), primaryKey.toBytes(), startTs,
+        "r1", ttlMillis);
   }
 
   private static RowValue rowValue(long txnId, String value) {

@@ -8,6 +8,7 @@ package net.xdob.vexra.adb.db;
 public final class AdbLockResolveBatchResult {
   private final int scannedLocks;
   private final int rolledBackLocks;
+  private final int rolledForwardLocks;
 
   /**
    * 创建批处理结果。
@@ -16,6 +17,18 @@ public final class AdbLockResolveBatchResult {
    * @param rolledBackLocks 本轮成功 rollback 的 lock 数
    */
   public AdbLockResolveBatchResult(int scannedLocks, int rolledBackLocks) {
+    this(scannedLocks, rolledBackLocks, 0);
+  }
+
+  /**
+   * 创建批处理结果。
+   *
+   * @param scannedLocks 本轮扫描出的过期 lock 数
+   * @param rolledBackLocks 本轮成功 rollback 的 lock 数
+   * @param rolledForwardLocks 本轮成功 roll-forward 的 lock 数
+   */
+  public AdbLockResolveBatchResult(int scannedLocks, int rolledBackLocks,
+      int rolledForwardLocks) {
     if (scannedLocks < 0) {
       throw new IllegalArgumentException("scannedLocks is negative: "
           + scannedLocks);
@@ -24,11 +37,17 @@ public final class AdbLockResolveBatchResult {
       throw new IllegalArgumentException("rolledBackLocks is negative: "
           + rolledBackLocks);
     }
-    if (rolledBackLocks > scannedLocks) {
-      throw new IllegalArgumentException("rolledBackLocks exceeds scannedLocks");
+    if (rolledForwardLocks < 0) {
+      throw new IllegalArgumentException("rolledForwardLocks is negative: "
+          + rolledForwardLocks);
+    }
+    if (rolledBackLocks + rolledForwardLocks > scannedLocks) {
+      throw new IllegalArgumentException(
+          "resolved locks exceeds scannedLocks");
     }
     this.scannedLocks = scannedLocks;
     this.rolledBackLocks = rolledBackLocks;
+    this.rolledForwardLocks = rolledForwardLocks;
   }
 
   public int getScannedLocks() {
@@ -37,5 +56,9 @@ public final class AdbLockResolveBatchResult {
 
   public int getRolledBackLocks() {
     return rolledBackLocks;
+  }
+
+  public int getRolledForwardLocks() {
+    return rolledForwardLocks;
   }
 }

@@ -16,5 +16,10 @@ public enum AdbLockResolveAction {
   /**
    * lock 已过期，resolver 已通过 rollback 清理该事务的 durable intent。
    */
-  ROLLED_BACK
+  ROLLED_BACK,
+
+  /**
+   * primary 已提交，resolver 已按 primary commitTs 前滚当前 store 中的 remaining intent。
+   */
+  ROLLED_FORWARD
 }

@@ -1,10 +1,13 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.DbStore;
+import net.xdob.vexra.adb.key.VersionKey;
 
 import java.sql.SQLException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletionException;
 
 /**
@@ -41,6 +44,11 @@ public final class AdbLockResolver {
     if (!lock.isExpired(nowTs)) {
       return AdbLockResolveAction.WAIT;
     }
+    OptionalLong primaryCommitTs = findPrimaryCommitTs(lock);
+    if (primaryCommitTs.isPresent()) {
+      commit(lock.getTxnId(), primaryCommitTs.getAsLong());
+      return AdbLockResolveAction.ROLLED_FORWARD;
+    }
     rollback(lock.getTxnId());
     return AdbLockResolveAction.ROLLED_BACK;
   }
@@ -61,13 +69,61 @@ public final class AdbLockResolver {
     List<AdbTxnLock> locks = new AdbTxnLockScanner(store)
         .scanExpiredLocks(nowTs, limit);
     int rolledBack = 0;
+    int rolledForward = 0;
     for (AdbTxnLock lock : locks) {
-      if (resolveExpiredLock(lock, nowTs)
-          == AdbLockResolveAction.ROLLED_BACK) {
+      AdbLockResolveAction action = resolveExpiredLock(lock, nowTs);
+      if (action == AdbLockResolveAction.ROLLED_BACK) {
         rolledBack++;
+      } else if (action == AdbLockResolveAction.ROLLED_FORWARD) {
+        rolledForward++;
       }
     }
-    return new AdbLockResolveBatchResult(locks.size(), rolledBack);
+    return new AdbLockResolveBatchResult(locks.size(), rolledBack,
+        rolledForward);
+  }
+
+  private OptionalLong findPrimaryCommitTs(AdbTxnLock lock)
+      throws SQLException {
+    byte[] prefix = lock.getPrimaryKey();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+    try (VersionScanSource scan = store.openVersionScanSource(
+        ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, end);
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+        VersionKey versionKey = VersionKey.fromBytes(scan.key());
+        if (versionKey.isCommited()) {
+          RowValue rowValue = RowValue.decodeValue(scan.value());
+          if (rowValue != null && rowValue.txnId == lock.getTxnId()) {
+            long commitTs = rowValue.commitTs > 0
+                ? rowValue.commitTs : versionKey.getCommitTs();
+            return OptionalLong.of(commitTs);
+          }
+        }
+        scan.advance();
+      }
+      return OptionalLong.empty();
+    } catch (SQLException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new SQLException("Failed to inspect primary lock, txnId="
+          + lock.getTxnId(), e);
+    }
+  }
+
+  private void commit(long txnId, long commitTs) throws SQLException {
+    try {
+      store.commitAsync(txnId, commitTs, Collections.emptyList()).join();
+    } catch (CompletionException e) {
+      Throwable cause = unwrap(e);
+      if (cause instanceof SQLException) {
+        throw (SQLException) cause;
+      }
+      throw new SQLException("Failed to roll forward ADB lock, txnId="
+          + txnId + ", commitTs=" + commitTs, cause);
+    } catch (RuntimeException e) {
+      throw new SQLException("Failed to roll forward ADB lock, txnId="
+          + txnId + ", commitTs=" + commitTs, e);
+    }
   }
 
   private void rollback(long txnId) throws SQLException {

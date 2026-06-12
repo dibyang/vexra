@@ -372,6 +372,12 @@ flowchart TB
 - `AdbLockResolver` 在单 lock resolve 之外新增批量扫描入口，按 TTL 判断过期 lock，并复用 `DbStore.rollbackAsync(txnId)` 清理对应 durable intent、`TxnRefKey` 和 lock record。
 - 本增量仍只处理过期 rollback 路径；primary lock 已提交时的 secondary 前滚、跨 region primary 查询和后台周期调度继续留在后续增量。
 
+本轮 `ADB-Prod-02` 的 primary committed secondary 前滚口径：
+
+- `AdbLockResolver` 在处理过期 lock 时先检查 primary key 是否存在同一 txnId 的 committed version；如果 primary 已提交，则复用 `DbStore.commitAsync(txnId, primaryCommitTs, emptyMetas)` 将当前 store 中同一事务的 remaining secondary intent 前滚。
+- 批量 resolve 结果新增前滚计数，便于后台 worker 和手动恢复命令区分 rollback 与 roll-forward 效果。
+- 本增量只处理 primary committed version 已在当前 resolver 可访问 store 中的场景；跨 region primary 查询、primary 状态缓存和周期调度继续留在后续增量。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

@@ -368,6 +368,12 @@ This `ADB-Prod-02` lock scanning and batch resolve increment uses this scope:
 - Extend `AdbLockResolver` with a batch scanning entry point in addition to single-lock resolve. It checks TTL expiration and reuses `DbStore.rollbackAsync(txnId)` to clean the durable intent, `TxnRefKey`, and lock record.
 - This increment still handles only the expired-lock rollback path. Secondary roll-forward when the primary lock has committed, cross-region primary lookups, and periodic background scheduling remain follow-up work.
 
+This `ADB-Prod-02` primary-committed secondary roll-forward increment uses this scope:
+
+- When `AdbLockResolver` handles an expired lock, it first checks whether the primary key has a committed version for the same txnId. If the primary has committed, it reuses `DbStore.commitAsync(txnId, primaryCommitTs, emptyMetas)` to roll forward remaining secondary intents in the current store.
+- The batch resolve result now includes a roll-forward count, so background workers and manual recovery commands can distinguish rollback from roll-forward effects.
+- This increment only handles cases where the primary committed version is visible from the resolver's current store. Cross-region primary lookups, primary-state caching, and periodic scheduling remain follow-up work.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
