@@ -259,8 +259,9 @@ public class AdbSMPlugin implements SMPlugin {
           mutations.add(new AdbRegionMutation(
               DataKey.fromBytes(mutation.getKey().toByteArray()), value));
         }
+        List<AdbTxnLock> locks = toLocks(prewrite);
         AdbPrewriteApplicator.prewrite(store, prewrite.getTxnId(),
-            prewrite.getStartTs(), mutations);
+            prewrite.getStartTs(), mutations, locks);
         builder.setSuccess(true);
       } else if (writeRequest.hasRollback()) {
         Rollback rollback = writeRequest.getRollback();
@@ -272,6 +273,28 @@ public class AdbSMPlugin implements SMPlugin {
       builder.setEx(Proto2Util.toThrowable2Proto(e));
     }
     reply.setWriteResponse(builder.build());
+  }
+
+  private static List<AdbTxnLock> toLocks(Prewrite prewrite) {
+    List<AdbTxnLock> locks = new ArrayList<>();
+    if (prewrite.getLocksCount() > 0) {
+      for (PrewriteLock lock : prewrite.getLocksList()) {
+        locks.add(new AdbTxnLock(lock.getTxnId(), lock.getKey().toByteArray(),
+            lock.getPrimaryKey().toByteArray(), lock.getStartTs(),
+            lock.getRegionId(), lock.getTtlMillis()));
+      }
+      return locks;
+    }
+    for (PrewriteMutation mutation : prewrite.getMutationsList()) {
+      byte[] key = mutation.getKey().toByteArray();
+      byte[] primaryKey = prewrite.getPrimaryKey().isEmpty()
+          ? key : prewrite.getPrimaryKey().toByteArray();
+      String regionId = prewrite.getPrimaryRegionId().isEmpty()
+          ? "unknown" : prewrite.getPrimaryRegionId();
+      locks.add(new AdbTxnLock(prewrite.getTxnId(), key, primaryKey,
+          prewrite.getStartTs(), regionId, prewrite.getLockTtlMillis()));
+    }
+    return locks;
   }
 
 

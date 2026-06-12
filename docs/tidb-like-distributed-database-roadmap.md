@@ -356,7 +356,14 @@ flowchart TB
 - `AdbLockResolver` 新增 lock resolver，先支持对已过期 lock 调用现有 `DbStore.rollbackAsync(txnId)` 清理 durable intent 和 `TxnRefKey`。
 - `AdbGcSafePointManager` 新增 GC safe point manager，保证 safe point 单调推进，并在存在活跃长事务时阻止推进到可能破坏快照读的时间戳。
 - `AdbLockResolverTest` 和 `AdbGcSafePointManagerTest` 已覆盖过期锁 rollback、未过期锁等待、safe point 单调推进、长事务保护和可回收判断。
-- 本增量不新增 durable lock column、不启动后台 lock resolve/GC worker，也不删除历史 committed version；这些继续留在 `ADB-Prod-02` 后续增量。
+
+本轮 `ADB-Prod-02` 的 durable lock record 口径：
+
+- 在 ADB proto 中新增 `PrewriteLock`，由 PREWRITE 请求显式携带 txnId、lock key、primary key、startTs、regionId 和 TTL。
+- 在 TXN CF 中新增 `TxnKeyType.LOCK` 记录，key 使用 txnId + LOCK + cfId + logical key，value 使用 `AdbTxnLock` 编码，作为后续 primary/secondary resolve 和后台 worker 的扫描入口。
+- `AdbPrewriteApplicator` 在写 durable intent / `TxnRefKey` 的同一 write batch 内写入 lock record，保持 prewrite 原子性。
+- `LdbStore` 和 `RocksStore` 的 commit/rollback 会同步删除同一 txnId 下的 lock record，避免已结束事务留下可被 resolver 误判的陈旧锁。
+- 本增量仍不启动后台 lock resolve/GC worker，也不删除历史 committed version；primary/secondary resolve 和 GC worker 继续留在 `ADB-Prod-02` 后续增量。
 
 ## 回滚策略
 

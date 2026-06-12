@@ -11,6 +11,7 @@ import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.proto.adb.Commit;
 import net.xdob.vexra.proto.adb.MetaProto;
 import net.xdob.vexra.proto.adb.Prewrite;
+import net.xdob.vexra.proto.adb.PrewriteLock;
 import net.xdob.vexra.proto.adb.PrewriteMutation;
 import net.xdob.vexra.proto.adb.Rollback;
 import net.xdob.vexra.proto.adb.WriteRequest;
@@ -104,12 +105,29 @@ public final class AdbRaftRegionCommitTransport
     }
     for (AdbRegionMutation mutation : request.getMutations()) {
       RowValue value = mutation.getValue();
+      byte[] mutationKey = mutation.getKey().toBytes();
       prewrite.addMutations(PrewriteMutation.newBuilder()
-          .setKey(ByteString.copyFrom(mutation.getKey().toBytes()))
+          .setKey(ByteString.copyFrom(mutationKey))
           .setValue(ByteString.copyFrom(RowValue.encodeValue(value)))
           .setDeleted(value.deleted));
+      prewrite.addLocks(PrewriteLock.newBuilder()
+          .setTxnId(request.getTxnId())
+          .setKey(ByteString.copyFrom(mutationKey))
+          .setPrimaryKey(ByteString.copyFrom(primaryKeyBytes(request,
+              mutationKey)))
+          .setStartTs(request.getStartTs())
+          .setRegionId(request.getRegionId())
+          .setTtlMillis(request.getLockTtlMillis()));
     }
     return prewrite.build();
+  }
+
+  private static byte[] primaryKeyBytes(AdbRegionCommitRequest request,
+      byte[] fallback) {
+    if (request.getPrimaryKey() == null) {
+      return fallback;
+    }
+    return request.getPrimaryKey().toBytes();
   }
 
   private AdbRegionCommitResponse toRegionResponse(AdbRegionCommitPhase phase,

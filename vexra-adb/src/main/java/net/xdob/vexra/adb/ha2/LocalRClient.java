@@ -185,7 +185,7 @@ public class LocalRClient implements RClient{
                   mutation.getKey().toByteArray()), value));
         }
         AdbPrewriteApplicator.prewrite(store, prewrite.getTxnId(),
-            prewrite.getStartTs(), mutations);
+            prewrite.getStartTs(), mutations, toLocks(prewrite));
         builder.setSuccess(true);
       } else if (writeRequest.hasCommit()) {
         Commit commit = writeRequest.getCommit();
@@ -210,6 +210,28 @@ public class LocalRClient implements RClient{
         builder.setEx(Proto2Util.toThrowable2Proto(e));
     }
     return builder.build();
+  }
+
+  private static java.util.List<AdbTxnLock> toLocks(Prewrite prewrite) {
+    java.util.List<AdbTxnLock> locks = new java.util.ArrayList<>();
+    if (prewrite.getLocksCount() > 0) {
+      for (PrewriteLock lock : prewrite.getLocksList()) {
+        locks.add(new AdbTxnLock(lock.getTxnId(), lock.getKey().toByteArray(),
+            lock.getPrimaryKey().toByteArray(), lock.getStartTs(),
+            lock.getRegionId(), lock.getTtlMillis()));
+      }
+      return locks;
+    }
+    for (PrewriteMutation mutation : prewrite.getMutationsList()) {
+      byte[] key = mutation.getKey().toByteArray();
+      byte[] primaryKey = prewrite.getPrimaryKey().isEmpty()
+          ? key : prewrite.getPrimaryKey().toByteArray();
+      String regionId = prewrite.getPrimaryRegionId().isEmpty()
+          ? "unknown" : prewrite.getPrimaryRegionId();
+      locks.add(new AdbTxnLock(prewrite.getTxnId(), key, primaryKey,
+          prewrite.getStartTs(), regionId, prewrite.getLockTtlMillis()));
+    }
+    return locks;
   }
 
   @Override

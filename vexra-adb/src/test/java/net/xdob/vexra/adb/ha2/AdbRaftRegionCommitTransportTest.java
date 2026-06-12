@@ -60,6 +60,13 @@ class AdbRaftRegionCommitTransportTest {
         .getMutationsCount());
     assertFalse(client.requests.get(0).getPrewrite()
         .getMutations(0).getDeleted());
+    assertEquals(1, client.requests.get(0).getPrewrite().getLocksCount());
+    assertEquals(10, client.requests.get(0).getPrewrite().getLocks(0)
+        .getTxnId());
+    assertEquals("r1", client.requests.get(0).getPrewrite().getLocks(0)
+        .getRegionId());
+    assertEquals(3000, client.requests.get(0).getPrewrite().getLocks(0)
+        .getTtlMillis());
     assertTrue(client.requests.get(1).hasCommit());
     assertEquals(10, client.requests.get(1).getCommit().getTxnId());
     assertEquals(11, client.requests.get(1).getCommit().getCommitTs());

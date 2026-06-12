@@ -4,7 +4,8 @@ package net.xdob.vexra.adb.key;
 public enum TxnKeyType {
   WRITE_REF(1),
   UNDO(2),
-  SAVEPOINT(3);
+  SAVEPOINT(3),
+  LOCK(4);
 
   private final byte code;
   TxnKeyType(int c) {

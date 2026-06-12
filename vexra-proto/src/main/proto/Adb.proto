@@ -57,6 +57,15 @@ message PrewriteMutation {
   bool deleted = 3;
 }
 
+message PrewriteLock {
+  int64 txnId = 1;
+  bytes key = 2;
+  bytes primaryKey = 3;
+  int64 startTs = 4;
+  string regionId = 5;
+  int64 ttlMillis = 6;
+}
+
 message Prewrite {
   int64 txnId = 1;
   int64 startTs = 2;
@@ -65,6 +74,7 @@ message Prewrite {
   int64 lockTtlMillis = 5;
   bool primaryRegion = 6;
   repeated PrewriteMutation mutations = 7;
+  repeated PrewriteLock locks = 8;
 }
 
 message Rollback {

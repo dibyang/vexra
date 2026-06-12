@@ -1,6 +1,8 @@
 package net.xdob.vexra.adb.db;
 
 import java.util.Arrays;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 
 /**
  * ADB MVCC lock 记录。
@@ -84,6 +86,71 @@ public final class AdbTxnLock {
       return false;
     }
     return nowTs - startTs > ttlMillis;
+  }
+
+  /**
+   * 将 lock 记录编码为 TXN CF value。
+   *
+   * @return 可持久化的二进制 value
+   */
+  public byte[] toBytes() {
+    byte[] regionBytes = regionId.getBytes(StandardCharsets.UTF_8);
+    int size = Long.BYTES * 3
+        + Integer.BYTES + key.length
+        + Integer.BYTES + primaryKey.length
+        + Integer.BYTES + regionBytes.length;
+    ByteBuffer buffer = ByteBuffer.allocate(size);
+    buffer.putLong(txnId);
+    buffer.putLong(startTs);
+    buffer.putLong(ttlMillis);
+    putBytes(buffer, key);
+    putBytes(buffer, primaryKey);
+    putBytes(buffer, regionBytes);
+    return buffer.array();
+  }
+
+  /**
+   * 从 TXN CF value 解码 lock 记录。
+   *
+   * @param data lock value
+   * @return ADB lock 记录
+   */
+  public static AdbTxnLock fromBytes(byte[] data) {
+    if (data == null || data.length == 0) {
+      throw new IllegalArgumentException("lock data is empty");
+    }
+    ByteBuffer buffer = ByteBuffer.wrap(data);
+    long txnId = buffer.getLong();
+    long startTs = buffer.getLong();
+    long ttlMillis = buffer.getLong();
+    byte[] key = readBytes(buffer, "key");
+    byte[] primaryKey = readBytes(buffer, "primaryKey");
+    byte[] regionBytes = readBytes(buffer, "regionId");
+    if (buffer.hasRemaining()) {
+      throw new IllegalArgumentException("Invalid AdbTxnLock bytes, remaining="
+          + buffer.remaining());
+    }
+    return new AdbTxnLock(txnId, key, primaryKey, startTs,
+        new String(regionBytes, StandardCharsets.UTF_8), ttlMillis);
+  }
+
+  private static void putBytes(ByteBuffer buffer, byte[] value) {
+    buffer.putInt(value.length);
+    buffer.put(value);
+  }
+
+  private static byte[] readBytes(ByteBuffer buffer, String fieldName) {
+    if (buffer.remaining() < Integer.BYTES) {
+      throw new IllegalArgumentException("Missing " + fieldName + " length");
+    }
+    int length = buffer.getInt();
+    if (length <= 0 || buffer.remaining() < length) {
+      throw new IllegalArgumentException("Invalid " + fieldName
+          + " length: " + length);
+    }
+    byte[] value = new byte[length];
+    buffer.get(value);
+    return value;
   }
 
   private static byte[] copyRequired(byte[] value, String fieldName) {

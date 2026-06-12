@@ -3,11 +3,13 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.key.DataKey;
 import net.xdob.vexra.adb.key.TxnKeyType;
+import net.xdob.vexra.adb.key.TxnLockKey;
 import net.xdob.vexra.adb.key.TxnRefKey;
 import net.xdob.vexra.adb.key.VersionKey;
 
 import java.sql.SQLException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Objects;
 
 /**
@@ -34,8 +36,25 @@ public final class AdbPrewriteApplicator {
    */
   public static void prewrite(DbStore store, long txnId, long startTs,
       Collection<AdbRegionMutation> mutations) throws SQLException {
+    prewrite(store, txnId, startTs, mutations, Collections.emptyList());
+  }
+
+  /**
+   * 将 region mutation 和 lock record 原子预写为 durable MVCC 状态。
+   *
+   * @param store ADB store
+   * @param txnId 当前事务 ID
+   * @param startTs 当前事务 start timestamp，用于基础写冲突检查
+   * @param mutations 当前 region 的 mutation 集合
+   * @param locks 当前 region 的 lock record 集合
+   * @throws SQLException 当冲突检查或落盘失败时抛出
+   */
+  public static void prewrite(DbStore store, long txnId, long startTs,
+      Collection<AdbRegionMutation> mutations, Collection<AdbTxnLock> locks)
+      throws SQLException {
     Objects.requireNonNull(store, "store == null");
     Objects.requireNonNull(mutations, "mutations == null");
+    Objects.requireNonNull(locks, "locks == null");
     if (txnId < 0) {
       throw new IllegalArgumentException("txnId is negative: " + txnId);
     }
@@ -50,6 +69,10 @@ public final class AdbPrewriteApplicator {
       for (AdbRegionMutation mutation : mutations) {
         applyMutation(batch, txnId, startTs,
             Objects.requireNonNull(mutation, "mutation == null"));
+      }
+      for (AdbTxnLock lock : locks) {
+        applyLock(batch, txnId, Objects.requireNonNull(lock,
+            "lock == null"));
       }
     });
   }
@@ -75,6 +98,17 @@ public final class AdbPrewriteApplicator {
      */
     batch.put(intentKey.toBytes(), RowValue.encodeValue(value));
     batch.put(CF.TXN.getCfId(), txnRefKey.toBytes(), new byte[0]);
+  }
+
+  private static void applyLock(AdbWriteBatch batch, long txnId,
+      AdbTxnLock lock) throws SQLException {
+    if (lock.getTxnId() != txnId) {
+      throw new SQLException("ADB prewrite lock txn mismatch, txnId=" + txnId
+          + ", lockTxnId=" + lock.getTxnId());
+    }
+    TxnLockKey lockKey = TxnLockKey.of(txnId, CF.DEFAULT.getCfId(),
+        lock.getKey());
+    batch.put(CF.TXN.getCfId(), lockKey.toBytes(), lock.toBytes());
   }
 
   private static void assertNoForeignIntentForLogicalKey(DbStore store,

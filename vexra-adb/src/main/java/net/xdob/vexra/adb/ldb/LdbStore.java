@@ -4,6 +4,7 @@ import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.db.*;
 import net.xdob.vexra.adb.db.CF;
 import net.xdob.vexra.adb.key.TxnKeyType;
+import net.xdob.vexra.adb.key.TxnLockKey;
 import net.xdob.vexra.adb.key.TxnRefKey;
 import net.xdob.vexra.adb.key.TxnRefPrefix;
 import net.xdob.vexra.adb.key.VersionKey;
@@ -277,6 +278,9 @@ public class LdbStore implements DbStore {
           batch.delete(txnCfHandle, key.toBytes());
           batch.delete(key.getKey().toBytes());
         }
+        for (TxnLockKey key : getTxnLockKeyListLocked(currentDb, txnId)) {
+          batch.delete(txnCfHandle, key.toBytes());
+        }
 
         currentDb.write(batch, options);
       }
@@ -305,6 +309,28 @@ public class LdbStore implements DbStore {
       return keys;
     } catch (Exception e) {
       throw new SQLException("Failed to get txn index list, txnId=" + txnId, e);
+    }
+  }
+
+  private List<TxnLockKey> getTxnLockKeyListLocked(LDB currentDb, long txnId)
+      throws SQLException {
+    byte[] prefix = TxnRefPrefix.of(txnId, TxnKeyType.LOCK).toBytes();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+
+    List<TxnLockKey> keys = new ArrayList<>();
+
+    try (VersionScanSource scan = new LdbVersionEntryCursor(
+        currentDb.newSnapshotCursor(currentDb.getColumnFamily(CF.TXN.getCfId())),
+        ScanDirection.FORWARD)) {
+
+      scan.seekToRangeStart(prefix, end);
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+        keys.add(TxnLockKey.fromBytes(scan.key()));
+        scan.advance();
+      }
+      return keys;
+    } catch (Exception e) {
+      throw new SQLException("Failed to get txn lock list, txnId=" + txnId, e);
     }
   }
 
@@ -347,6 +373,9 @@ public class LdbStore implements DbStore {
           VersionKey versionKey = VersionKey.of(key.getKey(), true, commitTs);
           rowValue.commitTs = commitTs;
           batch.put(versionKey.toBytes(), RowValue.encodeValue(rowValue));
+        }
+        for (TxnLockKey key : getTxnLockKeyListLocked(currentDb, txnId)) {
+          batch.delete(txnCfHandle, key.toBytes());
         }
 
         if (metas != null) {

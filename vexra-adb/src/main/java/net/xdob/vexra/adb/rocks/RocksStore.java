@@ -4,6 +4,7 @@ import net.xdob.vexra.adb.*;
 import net.xdob.vexra.adb.db.*;
 import net.xdob.vexra.adb.db.DelegateWriteBatch;
 import net.xdob.vexra.adb.key.TxnKeyType;
+import net.xdob.vexra.adb.key.TxnLockKey;
 import net.xdob.vexra.adb.key.TxnRefKey;
 import net.xdob.vexra.adb.key.TxnRefPrefix;
 import net.xdob.vexra.adb.key.VersionKey;
@@ -267,6 +268,9 @@ public class RocksStore implements DbStore {
         // 删除临时版本
         batch.delete(key.getKey().toBytes());
       }
+      for (TxnLockKey key : getTxnLockKeyList(txnId)) {
+        batch.delete(txnCF, key.toBytes());
+      }
       db.write(options, batch);
     } catch (Exception e) {
       throw new RuntimeException(e);
@@ -295,6 +299,9 @@ public class RocksStore implements DbStore {
         VersionKey versionKey = VersionKey.of(key.getKey(), true, commitTs);
         rowValue.commitTs = commitTs;
         batch.put(versionKey.toBytes(), RowValue.encodeValue(rowValue));
+      }
+      for (TxnLockKey key : getTxnLockKeyList(txnId)) {
+        batch.delete(txnCF, key.toBytes());
       }
       //保存元数据
       for (Meta entry : metas) {
@@ -328,6 +335,25 @@ public class RocksStore implements DbStore {
       return keys;
     } catch (Exception e) {
       throw new SQLException("Failed to get txn index list, txnId=" + txnId, e);
+    }
+  }
+
+  public List<TxnLockKey> getTxnLockKeyList(long txnId) throws SQLException {
+    byte[] prefix = TxnRefPrefix.of(txnId, TxnKeyType.LOCK).toBytes();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+
+    List<TxnLockKey> keys = new ArrayList<>();
+
+    try (VersionScanSource scan = openVersionScanSource(CF.TXN.getCfId(), ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, end);
+
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+        keys.add(TxnLockKey.fromBytes(scan.key()));
+        scan.advance();
+      }
+      return keys;
+    } catch (Exception e) {
+      throw new SQLException("Failed to get txn lock list, txnId=" + txnId, e);
     }
   }
 

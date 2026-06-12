@@ -3,6 +3,7 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.key.TxnKeyType;
+import net.xdob.vexra.adb.key.TxnLockKey;
 import net.xdob.vexra.adb.key.TxnRefKey;
 import net.xdob.vexra.adb.key.VersionKey;
 import net.xdob.vexra.adb.ldb.LdbStore;
@@ -84,6 +85,58 @@ class AdbPrewriteApplicatorTest {
   }
 
   /**
+   * 验证带 lock record 的 prewrite 会在 TXN CF 持久化 lock，并在 commit 后清理。
+   */
+  @Test
+  void shouldPrewriteDurableLockRecordAndCleanItOnCommit() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("lock-commit").toString())) {
+      RowKey key = rowKey(4);
+      AdbTxnLock lock = lock(14, key, 1, 3000);
+
+      AdbPrewriteApplicator.prewrite(store, 14, 1,
+          Collections.singletonList(new AdbRegionMutation(key,
+              rowValue(14, "lock-commit", false))),
+          Collections.singletonList(lock));
+
+      TxnLockKey lockKey = TxnLockKey.of(14, CF.DEFAULT.getCfId(),
+          key.toBytes());
+      AdbTxnLock stored = AdbTxnLock.fromBytes(
+          store.get(CF.TXN.getCfId(), lockKey.toBytes()));
+      assertEquals(14, stored.getTxnId());
+      assertEquals("r1", stored.getRegionId());
+
+      store.commitAsync(14, 24, Collections.emptyList()).join();
+
+      assertNull(store.get(CF.TXN.getCfId(), lockKey.toBytes()));
+    }
+  }
+
+  /**
+   * 验证 rollback 会同步清理 durable lock record。
+   */
+  @Test
+  void shouldCleanDurableLockRecordOnRollback() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("lock-rollback").toString())) {
+      RowKey key = rowKey(5);
+      AdbTxnLock lock = lock(15, key, 1, 3000);
+
+      AdbPrewriteApplicator.prewrite(store, 15, 1,
+          Collections.singletonList(new AdbRegionMutation(key,
+              rowValue(15, "lock-rollback", false))),
+          Collections.singletonList(lock));
+      TxnLockKey lockKey = TxnLockKey.of(15, CF.DEFAULT.getCfId(),
+          key.toBytes());
+      assertNotNull(store.get(CF.TXN.getCfId(), lockKey.toBytes()));
+
+      store.rollbackAsync(15).join();
+
+      assertNull(store.get(CF.TXN.getCfId(), lockKey.toBytes()));
+    }
+  }
+
+  /**
    * 验证同一 logical key 上已有其他事务 intent 时 prewrite 会失败。
    */
   @Test
@@ -109,6 +162,12 @@ class AdbPrewriteApplicatorTest {
     rowValue.deleted = deleted;
     rowValue.payload = RowCodec.encode(ValueVarchar.get(value));
     return rowValue;
+  }
+
+  private static AdbTxnLock lock(long txnId, RowKey key, long startTs,
+      long ttlMillis) {
+    return new AdbTxnLock(txnId, key.toBytes(), key.toBytes(), startTs, "r1",
+        ttlMillis);
   }
 
   private static RowKey rowKey(long rowId) {

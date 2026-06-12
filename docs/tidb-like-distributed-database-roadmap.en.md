@@ -353,7 +353,14 @@ The first `ADB-Prod-02` increment has added runtime entry points for real lock r
 - `AdbLockResolver` adds a lock resolver that initially resolves expired locks by calling the existing `DbStore.rollbackAsync(txnId)` path, cleaning durable intents and `TxnRefKey` entries.
 - `AdbGcSafePointManager` adds a GC safe point manager that advances safe points monotonically and blocks advancement when active long transactions would make the new safe point unsafe for snapshot reads.
 - `AdbLockResolverTest` and `AdbGcSafePointManagerTest` cover expired-lock rollback, unexpired-lock wait, monotonic safe-point advancement, long-transaction protection, and collectable-version checks.
-- This increment does not add a durable lock column, does not start a background lock-resolve/GC worker, and does not delete historical committed versions. Those remain follow-up work inside `ADB-Prod-02`.
+
+This `ADB-Prod-02` durable lock record increment uses this scope:
+
+- Add `PrewriteLock` to the ADB proto so PREWRITE requests explicitly carry txnId, lock key, primary key, startTs, regionId, and TTL.
+- Add `TxnKeyType.LOCK` records in the TXN CF. The key is txnId + LOCK + cfId + logical key, and the value is the encoded `AdbTxnLock`, providing a scan entry point for later primary/secondary resolve and background workers.
+- Make `AdbPrewriteApplicator` write lock records in the same write batch as durable intents and `TxnRefKey` entries, preserving prewrite atomicity.
+- Make `LdbStore` and `RocksStore` delete lock records for the same txnId during commit/rollback, preventing finished transactions from leaving stale locks that a resolver could misread.
+- This increment still does not start a background lock-resolve/GC worker and does not delete historical committed versions. Primary/secondary resolve and the GC worker remain follow-up work inside `ADB-Prod-02`.
 
 ## Rollback Strategy
 
