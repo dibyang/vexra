@@ -288,20 +288,20 @@ flowchart TB
 ## Post-Runtime 生产化阶段
 
 当前 1-11 阶段之后继续按以下生产化阶段推进。按阶段验收口径统计，生产化阶段共 6 个，
-当前完成 0 个、进行中 1 个、未开始 5 个；如果只统计尚未开始阶段，则还剩 5 个。
-`ADB-Prod-01` 已完成多项子交付，但仍未达到阶段验收。每个阶段完成后仍需本地提交。
+当前完成 0 个、进行中 2 个、未开始 4 个；如果只统计尚未开始阶段，则还剩 4 个。
+`ADB-Prod-01` 和 `ADB-Prod-02` 已完成部分子交付，但仍未达到阶段验收。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | `ADB-Prod-01` 仍缺多进程多节点 Raft/RPC 冒烟验收，不能标记完成。 |
-| 进行中生产化阶段 | 1 | `ADB-Prod-01` 正在推进。 |
-| 未开始生产化阶段 | 5 | `ADB-Prod-02` 到 `ADB-Prod-06` 尚未开始。 |
-| 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01` 和后续 5 个未开始阶段。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 和 `ADB-Prod-02` 正在推进。 |
+| 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
+| 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
-| 2 | ADB-Prod-02 | 未开始 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
+| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
 | 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
@@ -347,6 +347,16 @@ flowchart TB
 - 在 JUnit 内启动 3 个真实 `RaftServer`，每个 server 使用独立 GRPC 端口、storage 目录和 cache 目录，并加载 `AdbStateMachine`。
 - 通过 `RaftRClient` 走真实 GRPC Raft client 路径发送 ADB proto，覆盖 prewrite、commit 和 region scan。
 - 该基线验证多节点 Raft/RPC 协议链路和 ADB 状态机接入，不等同于 OS 多进程部署验收；独立进程启动脚本、日志目录隔离、端口回收和异常进程清理仍留在 `ADB-Prod-01` 的最后收尾。
+
+### ADB-Prod-02 当前进展
+
+`ADB-Prod-02` 的第一步已补齐真实 lock resolve 和 GC safe point 的运行时入口：
+
+- `AdbTxnLock` 新增 ADB 专用 lock record，除 common `TxnLock` 的 key、primary key、startTs、region 和 TTL 外，补充 rollback 必需的 txnId。
+- `AdbLockResolver` 新增 lock resolver，先支持对已过期 lock 调用现有 `DbStore.rollbackAsync(txnId)` 清理 durable intent 和 `TxnRefKey`。
+- `AdbGcSafePointManager` 新增 GC safe point manager，保证 safe point 单调推进，并在存在活跃长事务时阻止推进到可能破坏快照读的时间戳。
+- `AdbLockResolverTest` 和 `AdbGcSafePointManagerTest` 已覆盖过期锁 rollback、未过期锁等待、safe point 单调推进、长事务保护和可回收判断。
+- 本增量不新增 durable lock column、不启动后台 lock resolve/GC worker，也不删除历史 committed version；这些继续留在 `ADB-Prod-02` 后续增量。
 
 ## 回滚策略
 

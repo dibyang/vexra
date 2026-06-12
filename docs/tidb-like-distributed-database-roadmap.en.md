@@ -287,19 +287,19 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. By phase acceptance status, there are 6 production phases in total: 0 completed, 1 in progress, and 5 not started. If only not-started phases are counted, 5 phases remain. `ADB-Prod-01` has completed several sub-deliverables, but it has not yet met phase acceptance. Each completed phase still requires a local commit.
+After the current phases 1-11, production work continues through the following phases. By phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
 | Completed production phases | 0 | `ADB-Prod-01` still lacks multi-process multi-node Raft/RPC smoke acceptance and cannot be marked complete. |
-| In-progress production phases | 1 | `ADB-Prod-01` is in progress. |
-| Not-started production phases | 5 | `ADB-Prod-02` through `ADB-Prod-06` have not started. |
-| Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01` plus 5 not-started phases. |
+| In-progress production phases | 2 | `ADB-Prod-01` and `ADB-Prod-02` are in progress. |
+| Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
+| Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | In progress | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
-| 2 | ADB-Prod-02 | Not started | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
+| 2 | ADB-Prod-02 | In progress | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
 | 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
 | 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
@@ -344,6 +344,16 @@ This `ADB-Prod-01` real RaftServer/GRPC smoke baseline uses this scope:
 - Start 3 real `RaftServer` instances inside JUnit, each with an isolated GRPC port, storage directory, cache directory, and `AdbStateMachine`.
 - Send ADB proto through the real GRPC Raft client path via `RaftRClient`, covering prewrite, commit, and region scan.
 - This baseline verifies the multi-node Raft/RPC protocol chain and ADB state-machine integration. It is not the same as OS-level multi-process deployment acceptance; process launch scripts, log-directory isolation, port cleanup, and failed-process cleanup remain the final `ADB-Prod-01` follow-up.
+
+### ADB-Prod-02 Current Progress
+
+The first `ADB-Prod-02` increment has added runtime entry points for real lock resolve and GC safe points:
+
+- `AdbTxnLock` adds an ADB-specific lock record. In addition to the key, primary key, startTs, region, and TTL carried by common `TxnLock`, it includes the txnId required for rollback.
+- `AdbLockResolver` adds a lock resolver that initially resolves expired locks by calling the existing `DbStore.rollbackAsync(txnId)` path, cleaning durable intents and `TxnRefKey` entries.
+- `AdbGcSafePointManager` adds a GC safe point manager that advances safe points monotonically and blocks advancement when active long transactions would make the new safe point unsafe for snapshot reads.
+- `AdbLockResolverTest` and `AdbGcSafePointManagerTest` cover expired-lock rollback, unexpired-lock wait, monotonic safe-point advancement, long-transaction protection, and collectable-version checks.
+- This increment does not add a durable lock column, does not start a background lock-resolve/GC worker, and does not delete historical committed versions. Those remain follow-up work inside `ADB-Prod-02`.
 
 ## Rollback Strategy
 
