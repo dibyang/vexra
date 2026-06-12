@@ -171,15 +171,14 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-剩余实现阶段共 3 个：
+剩余实现阶段共 2 个：
 
 | 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- |
-| 1 | ADB-Runtime-09 | h2db plan 到分布式执行计划 | plan adapter、`EXPLAIN DISTRIBUTED`、统计信息最小接入 | SQL 能输出 region task 计划并执行基础下推 |
-| 2 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
-| 3 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
+| 1 | ADB-Runtime-10 | Online DDL 运行时接入 | schema version 绑定、index backfill 执行、失败恢复 | add index 不阻塞读写，backfill 可断点恢复 |
+| 2 | ADB-Runtime-11 | 生产化运维与安全闭环 | metrics、admin/system table、backup/restore、滚动升级、权限/TLS 最小集 | 可完成多节点冒烟、备份恢复演练和滚动升级演练 |
 
-下一组优先级最高的落地工作是把 h2db plan 接到分布式执行计划。
+下一组优先级最高的落地工作是 Online DDL 运行时接入。
 
 ### ADB-Runtime-03 实施口径
 
@@ -246,6 +245,16 @@ flowchart TB
 - 本阶段复用现有 `DbStore.checkpoint(...)`/`restore(...)` 能力，不改变 LDB/RocksDB 磁盘格式，不实现真实 Raft snapshot chunk 传输。
 - 验证覆盖 split 后 route epoch 递增且新路由命中正确 region，以及从 checkpoint 安装 snapshot 后数据仍可读。
 - 实现涉及 `AdbRouteSnapshotPublisher`、`AdbRegionTopologyManager`、`AdbRegionSnapshotInstaller` 和 `InMemoryAdbControlPlaneClient`，测试为 `AdbRegionTopologyManagerTest`。
+
+### ADB-Runtime-09 实施口径
+
+`ADB-Runtime-09` 已将 h2db/ADB 的本地扫描意图转换为分布式执行计划：
+
+- 已提供 ADB distributed plan adapter，把 table row scan 的表 ID、rowId 范围、projection、filter、limit、read timestamp 转换为按 region 切分的 `DistributedPlan`。
+- adapter 使用当前 route snapshot 的 `RegionRouter` 计算 scan range 与 region range 的交集，保证每个 `RegionScanTask` 只扫描自己负责的 key range。
+- 已提供 `EXPLAIN DISTRIBUTED` 风格的计划文本，输出 regionId、key range、limit、read timestamp 和 count-only 标记，先作为内部诊断 API，不改 h2db SQL 语法。
+- 本阶段复用 `AdbDistributedRegionScanExecutor` 和 `AdbLocalRegionScanClient` 验证基础 pushdown 执行；真实 h2db optimizer rule、统计信息代价选择和 SQL 语法扩展继续留在后续增量。
+- 实现涉及 `AdbDistributedPlanAdapter`，测试为 `AdbDistributedPlanAdapterTest`。
 
 ## 回滚策略
 
