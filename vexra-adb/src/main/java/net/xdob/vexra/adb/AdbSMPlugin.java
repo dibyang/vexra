@@ -242,6 +242,10 @@ public class AdbSMPlugin implements SMPlugin {
         store.commitAsync(commit.getTxnId(), commit.getCommitTs(), metas)
             .join();
         builder.setSuccess(true);
+      } else if (writeRequest.hasRollback()) {
+        Rollback rollback = writeRequest.getRollback();
+        store.rollbackAsync(rollback.getTxnId()).join();
+        builder.setSuccess(true);
       }
     } catch (SQLException e) {
       builder.setSuccess(false);

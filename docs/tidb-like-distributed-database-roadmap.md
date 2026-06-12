@@ -298,6 +298,15 @@ flowchart TB
 | 5 | ADB-Prod-05 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
 | 6 | ADB-Prod-06 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
 
+### ADB-Prod-01 当前进展
+
+`ADB-Prod-01` 已完成 region commit RPC client 的第一组真实接入边界：
+
+- `AdbRpcRegionCommitClient` 将 2PC prewrite/commit/rollback 阶段映射到可替换 `AdbRegionCommitTransport`，并统一处理失败响应、transport 异常和 client 侧超时。
+- `AdbRaftRegionCommitTransport` 已接到现有 `RClient`/`RaftRClient` 写请求能力：`COMMIT` 映射为 ADB proto `Commit`，`ROLLBACK` 映射为 `Rollback`，`PREWRITE` 在 proto 独立消息补齐前通过空 batch 走 Raft 写路径作为阶段 fencing。
+- `AdbSMPlugin` 已补齐 `Rollback` 写请求处理，避免 `RaftStore.rollbackAsync(...)` 发送到状态机后无效。
+- 当前仍未实现真实 MVCC prewrite lock proto 和 region scan RPC transport；它们继续属于 `ADB-Prod-01` 后续工作。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

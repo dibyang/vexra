@@ -298,6 +298,15 @@ After the current phases 1-11, production work continues through the following p
 | 5 | ADB-Prod-05 | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
 | 6 | ADB-Prod-06 | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
 
+### ADB-Prod-01 Current Progress
+
+`ADB-Prod-01` has completed the first real integration boundary for the region commit RPC client:
+
+- `AdbRpcRegionCommitClient` maps 2PC prewrite/commit/rollback phases to a replaceable `AdbRegionCommitTransport` and consistently handles failed responses, transport exceptions, and client-side timeouts.
+- `AdbRaftRegionCommitTransport` now uses the existing `RClient` / `RaftRClient` write path: `COMMIT` maps to the ADB proto `Commit`, `ROLLBACK` maps to `Rollback`, and `PREWRITE` goes through an empty batch as Raft write-path fencing until a dedicated proto message exists.
+- `AdbSMPlugin` now handles `Rollback` write requests, so `RaftStore.rollbackAsync(...)` no longer becomes a no-op at the state machine.
+- Real MVCC prewrite lock proto support and region scan RPC transport are still follow-up work inside `ADB-Prod-01`.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
