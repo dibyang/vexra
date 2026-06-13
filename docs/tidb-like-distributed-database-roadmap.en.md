@@ -287,19 +287,21 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 6 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance. Each completed phase still requires a local commit.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 6 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance.
+
+The plan continues to track these 6 production phases: first finish the OS-level multi-process multi-node smoke work in `ADB-Prod-01` and the cluster-level lock/GC loop in `ADB-Prod-02`, then move through `ADB-Prod-03` to `ADB-Prod-06`. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
 | Completed production phases | 0 | No production phase has reached full acceptance yet. |
-| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` is completing durable locks, batch resolve, and later primary/secondary resolve. |
+| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, and the committed-version GC cleaner, but still lacks cluster-level primary lookup, sharded GC worker scheduling, and acceptance loops for long transactions and partial commits. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
 | Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | In progress | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
-| 2 | ADB-Prod-02 | In progress | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point | Partial commit, lock expiration, and long-transaction GC protection tests pass |
+| 2 | ADB-Prod-02 | In progress | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
 | 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
 | 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
@@ -385,6 +387,12 @@ This `ADB-Prod-02` primary-status lookup boundary increment uses this scope:
 - Add a pluggable `AdbPrimaryLockStatusReader`, and make `AdbLockResolver` query primary commit state through this interface.
 - The default implementation still reads committed versions from the current store, preserving existing single-node and same-region behavior. Later cross-region/RPC lookup can replace this interface implementation.
 - This increment does not reuse the current `RegionScan` visible-row result as primary status, because the current region scan proto does not return source txnId/commitTs. A dedicated primary-status RPC or extended fields remain follow-up work.
+
+This `ADB-Prod-02` committed-version GC increment uses this scope:
+
+- Add a conservative committed-version GC cleaner that scans committed versions in the DEFAULT CF and deletes old historical versions before the GC safe point.
+- The cleaner must keep the latest committed version for every logical key, even when that version is older than the safe point, so current visible data is not removed.
+- This increment does not delete intents, lock records, or cross-region historical versions, and it does not add long-running scheduling yet. Cluster-level GC workers and region sharding remain follow-up work.
 
 ## Rollback Strategy
 

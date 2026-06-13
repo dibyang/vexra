@@ -290,19 +290,20 @@ flowchart TB
 当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
 已完成 0 个、进行中 2 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 6 个；
 如果只统计“尚未启动”的阶段，则还剩 4 个。`ADB-Prod-01` 和 `ADB-Prod-02` 已完成部分子交付，但仍未达到阶段验收。
-每个阶段完成后仍需本地提交。
+
+本计划后续执行继续以 6 个生产化阶段为追踪对象：先收敛 `ADB-Prod-01` 的 OS 级多进程多节点 smoke 与 `ADB-Prod-02` 的集群级 lock/GC 闭环，再进入 `ADB-Prod-03` 到 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 正在补齐 durable lock、批量 resolve 和后续 primary/secondary resolve。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界和 committed version GC cleaner，但仍缺集群级 primary 查询、GC worker 分片调度和长事务/部分提交验收闭环。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
-| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point | 部分提交、锁过期、GC 保护长事务测试通过 |
+| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
@@ -389,6 +390,12 @@ flowchart TB
 - 新增可插拔 `AdbPrimaryLockStatusReader`，由 `AdbLockResolver` 通过该接口查询 primary lock 是否已经提交。
 - 默认实现仍读取当前 store 的 committed version，保持现有单机和同 region 行为；后续真实跨 region/RPC 查询只需要替换该接口实现。
 - 本增量不复用现有 `RegionScan` 可见行结果作为 primary 状态，因为当前 region scan proto 不返回 source txnId/commitTs；专用 primary-status RPC 或扩展字段继续留在后续增量。
+
+本轮 `ADB-Prod-02` 的 committed version GC 口径：
+
+- 新增保守的 committed version GC cleaner，扫描 DEFAULT CF 下的 committed version，并删除 GC safe point 之前的旧历史版本。
+- cleaner 必须保留每个 logical key 的最新 committed version，即使该版本早于 safe point，也不能把当前可见数据清空。
+- 本增量不删除 intent、lock record 或跨 region 历史版本，也不接入长期调度；集群级 GC worker 和 region 分片继续留在后续增量。
 
 ## 回滚策略
 
