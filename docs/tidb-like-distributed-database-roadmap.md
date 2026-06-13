@@ -296,7 +296,7 @@ flowchart TB
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、控制面路由 primary-status reader、RClient registry 刷新器、committed version GC cleaner 和后台 committed version GC worker，但仍缺真实部署层连接工厂接入、GC worker 分片调度和长事务/部分提交验收闭环。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、控制面路由 primary-status reader、RClient registry 刷新器、committed version GC cleaner、后台 committed version GC worker 和集群级 GC 分片调度边界，但仍缺真实部署层连接工厂接入、region-scoped cleaner、全局 safe point 推进和长事务/部分提交验收闭环。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
@@ -423,6 +423,12 @@ flowchart TB
 - 新增可启动、可关闭的 `AdbCommittedVersionGcWorker`，周期调用 `AdbCommittedVersionGcCleaner.cleanOnce(...)`，并保留 `cleanOnce()` 作为测试、诊断和手动恢复入口。
 - worker 记录最近一次成功 GC 结果和最近一次失败，后续可通过 runtime operations bridge、admin API 或 system table 暴露。
 - 本增量只调度当前 store 的 committed version GC，不负责跨 region 分片、safe point 全局推进、leader 选举或 worker 租约；集群级 GC worker 调度继续留在后续增量。
+
+本轮 `ADB-Prod-02` 的集群级 GC 分片调度口径：
+
+- 新增 `AdbClusterCommittedVersionGcScheduler`，按当前 `AdbControlPlaneSnapshot` 为每个 region 生成 GC 请求，并把 `regionId`、`regionEpoch`、`leaderId`、`routeEpoch`、`KeyRange`、`safePoint`、`limit` 和 `timeoutMillis` 交给异步 `AdbRegionCommittedVersionGcClient`。
+- 调度器只负责分片派发、无 leader 跳过、超时/失败映射和结果聚合；具体远程传输、worker 租约、leader fencing、连接池和鉴权仍由部署层或后续 RPC client 实现。
+- 本增量不改变 `AdbCommittedVersionGcCleaner` 的本地扫描语义，暂不实现真正按 region key range 限定的历史版本删除；region-scoped cleaner、全局 safe point 推进和多 worker lease 仍是后续验收项。
 
 ## 回滚策略
 
