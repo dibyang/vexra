@@ -446,6 +446,13 @@ This `ADB-Prod-02` local safe-point persistence/lease increment uses this scope:
 - The local lease supports same-owner renewal, rejection of unexpired competing owners, takeover after expiration, monotonic safe-point advancement by the holder, and lease release.
 - This increment only provides single-store persistence and lease semantics. It does not provide cross-process linearizable CAS, PD/etcd-level leases, backup safe points, cross-node active-transaction aggregation, or safe-point broadcast.
 
+This `ADB-Prod-02` lease-aware safe-point advancer increment uses this scope:
+
+- Add `AdbLeasedGlobalSafePointAdvancer`, which acquires or renews the local safe-point lease through `AdbSafePointLeaseStore` before calling `AdbGlobalSafePointAdvancer.advanceOnce()`.
+- Only the owner that obtains the lease can advance the safe point and persist the resulting safe point back to the META CF. If the lease is held by another owner, the advancer returns a skipped result and does not call the underlying advancer, avoiding concurrent GC workers advancing independently.
+- Persistence uses the greater value between this round's advancement result and the safe point already stored in the lease record, preserving local monotonicity. If a long transaction blocks advancement, the current safe point and renewed lease are still retained.
+- This increment is still a single-store worker-fencing boundary. It does not provide PD/etcd-level linearizable leases, cross-node active-transaction aggregation, backup safe points, or safe-point broadcast.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.

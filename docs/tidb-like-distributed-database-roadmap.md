@@ -449,6 +449,13 @@ flowchart TB
 - 本地 lease 支持同 owner 续租、未过期租约竞争拒绝、过期后接管、持有者单调推进 safe point 和释放租约。
 - 本增量只提供单 store 内的持久化和租约语义，不提供跨进程线性一致 CAS、PD/etcd 级 lease、备份 safe point、跨节点活跃事务汇总或安全点广播。
 
+本轮 `ADB-Prod-02` 的 lease-aware safe point 推进器口径：
+
+- 新增 `AdbLeasedGlobalSafePointAdvancer`，在执行 `AdbGlobalSafePointAdvancer.advanceOnce()` 前先通过 `AdbSafePointLeaseStore` 抢占或续租本地 safe point lease。
+- 只有拿到租约的 owner 才会执行 safe point 推进并把推进后的 safe point 持久化回 META CF；未拿到租约时直接返回跳过结果，不调用底层推进器，避免多个 GC worker 同时推进。
+- 持久化时使用本轮推进结果和租约记录中已持久化 safe point 的较大值，保持本地记录单调不回退；长事务阻塞时仍会保留当前 safe point 和续租信息。
+- 本增量仍然是单 store 内的 worker fencing 边界，不提供 PD/etcd 级线性一致租约、跨节点活跃事务汇总、备份 safe point 或安全点广播。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。
