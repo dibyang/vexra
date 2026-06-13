@@ -171,11 +171,12 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. There are 0 remaining implementation phases in this roadmap.
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 6 production phases remain: 2 are in progress and 4 have not started.
 
-| Order | Phase | Goal | Main Deliverables | Acceptance |
-| --- | --- | --- | --- | --- |
-| - | - | - | - | - |
+| Counting Scope | Remaining Phases | Current Status | Tracking Location |
+| --- | --- | --- | --- |
+| Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
+| Post-Runtime production phases | 6 | `ADB-Prod-01` and `ADB-Prod-02` are in progress; `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
 
 The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to real multi-node deployment, real Raft/RPC, certificates/privileges, and long-running stress tests.
 

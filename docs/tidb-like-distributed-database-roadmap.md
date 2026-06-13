@@ -171,11 +171,12 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成，剩余实现阶段共 0 个。
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 6 个需要完成，其中 2 个进行中、4 个尚未启动。
 
-| 顺序 | 阶段 | 目标 | 主要交付物 | 验收 |
-| --- | --- | --- | --- | --- |
-| - | - | - | - | - |
+| 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
+| --- | --- | --- | --- |
+| Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
+| Post-Runtime 生产化阶段 | 6 | `ADB-Prod-01` 和 `ADB-Prod-02` 进行中，`ADB-Prod-03` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
 
 下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到真实多节点部署、真实 Raft/RPC、证书/权限系统和长稳压测中。
 
