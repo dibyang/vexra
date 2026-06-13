@@ -73,6 +73,23 @@ public final class AdbClusterCommittedVersionGcScheduler {
    */
   public AdbClusterCommittedVersionGcResult cleanOnce(int limit,
       long timeoutMillis) throws SQLException {
+    return cleanOnce(safePointSupplier.getAsLong(), limit, timeoutMillis);
+  }
+
+  /**
+   * 使用显式 safe point 执行一轮按 region 分片的 committed version GC 调度。
+   *
+   * <p>该入口用于把 safe point 推进和 GC 调度编排在同一个 cycle 中，避免调度器
+   * 再次读取到与本轮持久化结果不同的 safe point。</p>
+   *
+   * @param safePoint 本轮用于清理的 GC safe point
+   * @param limit 每个 region 单轮最多删除多少个历史版本，0 表示不限
+   * @param timeoutMillis 整轮调度超时，0 表示不限
+   * @return 集群级 GC 调度结果
+   * @throws SQLException 任一 region 派发、执行、等待或超时失败时抛出
+   */
+  public AdbClusterCommittedVersionGcResult cleanOnce(long safePoint,
+      int limit, long timeoutMillis) throws SQLException {
     if (limit < 0) {
       throw new IllegalArgumentException("limit is negative: " + limit);
     }
@@ -84,7 +101,6 @@ public final class AdbClusterCommittedVersionGcScheduler {
     if (snapshot == null) {
       throw new SQLException("ADB control-plane snapshot is null");
     }
-    long safePoint = safePointSupplier.getAsLong();
     if (safePoint < 0) {
       throw new IllegalArgumentException("safePoint is negative: "
           + safePoint);

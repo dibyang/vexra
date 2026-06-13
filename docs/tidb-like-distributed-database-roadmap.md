@@ -456,6 +456,13 @@ flowchart TB
 - 持久化时使用本轮推进结果和租约记录中已持久化 safe point 的较大值，保持本地记录单调不回退；长事务阻塞时仍会保留当前 safe point 和续租信息。
 - 本增量仍然是单 store 内的 worker fencing 边界，不提供 PD/etcd 级线性一致租约、跨节点活跃事务汇总、备份 safe point 或安全点广播。
 
+本轮 `ADB-Prod-02` 的租约保护集群 GC cycle 口径：
+
+- 新增一轮 GC cycle 编排边界：先执行 lease-aware safe point 推进，只有本 worker 拿到租约时才继续触发集群级 committed version GC 分片调度。
+- `AdbClusterCommittedVersionGcScheduler` 支持显式传入 safe point 执行单轮调度，cycle 使用本轮持久化的 safe point 派发 region GC，避免推进值与清理值脱节。
+- 未拿到 safe point lease 时，cycle 返回跳过结果，不派发任何 region GC 请求；拿到租约但 safe point 被长事务阻塞时，仍使用当前持久化 safe point 调度，保持清理保守。
+- 本增量只提供单进程/单 store 可验证的 GC 闭环编排，不替代真实远程传输、leader fencing、PD/etcd lease 或跨节点活跃事务汇总。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

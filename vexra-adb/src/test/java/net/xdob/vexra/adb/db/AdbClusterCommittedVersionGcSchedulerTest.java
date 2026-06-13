@@ -84,6 +84,24 @@ class AdbClusterCommittedVersionGcSchedulerTest {
   }
 
   /**
+   * 验证显式 safe point 调度入口会使用调用方传入的 safe point。
+   */
+  @Test
+  void shouldDispatchWithExplicitSafePoint() throws Exception {
+    RecordingGcClient client = new RecordingGcClient();
+    client.complete("r1", new AdbGcCleanResult(1, 0));
+    AdbClusterCommittedVersionGcScheduler scheduler = scheduler(
+        snapshot(11, region("r1", 1, 100, "node-a")), 10, client);
+
+    AdbClusterCommittedVersionGcResult result =
+        scheduler.cleanOnce(45, 3, 1000);
+
+    assertEquals(1, result.getCompletedRegions());
+    assertEquals(45, client.requests.get(0).getSafePoint());
+    assertEquals(3, client.requests.get(0).getLimit());
+  }
+
+  /**
    * 验证 region 执行失败会映射为带 regionId 的 SQLException。
    */
   @Test

@@ -453,6 +453,13 @@ This `ADB-Prod-02` lease-aware safe-point advancer increment uses this scope:
 - Persistence uses the greater value between this round's advancement result and the safe point already stored in the lease record, preserving local monotonicity. If a long transaction blocks advancement, the current safe point and renewed lease are still retained.
 - This increment is still a single-store worker-fencing boundary. It does not provide PD/etcd-level linearizable leases, cross-node active-transaction aggregation, backup safe points, or safe-point broadcast.
 
+This `ADB-Prod-02` lease-protected cluster GC cycle increment uses this scope:
+
+- Add a single GC-cycle orchestration boundary: first run lease-aware safe-point advancement, then trigger cluster-level committed-version GC sharding only when this worker obtains the lease.
+- `AdbClusterCommittedVersionGcScheduler` can run a single scheduling round with an explicit safe point. The cycle dispatches region GC with the safe point persisted by this round, avoiding drift between advancement and cleanup.
+- If the worker does not obtain the safe-point lease, the cycle returns a skipped result and dispatches no region GC requests. If the lease is obtained but safe-point advancement is blocked by a long transaction, the cycle still schedules with the current persisted safe point, keeping cleanup conservative.
+- This increment only provides a single-process/single-store verifiable GC loop. It does not replace real remote transport, leader fencing, PD/etcd leases, or cross-node active-transaction aggregation.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
