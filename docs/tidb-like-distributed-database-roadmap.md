@@ -175,15 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-02`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 已完成 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-02` 已完成 | 见“Runnable Cluster Hardening 阶段” |
 
-当前路线图内没有剩余阶段。后续如果继续把项目推向更完整的开箱集群产品，需要新增独立阶段来覆盖发行包、安装脚本、端到端集群 smoke 和外部部署系统集成。
+当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖发行包、安装脚本、端到端集群 smoke、外部部署系统集成和更完整的 SQL/JDBC 启动门禁。
 
 ### ADB-Runtime-03 实施口径
 
@@ -314,11 +314,11 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前只规划 1 个可运行化阶段，`ADB-Run-01` 已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 2 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-02` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 1 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收。 |
+| 已完成可运行化阶段 | 2 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
 | 未开始可运行化阶段 | 0 | 当前没有额外未开始的 `ADB-Run-*` 阶段。 |
 | 剩余需完成可运行化阶段 | 0 | 当前路线图内没有剩余可运行化阶段。 |
@@ -326,6 +326,7 @@ flowchart TB
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Run-01 | 已完成 | ADB region node 可运行入口 | main 包启动类、参数解析、RaftServer 工厂、部署命令接入 | 部署计划生成的命令指向真实 main class，参数解析和 server 构造测试通过 |
+| 2 | ADB-Run-02 | 已完成 | 产品入口多进程 smoke | OS 级多进程测试切换到 `AdbRegionNodeMain`、host 参数补齐、失败日志诊断 | 3 个独立 JVM 使用产品 main class 启动，Raft/GRPC prewrite、commit 和 scan smoke 通过 |
 
 ### ADB-Run-01 实施口径
 
@@ -343,6 +344,21 @@ flowchart TB
 - main 包新增 `AdbRegionNodeConfig` 和 `AdbRegionNodeMain`，支持真实 ADB region node 参数解析、RaftServer 构造和 ready/stop 运维钩子。
 - `AdbDeploymentPlan` 新增 groupId、classpath、mainClass 和 peers 聚合，`AdbDeploymentNodeSpec` 生成 `java -cp ... net.xdob.vexra.adb.ha2.AdbRegionNodeMain ...` 命令。
 - 测试覆盖 `AdbRegionNodeConfigTest`、`AdbDeploymentPlanTest` 和 `AdbDeploymentDrillTest`。
+
+### ADB-Run-02 实施口径
+
+`ADB-Run-02` 的目标是把 `ADB-Prod-01` 的 OS 多进程 Raft/GRPC smoke 从测试专用入口切换到产品 main class：
+
+- `AdbMultiProcessRaftRegionRpcSmokeTest` fork 子 JVM 时使用 `AdbRegionNodeMain.MAIN_CLASS`，不再使用 `AdbRaftRegionServerProcess`。
+- 子进程启动参数补齐 `--host`，与 `AdbRegionNodeConfig` 的产品入口必填参数保持一致。
+- 保留 ready/stop 文件、进程日志读取、失败时附带所有子进程日志和强制清理逻辑，确保 smoke 失败时仍可诊断且不会遗留 JVM。
+- 阶段验收要求 `AdbMultiProcessRaftRegionRpcSmokeTest` 能启动 3 个独立 JVM，并通过真实 Raft/GRPC client 完成 prewrite、commit 和 region scan。
+
+`ADB-Run-02` 已完成：
+
+- `AdbMultiProcessRaftRegionRpcSmokeTest` 子 JVM 已切换到 `AdbRegionNodeMain.MAIN_CLASS`。
+- 子进程启动参数已补齐 `--host 127.0.0.1`，与 main 包产品入口的必填参数一致。
+- `AdbMultiProcessRaftRegionRpcSmokeTest` 已通过产品入口多进程 Raft/GRPC prewrite、commit 和 scan smoke。
 
 ### ADB-Prod-03 当前进展
 

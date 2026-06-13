@@ -42,7 +42,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * ADB 真实 OS 多进程 Raft/GRPC region RPC smoke 测试。
  *
  * <p>该测试由父 JUnit 进程 fork 3 个独立 JVM，每个子进程启动 1 个真实
- * `RaftServer` 和 `AdbStateMachine`。父进程随后通过 {@link RaftRClient}
+ * `RaftServer` 和 `AdbStateMachine`。子进程使用产品 main class {@link AdbRegionNodeMain}
+ * 而不是测试专用入口，父进程随后通过 {@link RaftRClient}
  * 访问这组节点，覆盖 prewrite、commit 和 region scan。该测试补齐
  * `ADB-Prod-01` 的进程级部署验收边界，但仍不替代生产启动脚本、安全配置和长稳压测。</p>
  */
@@ -105,6 +106,8 @@ class AdbMultiProcessRaftRegionRpcSmokeTest {
     args.add(nodeId);
     args.add("--peers");
     args.add(nodes(peers));
+    args.add("--host");
+    args.add("127.0.0.1");
     args.add("--port");
     args.add(String.valueOf(portOf(peer)));
     args.add("--storage");
@@ -120,7 +123,7 @@ class AdbMultiProcessRaftRegionRpcSmokeTest {
     command.add(javaExecutable());
     command.add("-cp");
     command.add(System.getProperty("java.class.path"));
-    command.add(AdbRaftRegionServerProcess.class.getName());
+    command.add(AdbRegionNodeMain.MAIN_CLASS);
     command.addAll(args);
     ProcessBuilder builder = new ProcessBuilder(command);
     builder.redirectErrorStream(true);

@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phase `ADB-Run-01`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-02`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` is complete | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-02` are complete | See "Runnable Cluster Hardening Phases" |
 
-There are no remaining phases in the current roadmap. Further work toward a more complete out-of-the-box cluster product should add independent phases for release packaging, installation scripts, end-to-end cluster smoke, and external deployment-system integration.
+There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for release packaging, installation scripts, end-to-end cluster smoke, external deployment-system integration, and fuller SQL/JDBC startup gates.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,11 +312,11 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. Only 1 runnable hardening phase is currently planned, `ADB-Run-01` is complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 2 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-02` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 1 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point. |
+| Completed runnable hardening phases | 2 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
 | Not-started runnable hardening phases | 0 | There are no additional not-started `ADB-Run-*` phases in the current plan. |
 | Remaining runnable hardening phases | 0 | There are no remaining runnable hardening phases in the current roadmap. |
@@ -324,6 +324,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Run-01 | Done | Runnable ADB region node entry point | main-package startup class, argument parser, RaftServer factory, deployment command integration | Deployment-plan commands target a real main class, and argument parsing plus server construction tests pass |
+| 2 | ADB-Run-02 | Done | Product-entry multi-process smoke | OS-level multi-process test switched to `AdbRegionNodeMain`, host argument added, failure-log diagnostics | 3 independent JVMs start with the product main class, and Raft/GRPC prewrite, commit, and scan smoke passes |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -341,6 +342,21 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 - Main package now includes `AdbRegionNodeConfig` and `AdbRegionNodeMain` for real ADB region node argument parsing, RaftServer construction, and ready/stop operations hooks.
 - `AdbDeploymentPlan` now has groupId, classpath, mainClass, and peers aggregation; `AdbDeploymentNodeSpec` emits `java -cp ... net.xdob.vexra.adb.ha2.AdbRegionNodeMain ...` commands.
 - Test coverage includes `AdbRegionNodeConfigTest`, `AdbDeploymentPlanTest`, and `AdbDeploymentDrillTest`.
+
+### ADB-Run-02 Implementation Scope
+
+`ADB-Run-02` moves the OS-level multi-process Raft/GRPC smoke from the test-only entry point used by `ADB-Prod-01` to the product main class:
+
+- `AdbMultiProcessRaftRegionRpcSmokeTest` forks child JVMs with `AdbRegionNodeMain.MAIN_CLASS` instead of `AdbRaftRegionServerProcess`.
+- Child-process arguments include `--host`, matching the required product-entry arguments in `AdbRegionNodeConfig`.
+- Keep ready/stop files, process-log reader, all-process logs on failure, and forced cleanup logic so smoke failures remain diagnosable and do not leak JVMs.
+- Phase acceptance requires `AdbMultiProcessRaftRegionRpcSmokeTest` to start 3 independent JVMs and complete prewrite, commit, and region scan through the real Raft/GRPC client.
+
+`ADB-Run-02` is complete:
+
+- Child JVMs in `AdbMultiProcessRaftRegionRpcSmokeTest` now use `AdbRegionNodeMain.MAIN_CLASS`.
+- Child-process arguments now include `--host 127.0.0.1`, matching the required arguments for the main-package product entry point.
+- `AdbMultiProcessRaftRegionRpcSmokeTest` passes product-entry multi-process Raft/GRPC prewrite, commit, and scan smoke.
 
 ### ADB-Prod-03 Current Progress
 
