@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-02`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-03`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-02` are complete | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-03` are complete | See "Runnable Cluster Hardening Phases" |
 
-There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for release packaging, installation scripts, end-to-end cluster smoke, external deployment-system integration, and fuller SQL/JDBC startup gates.
+There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for release packaging, installation scripts, automatic SQL-server-to-region-node orchestration, authentication/TLS, and end-to-end cluster stress gates.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,11 +312,11 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 2 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-02` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 3 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-03` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 2 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke. |
+| Completed runnable hardening phases | 3 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
 | Not-started runnable hardening phases | 0 | There are no additional not-started `ADB-Run-*` phases in the current plan. |
 | Remaining runnable hardening phases | 0 | There are no remaining runnable hardening phases in the current roadmap. |
@@ -325,6 +325,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Run-01 | Done | Runnable ADB region node entry point | main-package startup class, argument parser, RaftServer factory, deployment command integration | Deployment-plan commands target a real main class, and argument parsing plus server construction tests pass |
 | 2 | ADB-Run-02 | Done | Product-entry multi-process smoke | OS-level multi-process test switched to `AdbRegionNodeMain`, host argument added, failure-log diagnostics | 3 independent JVMs start with the product main class, and Raft/GRPC prewrite, commit, and scan smoke passes |
+| 3 | ADB-Run-03 | Done | SQL server product entry point | ADB SQL server main, argument parser, ready/stop hooks, TCP/JDBC smoke | An independent JVM starts h2db TCP Server, and a client completes create-table, insert, and query through `jdbc:adb:tcp://...` |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -357,6 +358,21 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 - Child JVMs in `AdbMultiProcessRaftRegionRpcSmokeTest` now use `AdbRegionNodeMain.MAIN_CLASS`.
 - Child-process arguments now include `--host 127.0.0.1`, matching the required arguments for the main-package product entry point.
 - `AdbMultiProcessRaftRegionRpcSmokeTest` passes product-entry multi-process Raft/GRPC prewrite, commit, and scan smoke.
+
+### ADB-Run-03 Implementation Scope
+
+`ADB-Run-03` adds a product-level JVM entry point for the ADB SQL/JDBC service:
+
+- Add a main-package SQL server startup configuration and main class supporting `--port`, `--baseDir`, `--tcpAllowOthers`, `--ifNotExists`, `--ready`, and `--stop` arguments.
+- Internally reuse h2db `org.h2.tools.Server.createTcpServer(...)`; do not copy SQL parser, JDBC driver, or h2db Server code.
+- Keep ready/stop file hooks so local smoke and later deployment scripts can detect startup and shut the server down gracefully.
+- This phase does not implement authentication, TLS, automatic SQL-server-to-region-node orchestration, or any change to the `jdbc:adb:*` URL mapping rules.
+- Phase acceptance requires forking an independent JVM for the SQL server and then using `jdbc:adb:tcp://127.0.0.1:<port>/...` to create an ADB table, insert rows, query rows, and clean up the child process.
+
+`ADB-Run-03` is complete:
+
+- Main package now includes `AdbSqlServerConfig` and `AdbSqlServerMain`, supporting h2db TCP Server startup arguments, ready/stop operations hooks, and unstarted-server construction tests.
+- `AdbSqlServerMainTest` forks an independent JVM for the SQL server and uses `jdbc:adb:tcp://127.0.0.1:<port>/...` to create an ADB table, insert rows, and query rows.
 
 ### ADB-Prod-03 Current Progress
 
