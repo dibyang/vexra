@@ -291,7 +291,24 @@ public class TxnManager {
     return null;
   }
 
-  public void addIndexBatch(Transaction2 txn, IndexPrefix indexPrefix, Collection<IndexKey> indexKeys) throws SQLException {
+  /**
+   * 批量写入已经完成回填或 rebuild 的索引项。
+   *
+   * <p>索引项写入后会立即作为 committed version 对后续事务可见，因此这里必须分配
+   * 真实 commitTs，而不是复用 txnId。否则多批 backfill 时后续批次可能因为 commitTs
+   * 大于读事务 startTs 而暂时不可见。</p>
+   *
+   * @param txn 当前内部事务或建索引事务，仅用于保持既有调用签名
+   * @param indexPrefix 索引前缀
+   * @param indexKeys 需要写入的索引 key 集合
+   * @throws SQLException 当底层批量写入失败时抛出
+   */
+  public void addIndexBatch(Transaction2 txn, IndexPrefix indexPrefix,
+      Collection<IndexKey> indexKeys) throws SQLException {
+    Objects.requireNonNull(txn, "txn == null");
+    Objects.requireNonNull(indexPrefix, "indexPrefix == null");
+    Objects.requireNonNull(indexKeys, "indexKeys == null");
+    long commitTs = nextCommitTs();
     store.writeBatch(batch -> {
       //todo 绉婚櫎鑰佺殑绱㈠紩
 //      byte[] indexPrefixBytes = indexPrefix.toBytes();
@@ -300,8 +317,8 @@ public class TxnManager {
       for (IndexKey indexKey : indexKeys) {
         RowValue indexValue = new RowValue();
         indexValue.payload = RowCodec.encode(ValueNull.INSTANCE);
-        VersionKey versionKey = VersionKey.of(indexKey, true, txn.getTxnId());
-        indexValue.commitTs = txn.getTxnId();
+        VersionKey versionKey = VersionKey.of(indexKey, true, commitTs);
+        indexValue.commitTs = commitTs;
         batch.put(versionKey.toBytes(), RowValue.encodeValue(indexValue));
       }
     });
@@ -549,6 +566,22 @@ public class TxnManager {
     store.rollbackAsync( txn.getTxnId()).join();
     txn.afterRollbackSuccess();
     activeTransactions.remove(txn.getTxnId());
+  }
+
+  /**
+   * 释放内部 helper 创建的事务快照。
+   *
+   * <p>该方法只从活跃事务集合移除事务，不调用底层 store rollback。Online DDL
+   * backfill 这类内部流程会用事务对象读取一致快照，并通过专用批量接口写入已经
+   * committed 的索引项；如果再调用 rollback，未来一旦批量接口改为记录 txn ref，
+   * 就可能误删已经回填的索引项。</p>
+   *
+   * @param txn 内部 helper 创建的事务
+   */
+  void releaseInternalTransaction(Transaction2 txn) {
+    if (txn != null) {
+      activeTransactions.remove(txn.getTxnId());
+    }
   }
 
 

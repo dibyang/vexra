@@ -171,16 +171,16 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 3 个需要完成，均尚未启动。
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 2 个需要完成。
 
 ### 当前阶段计数快照
 
-截至 2026-06-13，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-03`。后续还需要完成 3 个阶段：`ADB-Prod-04`、`ADB-Prod-05`、`ADB-Prod-06`。其中下一阶段是 `ADB-Prod-04`，完成后剩余阶段数应从 3 更新为 2；后续每完成一个生产化阶段，都必须同步更新本快照、下方生产化阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-13，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-04`。后续还需要完成 2 个阶段：`ADB-Prod-05`、`ADB-Prod-06`。其中下一阶段是 `ADB-Prod-05`，完成后剩余阶段数应从 2 更新为 1；后续每完成一个生产化阶段，都必须同步更新本快照、下方生产化阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
-| Post-Runtime 生产化阶段 | 3 | `ADB-Prod-01` 到 `ADB-Prod-03` 已完成，`ADB-Prod-04` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
+| Post-Runtime 生产化阶段 | 2 | `ADB-Prod-01` 到 `ADB-Prod-04` 已完成，`ADB-Prod-05` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
 
 下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到 Online DDL backfill、生产部署/安全和长稳压测中。
 
@@ -284,30 +284,30 @@ flowchart TB
 
 当前 1-11 阶段已经把 TiDB-like 分布式数据库所需的关键运行时边界落到代码和测试中，但“生产可用”仍需要后续工程化工作验证：
 
-- 将 Online DDL backfill worker 接到真实索引 KV 回填、失败补偿和长任务调度。
+- 将 Online DDL backfill worker 接到生产级长任务调度、租约和跨节点接管。
 - 完成证书签发、权限系统、滚动升级执行器、备份介质集成和长稳压测。
 
 ## Post-Runtime 生产化阶段
 
 当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
-已完成 3 个、进行中 0 个、未开始 3 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 3 个。
-`ADB-Prod-01` 已补齐 OS 级多进程多节点 smoke，`ADB-Prod-02` 已达到 lock resolve 与 GC 阶段验收，`ADB-Prod-03` 已达到 SQL 路径真实接入验收。
+已完成 4 个、进行中 0 个、未开始 2 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 2 个。
+`ADB-Prod-01` 已补齐 OS 级多进程多节点 smoke，`ADB-Prod-02` 已达到 lock resolve 与 GC 阶段验收，`ADB-Prod-03` 已达到 SQL 路径真实接入验收，`ADB-Prod-04` 已达到 Online DDL index backfill worker 阶段验收。
 
-本计划后续执行继续以剩余 3 个生产化阶段为追踪对象：下一步进入 `ADB-Prod-04` 的 Online DDL backfill worker，再推进 `ADB-Prod-05` 和 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
+本计划后续执行继续以剩余 2 个生产化阶段为追踪对象：下一步进入 `ADB-Prod-05` 的多节点部署与安全，再推进 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成生产化阶段 | 3 | `ADB-Prod-01` 已通过真实 Raft/RPC client、单进程真实 RaftServer/GRPC smoke 和 OS 级多进程多节点 smoke 验收；`ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环；`ADB-Prod-03` 已通过 JDBC SQL 分布式 scan 执行与 EXPLAIN 诊断验收。 |
-| 进行中生产化阶段 | 0 | 当前没有进行中生产化阶段；下一步启动 `ADB-Prod-04`。 |
-| 未开始生产化阶段 | 3 | `ADB-Prod-04` 到 `ADB-Prod-06` 尚未开始。 |
-| 剩余需完成生产化阶段 | 3 | 即 `ADB-Prod-04` 到 `ADB-Prod-06`。 |
+| 已完成生产化阶段 | 4 | `ADB-Prod-01` 已通过真实 Raft/RPC client、单进程真实 RaftServer/GRPC smoke 和 OS 级多进程多节点 smoke 验收；`ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环；`ADB-Prod-03` 已通过 JDBC SQL 分布式 scan 执行与 EXPLAIN 诊断验收；`ADB-Prod-04` 已通过 Online DDL index backfill worker 的批量回填、断点续跑、失败标记和 READY 发布验收。 |
+| 进行中生产化阶段 | 0 | 当前没有进行中生产化阶段；下一步启动 `ADB-Prod-05`。 |
+| 未开始生产化阶段 | 2 | `ADB-Prod-05` 到 `ADB-Prod-06` 尚未开始。 |
+| 剩余需完成生产化阶段 | 2 | 即 `ADB-Prod-05` 到 `ADB-Prod-06`。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | 已完成 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射、OS 级多进程 smoke | 2PC coordinator 可替换为 RPC client，故障、超时和多进程 Raft/RPC smoke 测试通过 |
 | 2 | ADB-Prod-02 | 已完成 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 已完成 | SQL 路径真实接入 | h2db table/index SPI adapter、JDBC `EXPLAIN SELECT` 分布式诊断、region 数统计 | JDBC SQL 可输出并执行分布式计划 |
-| 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
+| 4 | ADB-Prod-04 | 已完成 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
 | 6 | ADB-Prod-06 | 未开始 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
 
@@ -326,6 +326,26 @@ flowchart TB
 - 本阶段已完成。阶段验收由 `AdbTableProviderIntegrationTest`、`AdbDistributedPlanAdapterTest`、`AdbDistributedRegionScanExecutorTest`、`AdbLocalRegionScanExecutorTest` 和 `AdbRaftRegionScanClientTest` 覆盖。
 - 验收覆盖 JDBC 建表 opt-in 分布式 SQL scan、普通 `SELECT` 主键范围读取、`COUNT(*)`、标准 `EXPLAIN SELECT` 输出 `ADB_DISTRIBUTED_SCAN` 与 region 数、adapter 生成 region-split `DistributedPlan`、本地 bridge 执行以及 Raft region scan client 结果适配。
 - h2db 原生 `EXPLAIN DISTRIBUTED` 语法、parser/optimizer 内部 rule 和持久化统计需要 h2db 新 SPI 后再扩展；当前阶段使用 h2db 已开放 table/index SPI 的等价诊断完成验收。
+
+### ADB-Prod-04 实施口径
+
+`ADB-Prod-04` 的目标是把 `ADB-Runtime-10` 已有的 Online DDL 状态机接到真实索引 KV 回填路径，形成可恢复的 ADD_INDEX backfill worker：
+
+- 新增 Online DDL backfill worker，按主表 `RowKey` 顺序扫描当前可见行，并使用与 `AdbSecondaryIndex` 相同的 `SearchRowCodec` 和 `IndexKey` 格式生成二级索引 KV。
+- worker 通过 `TxnManager.addIndexBatch(...)` 写入索引项，避免引入新的磁盘格式或绕过现有索引可见性解析。
+- backfill 断点使用 `IndexBackfillProgress.lastCompletedKey` 记录最后完成的主表 row key，恢复时从该 rowId 之后继续扫描，避免重复回填已经完成的批次。
+- worker 以 batch size 控制单次处理量，暴露单批执行和跑到完成两个入口；跑到完成后调用 `AdbOnlineDdlRuntimeController.publishAddIndex(...)` 将索引状态推进到 `READY`。
+- 失败补偿采用显式失败标记：回填异常由调用方感知，worker 提供失败标记入口把 job 迁移到 `FAILED`，后续可基于上一次断点重新创建或恢复 job。
+- 本阶段不修改 h2db DDL 语法，不实现分布式 DDL 调度、限速租约、后台持久任务队列或跨节点任务抢占；这些继续归入 `ADB-Prod-05` 和 `ADB-Prod-06`。
+- 阶段验收要求 JUnit 覆盖批量回填、断点续跑、最终 `READY` 发布、索引 scan 可见，以及编码失败后的失败标记。
+
+`ADB-Prod-04` 阶段验收状态：
+
+- 本阶段已完成。阶段验收由 `AdbOnlineDdlBackfillWorkerTest`、`AdbOnlineDdlRuntimeControllerTest` 和 `AdbLocalRegionScanExecutorTest` 覆盖。
+- 实现新增 `AdbOnlineDdlBackfillWorker` 和 `AdbOnlineDdlBackfillResult`，worker 按主表可见行生成二级索引 KV，并复用 `TxnManager.addIndexBatch(...)` 写入索引项。
+- `TxnManager.addIndexBatch(...)` 已改为分配真实 commitTs 写入索引 committed version，避免多批 backfill 后后续事务看不到较晚批次索引项。
+- 验收覆盖批量回填、基于 `lastCompletedKey` 的断点续跑、最终发布为 `PUBLIC`/`READY`、索引 scan 可见，以及编码失败后的 `FAILED` 标记。
+- 生产级后台任务调度、租约抢占、跨节点接管、DDL worker system table 和长稳压测不归入 `ADB-Prod-04`，继续由 `ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
 
 ### ADB-Prod-01 当前进展
 
