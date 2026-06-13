@@ -172,6 +172,8 @@ public final class AdbLocalRegionScanExecutor {
     Map<String, Object> row = new LinkedHashMap<>();
     row.put("row_id", dataKey.getRowId());
     row.put("payload", decodePayload(value.payload));
+    row.put(AdbSqlDistributedScanRuntime.PAYLOAD_BYTES_FIELD,
+        value.payload.clone());
     row.put("key_hex", toHex(dataKey.toBytes()));
     if (versionKey instanceof VersionIndexKey && dataKey instanceof IndexKey) {
       IndexKey indexKey = (IndexKey) dataKey;

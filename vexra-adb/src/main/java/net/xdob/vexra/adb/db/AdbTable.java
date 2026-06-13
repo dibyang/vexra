@@ -182,6 +182,15 @@ public class AdbTable extends TableBase {
    return AdbTransactionRegistry.getOrCreate(sessionLocal, txnManager);
   }
 
+  /**
+   * 返回当前表绑定的 SQL 分布式 scan runtime。
+   *
+   * @return runtime；未启用时为 null
+   */
+  public AdbSqlDistributedScanRuntime getSqlDistributedScanRuntime() {
+    return txnManager.getSqlDistributedScanRuntime();
+  }
+
   @Override
   public long getRowCount(SessionLocal session){
     TxnMap2 map = getTxnMap(session);

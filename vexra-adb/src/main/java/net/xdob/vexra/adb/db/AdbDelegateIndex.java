@@ -37,6 +37,11 @@ public class AdbDelegateIndex extends AdbIndex<Long, SearchRow> {
   }
 
   @Override
+  public String getPlanSQL() {
+    return super.getPlanSQL() + " " + mainIndex.getDistributedPlanMarker();
+  }
+
+  @Override
   public void addRowsToBuffer(SessionLocal session, List<Row> rows) {
     throw DbException.getInternalError();
   }

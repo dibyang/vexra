@@ -23,6 +23,15 @@ public class TxnMap2 {
     this.transaction = transaction;
   }
 
+  /**
+   * 返回当前 H2 session 绑定的 ADB 事务。
+   *
+   * @return 当前事务对象
+   */
+  public Transaction2 getTransaction() {
+    return transaction;
+  }
+
   private void put(DataKey key, RowValue value) throws SQLException {
     txnManager.put(transaction, key, value);
   }

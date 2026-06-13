@@ -194,7 +194,10 @@ public final class AdbRaftRegionScanClient implements AdbRegionScanClient {
   private static Map<String, Object> toRow(RegionVisibleRow visibleRow) {
     Map<String, Object> row = new LinkedHashMap<>();
     row.put("row_id", visibleRow.getRowId());
-    row.put("payload", decodePayload(visibleRow.getPayload().toByteArray()));
+    byte[] payload = visibleRow.getPayload().toByteArray();
+    row.put("payload", decodePayload(payload));
+    row.put(net.xdob.vexra.adb.db.AdbSqlDistributedScanRuntime.PAYLOAD_BYTES_FIELD,
+        payload);
     row.put("key_hex", toHex(visibleRow.getKey().toByteArray()));
     if (visibleRow.getIndexRow()) {
       row.put("index_id", visibleRow.getIndexId());

@@ -1,6 +1,8 @@
 package net.xdob.vexra.adb.h2plugin;
 
 import net.xdob.vexra.adb.db.AdbTable;
+import net.xdob.vexra.adb.db.AdbSqlDistributedScanConfig;
+import net.xdob.vexra.adb.db.AdbSqlDistributedScanRuntime;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import net.xdob.vexra.adb.db.DbStoreType;
 import net.xdob.vexra.adb.db.TxnManager;
@@ -76,6 +78,13 @@ public final class AdbTableProvider implements TableEngineProvider {
         DbStoreType storeType = AdbUrlStoreTypeRegistry.getStoreType(databasePath);
         net.xdob.vexra.adb.DbStore dbStore = DbStoreEngine.getOrCreate(storeType, databasePath, new java.util.Properties());
         TxnManager txnManager = new TxnManager(dbStore);
+        AdbSqlDistributedScanConfig scanConfig =
+            AdbSqlDistributedScanConfig.fromTableEngineParams(
+                context.getTableEngineParams());
+        if (scanConfig.isEnabled()) {
+            txnManager.setSqlDistributedScanRuntime(
+                new AdbSqlDistributedScanRuntime(dbStore, scanConfig));
+        }
         return new AdbTable(data, context.getDatabase().getStore(), dbStore, txnManager);
     }
 

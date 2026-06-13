@@ -171,14 +171,14 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 4 production phases remain, all not started.
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 3 production phases remain, all not started.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
-| Post-Runtime production phases | 4 | `ADB-Prod-01` and `ADB-Prod-02` are complete, and `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
+| Post-Runtime production phases | 3 | `ADB-Prod-01` through `ADB-Prod-03` are complete, and `ADB-Prod-04` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
 
-The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to the real SQL path, Online DDL backfill, production deployment/security, and long-running stress tests.
+The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to Online DDL backfill, production deployment/security, and long-running stress tests.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -280,31 +280,46 @@ The next highest-priority work is no longer feature completion inside phases 1-1
 
 The current phases 1-11 have landed the key runtime boundaries required by a TiDB-like distributed database, with code and tests. Production readiness still requires follow-up engineering and verification:
 
-- Wire h2db optimizer rules, `EXPLAIN DISTRIBUTED` SQL syntax, statistics, and cost selection into the real SQL path.
 - Wire Online DDL backfill workers to real index KV backfill, failure compensation, and long-running task scheduling.
 - Complete certificate issuance, the privilege system, rolling-upgrade executor, backup media integration, and long-running stress tests.
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 2 completed, 0 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 4 phases remain. `ADB-Prod-01` now has OS-level multi-process multi-node smoke coverage, and `ADB-Prod-02` has met the lock-resolve and GC acceptance criteria.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 3 completed, 0 in progress, and 3 not started. Therefore, if the question is "how many phases still need to reach acceptance", 3 phases remain. `ADB-Prod-01` now has OS-level multi-process multi-node smoke coverage, `ADB-Prod-02` has met the lock-resolve and GC acceptance criteria, and `ADB-Prod-03` has met the real SQL path acceptance criteria.
 
-The plan continues to track the remaining 4 production phases: next start `ADB-Prod-03` real SQL path integration, then move through `ADB-Prod-04` to `ADB-Prod-06`. Each completed phase still requires a local commit.
+The plan continues to track the remaining 3 production phases: next start `ADB-Prod-04` Online DDL backfill worker, then move through `ADB-Prod-05` and `ADB-Prod-06`. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed production phases | 2 | `ADB-Prod-01` has passed real Raft/RPC client tests, same-JVM real RaftServer/GRPC smoke, and OS-level multi-process multi-node smoke; `ADB-Prod-02` has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle. |
-| In-progress production phases | 0 | No production phase is currently in progress; `ADB-Prod-03` is next. |
-| Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
-| Production phases still to finish | 4 | `ADB-Prod-03` through `ADB-Prod-06`. |
+| Completed production phases | 3 | `ADB-Prod-01` has passed real Raft/RPC client tests, same-JVM real RaftServer/GRPC smoke, and OS-level multi-process multi-node smoke; `ADB-Prod-02` has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle; `ADB-Prod-03` has passed JDBC SQL distributed-scan execution and EXPLAIN diagnostics. |
+| In-progress production phases | 0 | No production phase is currently in progress; `ADB-Prod-04` is next. |
+| Not-started production phases | 3 | `ADB-Prod-04` through `ADB-Prod-06` have not started. |
+| Production phases still to finish | 3 | `ADB-Prod-04` through `ADB-Prod-06`. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | Done | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping, OS-level multi-process smoke | The 2PC coordinator can use a replaceable RPC client, with failure, timeout, and multi-process Raft/RPC smoke tests passing |
 | 2 | ADB-Prod-02 | Done | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner, background committed-version GC worker | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
-| 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
+| 3 | ADB-Prod-03 | Done | Real SQL path integration | h2db table/index SPI adapter, JDBC `EXPLAIN SELECT` distributed diagnostics, region-count statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
 | 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
 | 6 | ADB-Prod-06 | Not started | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
+
+### ADB-Prod-03 Current Progress
+
+`ADB-Prod-03` has completed real SQL path integration through the h2db table/index SPI that is currently exposed, without requiring h2db to expose parser or optimizer internals:
+
+- The current h2db plugin guide still states that parser, optimizer, and JDBC server internals are not exposed as plugin APIs, so this phase does not add a real `EXPLAIN DISTRIBUTED` SQL grammar.
+- ADB tables can explicitly opt in to distributed SQL scan through table-engine `WITH` parameters; when disabled, the existing single-node ADB/H2 behavior is preserved.
+- When enabled, `AdbPrimaryIndex.find(...)` converts the primary-key range provided by H2 into a `DistributedPlan`, executes region scans through `AdbDistributedRegionScanExecutor`, and restores H2 `Row` objects from the ADB row payload returned by regions.
+- Standard JDBC `EXPLAIN SELECT ...` emits an ADB distributed scan marker through index plan SQL, serving as the equivalent diagnostic until native `EXPLAIN DISTRIBUTED` grammar is exposed.
+- EXPLAIN diagnostics include minimal region-count statistics. H2 still uses the existing row-count and index-cost interfaces for plan selection; persistent statistics and more complex cost models can be added later as optimizations and do not block this phase's acceptance.
+
+`ADB-Prod-03` phase acceptance status:
+
+- This phase is complete. Phase acceptance is covered by `AdbTableProviderIntegrationTest`, `AdbDistributedPlanAdapterTest`, `AdbDistributedRegionScanExecutorTest`, `AdbLocalRegionScanExecutorTest`, and `AdbRaftRegionScanClientTest`.
+- Acceptance covers opt-in distributed SQL scan in JDBC table creation, normal `SELECT` primary-key range reads, `COUNT(*)`, standard `EXPLAIN SELECT` output with `ADB_DISTRIBUTED_SCAN` and region counts, adapter-generated region-split `DistributedPlan`, local bridge execution, and Raft region-scan client result adaptation.
+- Native h2db `EXPLAIN DISTRIBUTED` grammar, parser/optimizer internal rules, and persistent statistics can be extended after h2db exposes new SPIs. This phase uses the equivalent diagnostics available through h2db's current table/index SPI.
 
 ### ADB-Prod-01 Current Progress
 
@@ -332,7 +347,7 @@ This `ADB-Prod-01` region scan proto pushdown uses this scope:
 - Add `RegionScan` / `RegionScanResult` to the ADB proto so the region state machine receives the read timestamp, limit, count-only flag, and key range directly.
 - Perform minimal MVCC visibility merging inside the region state machine and return visible row payloads/counts instead of exposing raw version KVs to the client.
 - Make `AdbRaftRegionScanClient` send the dedicated `RegionScan` request while keeping raw `Scan` as a low-level KV capability and rollback path.
-- This increment does not introduce full filter/projection proto support. Complex SQL pushdown and cost-based selection remain part of `ADB-Prod-03`.
+- This increment does not introduce full filter/projection proto support. Complex SQL pushdown and finer-grained cost selection continue as follow-up optimizations after `ADB-Prod-03` acceptance.
 
 This `ADB-Prod-01` smoke baseline uses this scope:
 

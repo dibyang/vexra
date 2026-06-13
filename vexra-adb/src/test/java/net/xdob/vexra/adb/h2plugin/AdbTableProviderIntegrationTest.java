@@ -76,6 +76,32 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void executesDistributedSqlPlanThroughJdbcWhenTableOptsIn() throws Exception {
+        String databasePath = tempDir.resolve("adb-distributed-sql").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                        + "ENGINE \"adb_table\" WITH \"adb.distributed.sql=true\", \"adb.distributed.split.row=3\"");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+
+                Assertions.assertEquals("b,c,d",
+                        csv(statement, "SELECT NAME FROM TEST WHERE ID BETWEEN 2 AND 4 ORDER BY ID"));
+                Assertions.assertEquals(3L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN 2 AND 4"));
+
+                String explain = singleString(statement,
+                        "EXPLAIN SELECT NAME FROM TEST WHERE ID BETWEEN 2 AND 4");
+                Assertions.assertTrue(explain.contains("ADB_DISTRIBUTED_SCAN"), explain);
+                Assertions.assertTrue(explain.contains("regions=2"), explain);
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void rollsBackAndCommitsAdbRowsThroughTransactionEvents() throws Exception {
         String databasePath = tempDir.resolve("adb-txn").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
@@ -160,5 +186,18 @@ class AdbTableProviderIntegrationTest {
             resultSet.next();
             return resultSet.getString(1);
         }
+    }
+
+    private static String csv(Statement statement, String sql) throws Exception {
+        StringBuilder builder = new StringBuilder();
+        try (ResultSet resultSet = statement.executeQuery(sql)) {
+            while (resultSet.next()) {
+                if (builder.length() > 0) {
+                    builder.append(',');
+                }
+                builder.append(resultSet.getString(1));
+            }
+        }
+        return builder.toString();
     }
 }

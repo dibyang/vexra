@@ -51,7 +51,19 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
 
   @Override
   public String getPlanSQL() {
-    return table.getSQL(new StringBuilder(), TRACE_SQL_FLAGS).append(".tableScan").toString();
+    String plan = table.getSQL(new StringBuilder(), TRACE_SQL_FLAGS)
+        .append(".tableScan").toString();
+    String marker = getDistributedPlanMarker();
+    return marker.isEmpty() ? plan : plan + " " + marker;
+  }
+
+  String getDistributedPlanMarker() {
+    AdbSqlDistributedScanRuntime runtime =
+        rocksTable.getSqlDistributedScanRuntime();
+    if (runtime != null && runtime.isEnabled()) {
+      return runtime.getPlanMarker();
+    }
+    return "";
   }
 
   public void setMainIndexColumn(int mainIndexColumn) {
@@ -236,6 +248,12 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
   private Cursor find(SessionLocal session, Long first, Long last) {
     TxnMap2 map = getTxnMap(session);
     try {
+      AdbSqlDistributedScanRuntime runtime =
+          rocksTable.getSqlDistributedScanRuntime();
+      if (runtime != null && runtime.isEnabled()) {
+        return runtime.findRows(map.getTransaction(), map.getTabId(table.getId()),
+            normalizeMin(first), normalizeMax(last));
+      }
       if (first != null && last != null && first.longValue() == last.longValue()) {
         RowKey firstKey = RowKey.of(map.getTabId(table.getId()), first);
         RowValue rowValue = map.getVisible(firstKey);
@@ -251,6 +269,14 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     } catch (SQLException e) {
       throw rocksTable.convertException(e);
     }
+  }
+
+  private static Long normalizeMin(Long first) {
+    return first == null || first == Long.MIN_VALUE ? null : first;
+  }
+
+  private static Long normalizeMax(Long last) {
+    return last == null || last == Long.MAX_VALUE ? null : last;
   }
 
 

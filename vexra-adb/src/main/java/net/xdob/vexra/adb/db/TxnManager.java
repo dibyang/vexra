@@ -27,6 +27,7 @@ public class TxnManager {
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
   private volatile AdbTimestampProvider timestampProvider;
+  private volatile AdbSqlDistributedScanRuntime sqlDistributedScanRuntime;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -91,6 +92,25 @@ public class TxnManager {
   public void setRegionCommitCoordinator(
       AdbRegionCommitCoordinator regionCommitCoordinator) {
     this.regionCommitCoordinator = regionCommitCoordinator;
+  }
+
+  /**
+   * 设置 SQL 分布式 scan runtime。
+   *
+   * @param sqlDistributedScanRuntime SQL 分布式 scan runtime；null 表示关闭
+   */
+  public void setSqlDistributedScanRuntime(
+      AdbSqlDistributedScanRuntime sqlDistributedScanRuntime) {
+    this.sqlDistributedScanRuntime = sqlDistributedScanRuntime;
+  }
+
+  /**
+   * 返回当前 SQL 分布式 scan runtime。
+   *
+   * @return runtime；未启用时为 null
+   */
+  public AdbSqlDistributedScanRuntime getSqlDistributedScanRuntime() {
+    return sqlDistributedScanRuntime;
   }
 
   public AdbTimestampProvider getTimestampProvider() {
