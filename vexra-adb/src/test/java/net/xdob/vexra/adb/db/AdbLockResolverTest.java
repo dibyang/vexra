@@ -141,6 +141,49 @@ class AdbLockResolverTest {
     }
   }
 
+  /**
+   * 验证 resolver 可以通过注入的 primary 状态读取器承接跨 region 查询结果。
+   */
+  @Test
+  void shouldUseInjectedPrimaryStatusReader() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("injected-primary-status").toString())) {
+      RowKey primary = rowKey(10);
+      RowKey secondary = rowKey(11);
+      prewrite(store, 17, secondary, primary, 1, 5);
+
+      AdbLockResolveAction action = new AdbLockResolver(store,
+          lock -> AdbPrimaryLockStatus.committed(50))
+          .resolveExpiredLock(lock(17, secondary, primary, 1, 5), 7);
+
+      assertEquals(AdbLockResolveAction.ROLLED_FORWARD, action);
+      assertNull(store.get(VersionKey.of(secondary, false, 17).toBytes()));
+      assertNotNull(store.get(VersionKey.of(secondary, true, 50).toBytes()));
+    }
+  }
+
+  /**
+   * 验证本地 primary 状态读取器会忽略其他事务提交的同 key 版本。
+   */
+  @Test
+  void shouldIgnoreCommittedPrimaryFromDifferentTxn() throws Exception {
+    try (LdbStore store = new LdbStore(
+        tempDir.resolve("different-primary-txn").toString())) {
+      RowKey primary = rowKey(12);
+      RowKey secondary = rowKey(13);
+      prewrite(store, 18, primary, 1, 5);
+      store.commitAsync(18, 60, Collections.emptyList()).join();
+      prewrite(store, 19, secondary, primary, 1, 5);
+
+      AdbLockResolveAction action = new AdbLockResolver(store)
+          .resolveExpiredLock(lock(19, secondary, primary, 1, 5), 7);
+
+      assertEquals(AdbLockResolveAction.ROLLED_BACK, action);
+      assertNull(store.get(VersionKey.of(secondary, false, 19).toBytes()));
+      assertNull(store.get(VersionKey.of(secondary, true, 60).toBytes()));
+    }
+  }
+
   private static void prewrite(LdbStore store, long txnId, RowKey key)
       throws Exception {
     AdbPrewriteApplicator.prewrite(store, txnId, 1,

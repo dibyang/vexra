@@ -384,6 +384,12 @@ flowchart TB
 - worker 记录最近一次批处理结果和最近一次失败，调用方可以通过运行时 operations bridge 或后续 admin/system table 暴露这些状态。
 - 本增量只调度当前 store 可处理的过期 lock；跨 region primary 查询、GC 历史版本删除和集群级 worker 分片继续留在后续增量。
 
+本轮 `ADB-Prod-02` 的 primary 状态查询边界口径：
+
+- 新增可插拔 `AdbPrimaryLockStatusReader`，由 `AdbLockResolver` 通过该接口查询 primary lock 是否已经提交。
+- 默认实现仍读取当前 store 的 committed version，保持现有单机和同 region 行为；后续真实跨 region/RPC 查询只需要替换该接口实现。
+- 本增量不复用现有 `RegionScan` 可见行结果作为 primary 状态，因为当前 region scan proto 不返回 source txnId/commitTs；专用 primary-status RPC 或扩展字段继续留在后续增量。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

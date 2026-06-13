@@ -1,13 +1,11 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.DbStore;
-import net.xdob.vexra.adb.key.VersionKey;
 
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.OptionalLong;
 import java.util.concurrent.CompletionException;
 
 /**
@@ -20,6 +18,7 @@ import java.util.concurrent.CompletionException;
  */
 public final class AdbLockResolver {
   private final DbStore store;
+  private final AdbPrimaryLockStatusReader primaryStatusReader;
 
   /**
    * 创建 lock resolver。
@@ -28,6 +27,20 @@ public final class AdbLockResolver {
    */
   public AdbLockResolver(DbStore store) {
     this.store = Objects.requireNonNull(store, "store == null");
+    this.primaryStatusReader = new LocalAdbPrimaryLockStatusReader(store);
+  }
+
+  /**
+   * 创建 lock resolver。
+   *
+   * @param store ADB store，负责执行 rollback/commit
+   * @param primaryStatusReader primary 状态读取器
+   */
+  public AdbLockResolver(DbStore store,
+      AdbPrimaryLockStatusReader primaryStatusReader) {
+    this.store = Objects.requireNonNull(store, "store == null");
+    this.primaryStatusReader = Objects.requireNonNull(primaryStatusReader,
+        "primaryStatusReader == null");
   }
 
   /**
@@ -44,9 +57,10 @@ public final class AdbLockResolver {
     if (!lock.isExpired(nowTs)) {
       return AdbLockResolveAction.WAIT;
     }
-    OptionalLong primaryCommitTs = findPrimaryCommitTs(lock);
-    if (primaryCommitTs.isPresent()) {
-      commit(lock.getTxnId(), primaryCommitTs.getAsLong());
+    AdbPrimaryLockStatus primaryStatus =
+        primaryStatusReader.readPrimaryStatus(lock);
+    if (primaryStatus.isCommitted()) {
+      commit(lock.getTxnId(), primaryStatus.getCommitTs());
       return AdbLockResolveAction.ROLLED_FORWARD;
     }
     rollback(lock.getTxnId());
@@ -80,34 +94,6 @@ public final class AdbLockResolver {
     }
     return new AdbLockResolveBatchResult(locks.size(), rolledBack,
         rolledForward);
-  }
-
-  private OptionalLong findPrimaryCommitTs(AdbTxnLock lock)
-      throws SQLException {
-    byte[] prefix = lock.getPrimaryKey();
-    byte[] end = KeyCodec.prefixEnd(prefix);
-    try (VersionScanSource scan = store.openVersionScanSource(
-        ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(prefix, end);
-      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
-        VersionKey versionKey = VersionKey.fromBytes(scan.key());
-        if (versionKey.isCommited()) {
-          RowValue rowValue = RowValue.decodeValue(scan.value());
-          if (rowValue != null && rowValue.txnId == lock.getTxnId()) {
-            long commitTs = rowValue.commitTs > 0
-                ? rowValue.commitTs : versionKey.getCommitTs();
-            return OptionalLong.of(commitTs);
-          }
-        }
-        scan.advance();
-      }
-      return OptionalLong.empty();
-    } catch (SQLException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new SQLException("Failed to inspect primary lock, txnId="
-          + lock.getTxnId(), e);
-    }
   }
 
   private void commit(long txnId, long commitTs) throws SQLException {

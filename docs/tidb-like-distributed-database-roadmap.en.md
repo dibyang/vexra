@@ -380,6 +380,12 @@ This `ADB-Prod-02` background lock resolve worker increment uses this scope:
 - The worker records the latest batch result and latest failure, so runtime operations bridges or later admin/system tables can expose the state.
 - This increment only schedules expired locks resolvable from the current store. Cross-region primary lookups, GC deletion of historical versions, and cluster-level worker sharding remain follow-up work.
 
+This `ADB-Prod-02` primary-status lookup boundary increment uses this scope:
+
+- Add a pluggable `AdbPrimaryLockStatusReader`, and make `AdbLockResolver` query primary commit state through this interface.
+- The default implementation still reads committed versions from the current store, preserving existing single-node and same-region behavior. Later cross-region/RPC lookup can replace this interface implementation.
+- This increment does not reuse the current `RegionScan` visible-row result as primary status, because the current region scan proto does not return source txnId/commitTs. A dedicated primary-status RPC or extended fields remain follow-up work.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
