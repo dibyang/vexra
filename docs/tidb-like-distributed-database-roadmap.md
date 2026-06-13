@@ -296,7 +296,7 @@ flowchart TB
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、控制面路由 primary-status reader、RClient registry 刷新器、committed version GC cleaner、后台 committed version GC worker、集群级 GC 分片调度边界和 region-scoped cleaner，但仍缺真实部署层连接工厂接入、全局 safe point 推进和长事务/部分提交验收闭环。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、控制面路由 primary-status reader、RClient registry 刷新器、committed version GC cleaner、后台 committed version GC worker、集群级 GC 分片调度边界、region-scoped cleaner 和进程内全局 safe point 推进边界，但仍缺真实部署层连接工厂接入、safe point 持久化/租约和长事务/部分提交验收闭环。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
@@ -435,6 +435,12 @@ flowchart TB
 - `AdbCommittedVersionGcCleaner` 新增按 `KeyRange` 清理的重载，并支持直接执行 `AdbRegionCommittedVersionGcRequest`；清理范围只覆盖 region 的 logical key range。
 - `AdbLocalRegionCommittedVersionGcClient` 将集群调度器派发的 region GC 请求桥接到本地 cleaner，用于单进程、测试和后续真实 RPC server 侧复用。
 - 范围清理仍保持每个 logical key 至少保留最新 committed version 的安全语义，不删除 intent 或 lock record；全局 safe point 推进、多 worker lease、真实远程传输和长事务/部分提交验收仍是后续工作。
+
+本轮 `ADB-Prod-02` 的全局 safe point 推进口径：
+
+- `TxnManager` 记录本进程内已开始但尚未提交/回滚成功的事务 startTs，并暴露只读快照，供 GC safe point 推进器保护长事务。
+- 新增 `AdbGlobalSafePointAdvancer`，从控制面 TSO 或可替换候选时间戳提供器计算 candidate safe point，再调用 `AdbGcSafePointManager.advanceTo(...)`，确保 safe point 单调推进且不会覆盖活跃事务。
+- 本增量不持久化 safe point，不实现 PD/etcd 级租约、备份 safe point、跨进程活跃事务汇总或安全点广播；这些仍属于 `ADB-Prod-02` 后续集群验收闭环。
 
 ## 回滚策略
 

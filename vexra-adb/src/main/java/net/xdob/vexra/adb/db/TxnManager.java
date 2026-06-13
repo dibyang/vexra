@@ -21,6 +21,8 @@ public class TxnManager {
   private DbStore store;
   private final LockManager lockManager = new LockManager();
   private final Object commitMutex = new Object();
+  private final Map<Long, Transaction2> activeTransactions =
+      new java.util.concurrent.ConcurrentHashMap<>();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -124,7 +126,28 @@ public class TxnManager {
     Transaction2 txn = new Transaction2(txnIdGen.nextTxnId(), startTs);
     txn.setStartTs(startTs);
     txn.setState(TxnState.PENDING);
+    activeTransactions.put(txn.getTxnId(), txn);
     return txn;
+  }
+
+  /**
+   * 返回当前活跃事务 startTs 快照。
+   *
+   * <p>该快照只包含本进程内已经 begin、但尚未 commit/rollback 成功的事务。
+   * GC safe point 推进器使用它保护长事务，避免删除仍可能被快照读访问的历史版本。</p>
+   *
+   * @return 活跃事务 startTs 的只读快照
+   */
+  public List<Long> activeStartTsSnapshot() {
+    List<Long> startTs = new ArrayList<>();
+    for (Transaction2 txn : activeTransactions.values()) {
+      if (TxnState.PENDING.equals(txn.getState())
+          || TxnState.COMMITTING.equals(txn.getState())) {
+        startTs.add(txn.getStartTs());
+      }
+    }
+    Collections.sort(startTs);
+    return Collections.unmodifiableList(startTs);
   }
 
   private long nextStartTs() {
@@ -368,6 +391,7 @@ public class TxnManager {
 
     synchronized (commitMutex) {
       if (TxnState.COMMITTED.equals(txn.getState())) {
+        activeTransactions.remove(txn.getTxnId());
         return;
       }
       if (TxnState.COMMITTING.equals(txn.getState())) {
@@ -422,6 +446,7 @@ public class TxnManager {
       commitAsync(txn, commitTs, writeKeys, metas).join();
 
       txn.afterCommitSuccess(commitTs);
+      activeTransactions.remove(txn.getTxnId());
     } catch (CompletionException e) {
       Throwable cause = unwrapCompletionException(e);
 
@@ -503,6 +528,7 @@ public class TxnManager {
   public void rollback(Transaction2 txn) throws SQLException {
     store.rollbackAsync( txn.getTxnId()).join();
     txn.afterRollbackSuccess();
+    activeTransactions.remove(txn.getTxnId());
   }
 
 
