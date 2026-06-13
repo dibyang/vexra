@@ -171,14 +171,14 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 5 个需要完成，其中 1 个进行中、4 个尚未启动。
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 4 个需要完成，均尚未启动。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
-| Post-Runtime 生产化阶段 | 5 | `ADB-Prod-02` 已完成，`ADB-Prod-01` 进行中，`ADB-Prod-03` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
+| Post-Runtime 生产化阶段 | 4 | `ADB-Prod-01` 和 `ADB-Prod-02` 已完成，`ADB-Prod-03` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
 
-下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到真实多节点部署、真实 Raft/RPC、证书/权限系统和长稳压测中。
+下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到真实 SQL 路径、Online DDL backfill、生产部署/安全和长稳压测中。
 
 ### ADB-Runtime-03 实施口径
 
@@ -280,8 +280,6 @@ flowchart TB
 
 当前 1-11 阶段已经把 TiDB-like 分布式数据库所需的关键运行时边界落到代码和测试中，但“生产可用”仍需要后续工程化工作验证：
 
-- 将 region scan/commit client 替换为真实 Raft/RPC client，并通过多进程、多节点冒烟验证。
-- 将 2PC 的 MVCC lock column、lock resolve worker、幂等恢复和 GC safe point 补到真实存储格式。
 - 将 h2db optimizer rule、`EXPLAIN DISTRIBUTED` SQL 语法、统计信息和代价选择接到真实 SQL 路径。
 - 将 Online DDL backfill worker 接到真实索引 KV 回填、失败补偿和长任务调度。
 - 完成证书签发、权限系统、滚动升级执行器、备份介质集成和长稳压测。
@@ -289,21 +287,21 @@ flowchart TB
 ## Post-Runtime 生产化阶段
 
 当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
-已完成 1 个、进行中 1 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 5 个；
-如果只统计“尚未启动”的阶段，则还剩 4 个。`ADB-Prod-02` 已达到本阶段验收；`ADB-Prod-01` 仍缺 OS 级多进程多节点 smoke。
+已完成 2 个、进行中 0 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 4 个。
+`ADB-Prod-01` 已补齐 OS 级多进程多节点 smoke，`ADB-Prod-02` 已达到 lock resolve 与 GC 阶段验收。
 
-本计划后续执行继续以剩余 5 个生产化阶段为追踪对象：先收敛 `ADB-Prod-01` 的 OS 级多进程多节点 smoke，再进入 `ADB-Prod-03` 到 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
+本计划后续执行继续以剩余 4 个生产化阶段为追踪对象：下一步进入 `ADB-Prod-03` 的 SQL 路径真实接入，再推进 `ADB-Prod-04` 到 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成生产化阶段 | 1 | `ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环。 |
-| 进行中生产化阶段 | 1 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke。 |
+| 已完成生产化阶段 | 2 | `ADB-Prod-01` 已通过真实 Raft/RPC client、单进程真实 RaftServer/GRPC smoke 和 OS 级多进程多节点 smoke 验收；`ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环。 |
+| 进行中生产化阶段 | 0 | 当前没有进行中生产化阶段；下一步启动 `ADB-Prod-03`。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
-| 剩余需完成生产化阶段 | 5 | 包含当前进行中的 `ADB-Prod-01` 和后续 4 个未开始阶段。 |
+| 剩余需完成生产化阶段 | 4 | 即 `ADB-Prod-03` 到 `ADB-Prod-06`。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
+| 1 | ADB-Prod-01 | 已完成 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射、OS 级多进程 smoke | 2PC coordinator 可替换为 RPC client，故障、超时和多进程 Raft/RPC smoke 测试通过 |
 | 2 | ADB-Prod-02 | 已完成 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
@@ -323,7 +321,7 @@ flowchart TB
 - `RegionScan`/`RegionScanResult` proto 已补齐，`AdbRegionScanReader` 在 region 状态机侧完成最小 MVCC 可见性归并，`AdbRaftRegionScanClient` 已改为发送专用 region scan 请求。
 - `LocalRClient` 已补齐 `Prewrite`、`Commit`、`Rollback`、`RegionScan` 和 async 方法，`AdbRegionRpcSmokeTest` 已覆盖 commit/scan 的 RClient 协议闭环。
 - `AdbRealRaftRegionRpcSmokeTest` 已启动 3 个真实 `RaftServer` + GRPC 节点，通过 `RaftRClient` 覆盖 prewrite、commit 和 region scan 的多节点 Raft/RPC 协议链路。
-- 当前仍未实现多进程多节点 Raft/RPC 冒烟；它继续属于 `ADB-Prod-01` 后续工作。
+- `AdbMultiProcessRaftRegionRpcSmokeTest` 已 fork 3 个独立 JVM 启动真实 `RaftServer` + GRPC 节点，并通过父进程 `RaftRClient` 覆盖 prewrite、commit 和 region scan 的 OS 级多进程链路。
 
 本轮 `ADB-Prod-01` 的 prewrite 落地口径：
 
@@ -349,7 +347,20 @@ flowchart TB
 
 - 在 JUnit 内启动 3 个真实 `RaftServer`，每个 server 使用独立 GRPC 端口、storage 目录和 cache 目录，并加载 `AdbStateMachine`。
 - 通过 `RaftRClient` 走真实 GRPC Raft client 路径发送 ADB proto，覆盖 prewrite、commit 和 region scan。
-- 该基线验证多节点 Raft/RPC 协议链路和 ADB 状态机接入，不等同于 OS 多进程部署验收；独立进程启动脚本、日志目录隔离、端口回收和异常进程清理仍留在 `ADB-Prod-01` 的最后收尾。
+- 该基线验证多节点 Raft/RPC 协议链路和 ADB 状态机接入，不等同于 OS 多进程部署验收；该缺口已由后续 OS 级多进程 smoke 补齐。
+
+本轮 `ADB-Prod-01` 的 OS 级多进程 smoke 口径：
+
+- 新增测试专用的 ADB Raft region server 子进程入口，由 JUnit 在当前测试 classpath 下 fork 3 个独立 JVM，每个 JVM 启动 1 个真实 `RaftServer`、独立 GRPC 端口、storage 目录和 cache 目录，并通过 ready/stop 文件完成启动同步和清理。
+- 父进程通过 `RaftRClient` 连接这 3 个 OS 进程组成的 Raft group，再复用 `AdbRpcRegionCommitClient`、`AdbRaftRegionCommitTransport` 和 `AdbRaftRegionScanClient` 覆盖 prewrite、commit 和 region scan。
+- 该 smoke 证明 `ADB-Prod-01` 的真实 Raft/RPC/ADB 状态机链路可以跨 OS 进程工作，并补齐端口分配、日志目录隔离、子进程输出日志和失败清理的测试闭环。
+- 本增量仍是测试级部署验收，不包含生产启动脚本、TLS/权限、服务发现、滚动升级或长稳压测；这些继续归入 `ADB-Prod-05` 和 `ADB-Prod-06`。
+
+`ADB-Prod-01` 阶段验收状态：
+
+- 本阶段已完成。阶段验收由 `AdbRpcRegionCommitClientTest`、`AdbRaftRegionCommitTransportTest`、`AdbRaftRegionScanClientTest`、`AdbRegionRpcSmokeTest`、`AdbRealRaftRegionRpcSmokeTest` 和 `AdbMultiProcessRaftRegionRpcSmokeTest` 覆盖。
+- 验收覆盖 RPC commit client 阶段映射、失败响应、transport 异常、client 侧超时、region scan 失败映射、单进程 RClient 协议闭环、同 JVM 真实 RaftServer/GRPC 链路，以及 3 个 OS 进程组成的真实 Raft/RPC/ADB 状态机链路。
+- 生产启动脚本、TLS/权限、服务发现、滚动升级和长稳压测不归入 `ADB-Prod-01`，继续由 `ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
 
 ### ADB-Prod-02 当前进展
 
@@ -404,7 +415,7 @@ flowchart TB
 - 新增 `AdbRClientRegistry`，保存 replica/leader id 到 `RClient` 的映射；该 registry 不拥有 client 生命周期，部署层仍负责创建和关闭真实连接。
 - 新增 `AdbRoutedPrimaryLockStatusReader`，按当前 `AdbControlPlaneSnapshot` 的 `RegionRouter` 将 primary logical key 路由到 region，再按 region leaderId 从 registry 取出对应 `RClient`，并复用 `AdbRaftPrimaryLockStatusReader` 发起 primary-status read。
 - 当 primary key 无法路由、region 无 leader 或 leader client 未注册时，reader 返回 `SQLException`，避免 resolver 把不确定状态误判成 unknown 并回滚 secondary。
-- 本增量仍不实现部署层自动注册、leader 变化订阅、primary-status 缓存、重试/退避或旧 leader 转发；这些继续留在 `ADB-Prod-01` 多进程部署和 `ADB-Prod-02` 验收闭环里。
+- 本增量仍不实现部署层自动注册、leader 变化订阅、primary-status 缓存、重试/退避或旧 leader 转发；这些不阻塞 `ADB-Prod-02` 验收，后续由 `ADB-Prod-05` 的部署接入和运维化连接管理继续追踪。
 
 本轮 `ADB-Prod-02` 的 RClient registry 刷新器口径：
 
@@ -473,7 +484,7 @@ flowchart TB
 
 - 本阶段已完成。阶段验收由 `AdbLockResolverTest`、`AdbCommittedVersionGcCleanerTest`、`AdbLeasedClusterCommittedVersionGcCycleTest` 和 `AdbProd02AcceptanceTest` 覆盖。
 - 验收覆盖锁过期 rollback、primary committed secondary roll-forward、长事务阻止 safe point 推进、region-scoped committed-version GC、租约保护集群 GC cycle，以及 partial commit + long transaction + GC 的组合闭环。
-- 尚未覆盖的 OS 多进程、真实远程传输、证书/权限、PD/etcd 级租约和长稳压测不再归入 `ADB-Prod-02`，继续由 `ADB-Prod-01`、`ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
+- 尚未覆盖的证书/权限、PD/etcd 级租约、生产级远程传输细节和长稳压测不再归入 `ADB-Prod-02`，继续由 `ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
 
 ## 回滚策略
 

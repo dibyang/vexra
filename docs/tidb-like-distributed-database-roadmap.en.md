@@ -171,14 +171,14 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 5 production phases remain: 1 is in progress and 4 have not started.
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 4 production phases remain, all not started.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
-| Post-Runtime production phases | 5 | `ADB-Prod-02` is complete, `ADB-Prod-01` is in progress, and `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
+| Post-Runtime production phases | 4 | `ADB-Prod-01` and `ADB-Prod-02` are complete, and `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
 
-The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to real multi-node deployment, real Raft/RPC, certificates/privileges, and long-running stress tests.
+The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to the real SQL path, Online DDL backfill, production deployment/security, and long-running stress tests.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -280,28 +280,26 @@ The next highest-priority work is no longer feature completion inside phases 1-1
 
 The current phases 1-11 have landed the key runtime boundaries required by a TiDB-like distributed database, with code and tests. Production readiness still requires follow-up engineering and verification:
 
-- Replace region scan/commit clients with real Raft/RPC clients and validate them with multi-process, multi-node smoke tests.
-- Add real MVCC lock columns, lock resolve workers, idempotent recovery, and GC safe points to the storage format.
 - Wire h2db optimizer rules, `EXPLAIN DISTRIBUTED` SQL syntax, statistics, and cost selection into the real SQL path.
 - Wire Online DDL backfill workers to real index KV backfill, failure compensation, and long-running task scheduling.
 - Complete certificate issuance, the privilege system, rolling-upgrade executor, backup media integration, and long-running stress tests.
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 1 completed, 1 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 5 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-02` has met this phase's acceptance criteria; `ADB-Prod-01` still lacks OS-level multi-process multi-node smoke tests.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 2 completed, 0 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 4 phases remain. `ADB-Prod-01` now has OS-level multi-process multi-node smoke coverage, and `ADB-Prod-02` has met the lock-resolve and GC acceptance criteria.
 
-The plan continues to track the remaining 5 production phases: first finish the OS-level multi-process multi-node smoke work in `ADB-Prod-01`, then move through `ADB-Prod-03` to `ADB-Prod-06`. Each completed phase still requires a local commit.
+The plan continues to track the remaining 4 production phases: next start `ADB-Prod-03` real SQL path integration, then move through `ADB-Prod-04` to `ADB-Prod-06`. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed production phases | 1 | `ADB-Prod-02` now has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle. |
-| In-progress production phases | 1 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. |
+| Completed production phases | 2 | `ADB-Prod-01` has passed real Raft/RPC client tests, same-JVM real RaftServer/GRPC smoke, and OS-level multi-process multi-node smoke; `ADB-Prod-02` has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle. |
+| In-progress production phases | 0 | No production phase is currently in progress; `ADB-Prod-03` is next. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
-| Production phases still to finish | 5 | Includes the in-progress `ADB-Prod-01` plus 4 not-started phases. |
+| Production phases still to finish | 4 | `ADB-Prod-03` through `ADB-Prod-06`. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
-| 1 | ADB-Prod-01 | In progress | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
+| 1 | ADB-Prod-01 | Done | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping, OS-level multi-process smoke | The 2PC coordinator can use a replaceable RPC client, with failure, timeout, and multi-process Raft/RPC smoke tests passing |
 | 2 | ADB-Prod-02 | Done | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner, background committed-version GC worker | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
 | 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
@@ -320,7 +318,7 @@ The plan continues to track the remaining 5 production phases: first finish the 
 - `RegionScan` / `RegionScanResult` proto support is now in place. `AdbRegionScanReader` performs minimal MVCC visibility merging in the region state machine, and `AdbRaftRegionScanClient` now sends the dedicated region scan request.
 - `LocalRClient` now supports `Prewrite`, `Commit`, `Rollback`, `RegionScan`, and async methods. `AdbRegionRpcSmokeTest` covers the commit/scan RClient protocol loop.
 - `AdbRealRaftRegionRpcSmokeTest` now starts 3 real `RaftServer` + GRPC nodes and uses `RaftRClient` to cover the multi-node Raft/RPC protocol path for prewrite, commit, and region scan.
-- Multi-process multi-node Raft/RPC smoke tests are still follow-up work inside `ADB-Prod-01`.
+- `AdbMultiProcessRaftRegionRpcSmokeTest` now forks 3 independent JVMs, starts real `RaftServer` + GRPC nodes, and uses the parent-process `RaftRClient` to cover the OS-level multi-process path for prewrite, commit, and region scan.
 
 This `ADB-Prod-01` prewrite increment uses this scope:
 
@@ -346,7 +344,20 @@ This `ADB-Prod-01` real RaftServer/GRPC smoke baseline uses this scope:
 
 - Start 3 real `RaftServer` instances inside JUnit, each with an isolated GRPC port, storage directory, cache directory, and `AdbStateMachine`.
 - Send ADB proto through the real GRPC Raft client path via `RaftRClient`, covering prewrite, commit, and region scan.
-- This baseline verifies the multi-node Raft/RPC protocol chain and ADB state-machine integration. It is not the same as OS-level multi-process deployment acceptance; process launch scripts, log-directory isolation, port cleanup, and failed-process cleanup remain the final `ADB-Prod-01` follow-up.
+- This baseline verifies the multi-node Raft/RPC protocol chain and ADB state-machine integration. It is not the same as OS-level multi-process deployment acceptance; that gap is closed by the later OS-level multi-process smoke increment.
+
+This `ADB-Prod-01` OS-level multi-process smoke increment uses this scope:
+
+- Add a test-only ADB Raft region server subprocess entry point. JUnit forks 3 independent JVMs on the current test classpath; each JVM starts 1 real `RaftServer` with an isolated GRPC port, storage directory, and cache directory, and uses ready/stop files for startup synchronization and cleanup.
+- The parent process connects to the 3 OS processes as one Raft group through `RaftRClient`, then reuses `AdbRpcRegionCommitClient`, `AdbRaftRegionCommitTransport`, and `AdbRaftRegionScanClient` to cover prewrite, commit, and region scan.
+- This smoke proves that the real Raft/RPC/ADB state-machine path in `ADB-Prod-01` works across OS processes, and it adds a test loop for port allocation, log-directory isolation, subprocess output logs, and failed-process cleanup.
+- This increment is still a test-level deployment acceptance boundary. Production launch scripts, TLS/privileges, service discovery, rolling upgrades, and long-running stress tests remain in `ADB-Prod-05` and `ADB-Prod-06`.
+
+`ADB-Prod-01` phase acceptance status:
+
+- This phase is complete. Phase acceptance is covered by `AdbRpcRegionCommitClientTest`, `AdbRaftRegionCommitTransportTest`, `AdbRaftRegionScanClientTest`, `AdbRegionRpcSmokeTest`, `AdbRealRaftRegionRpcSmokeTest`, and `AdbMultiProcessRaftRegionRpcSmokeTest`.
+- Acceptance covers RPC commit-client phase mapping, failed responses, transport exceptions, client-side timeouts, region-scan failure mapping, the single-process RClient protocol loop, the same-JVM real RaftServer/GRPC path, and the real Raft/RPC/ADB state-machine path across 3 OS processes.
+- Production launch scripts, TLS/privileges, service discovery, rolling upgrades, and long-running stress tests are not part of `ADB-Prod-01`; they continue under `ADB-Prod-05` and `ADB-Prod-06`.
 
 ### ADB-Prod-02 Current Progress
 
@@ -401,7 +412,7 @@ This `ADB-Prod-02` control-plane-routed primary-status reader increment uses thi
 - Add `AdbRClientRegistry`, mapping replica/leader ids to `RClient` instances. The registry does not own client lifecycles; deployment code remains responsible for creating and closing real connections.
 - Add `AdbRoutedPrimaryLockStatusReader`, which routes the primary logical key through the current `AdbControlPlaneSnapshot` / `RegionRouter`, reads the region leaderId, selects the matching `RClient` from the registry, and reuses `AdbRaftPrimaryLockStatusReader` to issue the primary-status read.
 - If the primary key cannot be routed, the region has no leader, or the leader client is not registered, the reader returns `SQLException` so the resolver does not treat an uncertain state as unknown and roll back a secondary.
-- This increment still does not implement deployment-level auto-registration, leader-change subscriptions, primary-status caching, retry/backoff, or old-leader forwarding. Those remain in `ADB-Prod-01` multi-process deployment and the `ADB-Prod-02` acceptance loop.
+- This increment still does not implement deployment-level auto-registration, leader-change subscriptions, primary-status caching, retry/backoff, or old-leader forwarding. These do not block `ADB-Prod-02` acceptance and continue under `ADB-Prod-05` deployment integration and operational connection management.
 
 This `ADB-Prod-02` RClient registry refresher increment uses this scope:
 
@@ -470,7 +481,7 @@ This `ADB-Prod-02` partial-commit and long-transaction GC acceptance increment u
 
 - This phase is complete. Phase acceptance is covered by `AdbLockResolverTest`, `AdbCommittedVersionGcCleanerTest`, `AdbLeasedClusterCommittedVersionGcCycleTest`, and `AdbProd02AcceptanceTest`.
 - Acceptance covers expired-lock rollback, primary-committed secondary roll-forward, long transactions blocking safe-point advancement, region-scoped committed-version GC, the lease-protected cluster GC cycle, and the combined partial-commit + long-transaction + GC loop.
-- OS-level multi-process deployment, real remote transport, certificates/privileges, PD/etcd-level leases, and long-running stress tests are no longer tracked under `ADB-Prod-02`; they continue under `ADB-Prod-01`, `ADB-Prod-05`, and `ADB-Prod-06`.
+- Certificates/privileges, PD/etcd-level leases, production-grade remote transport details, and long-running stress tests are no longer tracked under `ADB-Prod-02`; they continue under `ADB-Prod-05` and `ADB-Prod-06`.
 
 ## Rollback Strategy
 
