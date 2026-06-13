@@ -171,16 +171,16 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 2 个需要完成。
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 1 个需要完成。
 
 ### 当前阶段计数快照
 
-截至 2026-06-13，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-04`。后续还需要完成 2 个阶段：`ADB-Prod-05`、`ADB-Prod-06`。其中下一阶段是 `ADB-Prod-05`，完成后剩余阶段数应从 2 更新为 1；后续每完成一个生产化阶段，都必须同步更新本快照、下方生产化阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-13，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-05`。后续还需要完成 1 个阶段：`ADB-Prod-06`。后续每完成一个生产化阶段，都必须同步更新本快照、下方生产化阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
-| Post-Runtime 生产化阶段 | 2 | `ADB-Prod-01` 到 `ADB-Prod-04` 已完成，`ADB-Prod-05` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
+| Post-Runtime 生产化阶段 | 1 | `ADB-Prod-01` 到 `ADB-Prod-05` 已完成，`ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
 
 下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到 Online DDL backfill、生产部署/安全和长稳压测中。
 
@@ -284,23 +284,23 @@ flowchart TB
 
 当前 1-11 阶段已经把 TiDB-like 分布式数据库所需的关键运行时边界落到代码和测试中，但“生产可用”仍需要后续工程化工作验证：
 
-- 将 Online DDL backfill worker 接到生产级长任务调度、租约和跨节点接管。
-- 完成证书签发、权限系统、滚动升级执行器、备份介质集成和长稳压测。
+- 完成长稳压测、故障注入、网络分区、leader 切换、磁盘错误和压测报告。
+- 真实证书签发、外部服务发现、操作系统服务安装和备份介质集成继续留给部署系统集成，不作为当前代码内阶段验收项。
 
 ## Post-Runtime 生产化阶段
 
 当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
-已完成 4 个、进行中 0 个、未开始 2 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 2 个。
-`ADB-Prod-01` 已补齐 OS 级多进程多节点 smoke，`ADB-Prod-02` 已达到 lock resolve 与 GC 阶段验收，`ADB-Prod-03` 已达到 SQL 路径真实接入验收，`ADB-Prod-04` 已达到 Online DDL index backfill worker 阶段验收。
+已完成 5 个、进行中 0 个、未开始 1 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 1 个。
+`ADB-Prod-01` 已补齐 OS 级多进程多节点 smoke，`ADB-Prod-02` 已达到 lock resolve 与 GC 阶段验收，`ADB-Prod-03` 已达到 SQL 路径真实接入验收，`ADB-Prod-04` 已达到 Online DDL index backfill worker 阶段验收，`ADB-Prod-05` 已达到多节点部署与安全演练验收。
 
-本计划后续执行继续以剩余 2 个生产化阶段为追踪对象：下一步进入 `ADB-Prod-05` 的多节点部署与安全，再推进 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
+本计划后续执行继续以剩余 1 个生产化阶段为追踪对象：下一步进入 `ADB-Prod-06` 的长稳与故障注入。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成生产化阶段 | 4 | `ADB-Prod-01` 已通过真实 Raft/RPC client、单进程真实 RaftServer/GRPC smoke 和 OS 级多进程多节点 smoke 验收；`ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环；`ADB-Prod-03` 已通过 JDBC SQL 分布式 scan 执行与 EXPLAIN 诊断验收；`ADB-Prod-04` 已通过 Online DDL index backfill worker 的批量回填、断点续跑、失败标记和 READY 发布验收。 |
-| 进行中生产化阶段 | 0 | 当前没有进行中生产化阶段；下一步启动 `ADB-Prod-05`。 |
-| 未开始生产化阶段 | 2 | `ADB-Prod-05` 到 `ADB-Prod-06` 尚未开始。 |
-| 剩余需完成生产化阶段 | 2 | 即 `ADB-Prod-05` 到 `ADB-Prod-06`。 |
+| 已完成生产化阶段 | 5 | `ADB-Prod-01` 已通过真实 Raft/RPC client、单进程真实 RaftServer/GRPC smoke 和 OS 级多进程多节点 smoke 验收；`ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环；`ADB-Prod-03` 已通过 JDBC SQL 分布式 scan 执行与 EXPLAIN 诊断验收；`ADB-Prod-04` 已通过 Online DDL index backfill worker 的批量回填、断点续跑、失败标记和 READY 发布验收；`ADB-Prod-05` 已通过部署计划、安全门禁、RClient registry 预检、system row/metrics、backup/restore drill 和 rolling upgrade drill 验收。 |
+| 进行中生产化阶段 | 0 | 当前没有进行中生产化阶段；下一步启动 `ADB-Prod-06`。 |
+| 未开始生产化阶段 | 1 | `ADB-Prod-06` 尚未开始。 |
+| 剩余需完成生产化阶段 | 1 | 即 `ADB-Prod-06`。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
@@ -308,7 +308,7 @@ flowchart TB
 | 2 | ADB-Prod-02 | 已完成 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 已完成 | SQL 路径真实接入 | h2db table/index SPI adapter、JDBC `EXPLAIN SELECT` 分布式诊断、region 数统计 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 已完成 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
-| 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
+| 5 | ADB-Prod-05 | 已完成 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
 | 6 | ADB-Prod-06 | 未开始 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
 
 ### ADB-Prod-03 当前进展
@@ -346,6 +346,25 @@ flowchart TB
 - `TxnManager.addIndexBatch(...)` 已改为分配真实 commitTs 写入索引 committed version，避免多批 backfill 后后续事务看不到较晚批次索引项。
 - 验收覆盖批量回填、基于 `lastCompletedKey` 的断点续跑、最终发布为 `PUBLIC`/`READY`、索引 scan 可见，以及编码失败后的 `FAILED` 标记。
 - 生产级后台任务调度、租约抢占、跨节点接管、DDL worker system table 和长稳压测不归入 `ADB-Prod-04`，继续由 `ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
+
+### ADB-Prod-05 实施口径
+
+`ADB-Prod-05` 的目标是把已有运行时门面组织成可执行的多节点部署与安全验收包：
+
+- 新增 ADB 部署节点描述和部署计划，描述 nodeId、host、端口、数据目录、角色和安全材料位置，并生成可审计的启动命令清单。
+- 部署计划必须复用 `AdbDistributedRuntimeOptions` 的安全门禁：启用分布式模式时必须开启 TLS 和最小权限；同时校验 nodeId、端口和数据目录不能冲突。
+- 新增部署预检/演练器，基于控制面快照刷新 `AdbRClientRegistry`，检查 region leader client 是否可注册，并输出 operations system row/metrics 作为部署验收证据。
+- 备份恢复演练继续复用 `AdbRuntimeOperationsBridge` 的 FULL backup/restore drill，本阶段只把它纳入部署验收流程，不扩展 PITR 或对象存储。
+- 滚动升级演练复用 `RollingUpgradePlan`，逐节点标记升级完成，并在每一步要求集群仍有可写 region，避免把不可用集群标记为可升级。
+- 本阶段不负责真实证书签发、操作系统服务安装、外部服务发现、真实远程连接池生命周期或长稳故障注入；这些继续归入 `ADB-Prod-06` 或部署系统集成。
+- 阶段验收要求 JUnit 覆盖安全配置拒绝、启动清单生成、RClient registry 刷新、system row/metrics 暴露、backup/restore drill 和 rolling upgrade drill。
+
+`ADB-Prod-05` 阶段验收状态：
+
+- 本阶段已完成。阶段验收由 `AdbDeploymentPlanTest`、`AdbDeploymentDrillTest` 和 `AdbRuntimeOperationsBridgeTest` 覆盖。
+- 实现新增 `AdbDeploymentNodeSpec`、`AdbDeploymentPlan`、`AdbDeploymentDrill` 和 `AdbDeploymentPreflightResult`，形成可审计启动命令、部署预检、registry 刷新、system row/metrics、backup/restore drill 与 rolling upgrade drill 的最小闭环。
+- 验收覆盖分布式安全开关拒绝、2 data + 1 witness 拓扑约束、重复端点/数据目录拒绝、leader RClient 自动注册、健康快照输出、FULL backup/restore drill，以及可写集群上的滚动升级演练。
+- 真实证书签发、外部服务发现、操作系统服务安装、真实连接池生命周期和长稳故障注入不归入 `ADB-Prod-05`，继续由 `ADB-Prod-06` 或部署系统集成追踪。
 
 ### ADB-Prod-01 当前进展
 

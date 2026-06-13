@@ -171,16 +171,16 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 2 production phases remain.
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 1 production phase remains.
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-13, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, plus production phases `ADB-Prod-01` through `ADB-Prod-04`. Two phases still need to be completed: `ADB-Prod-05` and `ADB-Prod-06`. The next phase is `ADB-Prod-05`; after it is completed, the remaining phase count must be updated from 2 to 1. After each production phase is completed, this snapshot, the production phase table below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-13, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, plus production phases `ADB-Prod-01` through `ADB-Prod-05`. One phase still needs to be completed: `ADB-Prod-06`. After each production phase is completed, this snapshot, the production phase table below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
-| Post-Runtime production phases | 2 | `ADB-Prod-01` through `ADB-Prod-04` are complete, and `ADB-Prod-05` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
+| Post-Runtime production phases | 1 | `ADB-Prod-01` through `ADB-Prod-05` are complete, and `ADB-Prod-06` has not started | See "Post-Runtime Production Phases" |
 
 The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to Online DDL backfill, production deployment/security, and long-running stress tests.
 
@@ -284,21 +284,21 @@ The next highest-priority work is no longer feature completion inside phases 1-1
 
 The current phases 1-11 have landed the key runtime boundaries required by a TiDB-like distributed database, with code and tests. Production readiness still requires follow-up engineering and verification:
 
-- Wire Online DDL backfill workers to production-grade long-running task scheduling, leases, and cross-node takeover.
-- Complete certificate issuance, the privilege system, rolling-upgrade executor, backup media integration, and long-running stress tests.
+- Complete long-running stress tests, fault injection, network partition, leader transfer, disk fault, and stress-report work.
+- Real certificate issuance, external service discovery, operating-system service installation, and backup-media integration remain deployment-system integration work and are not acceptance items for the current in-code phases.
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 4 completed, 0 in progress, and 2 not started. Therefore, if the question is "how many phases still need to reach acceptance", 2 phases remain. `ADB-Prod-01` now has OS-level multi-process multi-node smoke coverage, `ADB-Prod-02` has met the lock-resolve and GC acceptance criteria, `ADB-Prod-03` has met the real SQL path acceptance criteria, and `ADB-Prod-04` has met the Online DDL index backfill worker acceptance criteria.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 5 completed, 0 in progress, and 1 not started. Therefore, if the question is "how many phases still need to reach acceptance", 1 phase remains. `ADB-Prod-01` now has OS-level multi-process multi-node smoke coverage, `ADB-Prod-02` has met the lock-resolve and GC acceptance criteria, `ADB-Prod-03` has met the real SQL path acceptance criteria, `ADB-Prod-04` has met the Online DDL index backfill worker acceptance criteria, and `ADB-Prod-05` has met the multi-node deployment and security drill acceptance criteria.
 
-The plan continues to track the remaining 2 production phases: next start `ADB-Prod-05` multi-node deployment and security, then move through `ADB-Prod-06`. Each completed phase still requires a local commit.
+The plan continues to track the remaining 1 production phase: next start `ADB-Prod-06` long-running and fault injection. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed production phases | 4 | `ADB-Prod-01` has passed real Raft/RPC client tests, same-JVM real RaftServer/GRPC smoke, and OS-level multi-process multi-node smoke; `ADB-Prod-02` has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle; `ADB-Prod-03` has passed JDBC SQL distributed-scan execution and EXPLAIN diagnostics; `ADB-Prod-04` has passed Online DDL index backfill worker acceptance for batched backfill, checkpoint resume, failure marking, and READY publication. |
-| In-progress production phases | 0 | No production phase is currently in progress; `ADB-Prod-05` is next. |
-| Not-started production phases | 2 | `ADB-Prod-05` through `ADB-Prod-06` have not started. |
-| Production phases still to finish | 2 | `ADB-Prod-05` through `ADB-Prod-06`. |
+| Completed production phases | 5 | `ADB-Prod-01` has passed real Raft/RPC client tests, same-JVM real RaftServer/GRPC smoke, and OS-level multi-process multi-node smoke; `ADB-Prod-02` has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle; `ADB-Prod-03` has passed JDBC SQL distributed-scan execution and EXPLAIN diagnostics; `ADB-Prod-04` has passed Online DDL index backfill worker acceptance for batched backfill, checkpoint resume, failure marking, and READY publication; `ADB-Prod-05` has passed deployment-plan, security-gate, RClient registry preflight, system row/metrics, backup/restore drill, and rolling-upgrade drill acceptance. |
+| In-progress production phases | 0 | No production phase is currently in progress; `ADB-Prod-06` is next. |
+| Not-started production phases | 1 | `ADB-Prod-06` has not started. |
+| Production phases still to finish | 1 | `ADB-Prod-06`. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
@@ -306,7 +306,7 @@ The plan continues to track the remaining 2 production phases: next start `ADB-P
 | 2 | ADB-Prod-02 | Done | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner, background committed-version GC worker | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
 | 3 | ADB-Prod-03 | Done | Real SQL path integration | h2db table/index SPI adapter, JDBC `EXPLAIN SELECT` distributed diagnostics, region-count statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Done | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
-| 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
+| 5 | ADB-Prod-05 | Done | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
 | 6 | ADB-Prod-06 | Not started | Long-running and fault injection | network partition, leader transfer, disk faults, stress report | Long-running and fault-injection reports meet release criteria |
 
 ### ADB-Prod-03 Current Progress
@@ -344,6 +344,25 @@ The plan continues to track the remaining 2 production phases: next start `ADB-P
 - `TxnManager.addIndexBatch(...)` now allocates a real commitTs for index committed versions, preventing later backfill batches from being invisible to subsequent transactions.
 - Acceptance covers batched backfill, checkpoint resume through `lastCompletedKey`, final `PUBLIC`/`READY` publication, index-scan visibility, and `FAILED` marking after an encoding failure.
 - Production-grade background scheduling, lease takeover, cross-node takeover, DDL worker system tables, and long-running stress tests are not part of `ADB-Prod-04`; they continue under `ADB-Prod-05` and `ADB-Prod-06`.
+
+### ADB-Prod-05 Implementation Scope
+
+`ADB-Prod-05` organizes the existing runtime facades into an executable multi-node deployment and security acceptance package:
+
+- Add ADB deployment node descriptors and a deployment plan describing nodeId, host, port, data directory, role, and security material locations, and generate an auditable startup command list.
+- The deployment plan must reuse the security gate in `AdbDistributedRuntimeOptions`: distributed mode requires TLS and least privilege. It must also reject conflicting nodeIds, ports, and data directories.
+- Add a deployment preflight/drill facade that refreshes `AdbRClientRegistry` from the control-plane snapshot, verifies that region leader clients can be registered, and emits operations system rows/metrics as deployment evidence.
+- Backup/restore drills continue to reuse FULL backup/restore support in `AdbRuntimeOperationsBridge`. This phase only wires the drill into deployment acceptance and does not extend PITR or object storage support.
+- Rolling-upgrade drills reuse `RollingUpgradePlan`, mark nodes upgraded one by one, and require writable regions at every step so an unavailable cluster is never marked upgradeable.
+- This phase does not issue real certificates, install operating-system services, implement external service discovery, own real remote connection-pool lifecycles, or run long-duration fault injection. Those remain under `ADB-Prod-06` or deployment-system integration.
+- Phase acceptance requires JUnit coverage for security rejection, startup manifest generation, RClient registry refresh, system row/metrics exposure, backup/restore drill, and rolling-upgrade drill.
+
+`ADB-Prod-05` phase acceptance status:
+
+- This phase is complete. Phase acceptance is covered by `AdbDeploymentPlanTest`, `AdbDeploymentDrillTest`, and `AdbRuntimeOperationsBridgeTest`.
+- The implementation adds `AdbDeploymentNodeSpec`, `AdbDeploymentPlan`, `AdbDeploymentDrill`, and `AdbDeploymentPreflightResult`, forming a minimal loop for auditable startup commands, deployment preflight, registry refresh, system row/metrics, backup/restore drills, and rolling-upgrade drills.
+- Acceptance covers distributed security-gate rejection, the 2 data + 1 witness topology constraint, duplicate endpoint/data-directory rejection, automatic leader RClient registration, health snapshot output, FULL backup/restore drills, and rolling-upgrade drills on a writable cluster.
+- Real certificate issuance, external service discovery, operating-system service installation, real connection-pool lifecycle management, and long-duration fault injection are not part of `ADB-Prod-05`; they continue under `ADB-Prod-06` or deployment-system integration.
 
 ### ADB-Prod-01 Current Progress
 
