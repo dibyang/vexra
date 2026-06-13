@@ -28,3 +28,41 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+def adbRuntimeClasspath = files(tasks.named('jar')) + configurations.runtimeClasspath
+
+tasks.register('adbSqlServerStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-sql-server'
+    mainClassName = 'net.xdob.vexra.adb.AdbSqlServerMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/sql').get().asFile
+    optsEnvironmentVar = 'ADB_SQL_SERVER_OPTS'
+    exitEnvironmentVar = 'ADB_SQL_SERVER_EXIT_CONSOLE'
+}
+
+tasks.register('adbRegionNodeStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-region-node'
+    mainClassName = 'net.xdob.vexra.adb.ha2.AdbRegionNodeMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/region').get().asFile
+    optsEnvironmentVar = 'ADB_REGION_NODE_OPTS'
+    exitEnvironmentVar = 'ADB_REGION_NODE_EXIT_CONSOLE'
+}
+
+tasks.register('adbRuntimeDist', Zip) {
+    dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
+        tasks.named('adbRegionNodeStartScripts')
+    archiveClassifier = 'runtime'
+
+    into('lib') {
+        from(tasks.named('jar'))
+        from(configurations.runtimeClasspath)
+    }
+    into('bin') {
+        from(tasks.named('adbSqlServerStartScripts'))
+        from(tasks.named('adbRegionNodeStartScripts'))
+        fileMode = 0755
+    }
+}

@@ -175,15 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-03`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-04`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-03` 已完成 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-04` 已完成 | 见“Runnable Cluster Hardening 阶段” |
 
-当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖发行包、安装脚本、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
+当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖安装器、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
 
 ### ADB-Runtime-03 实施口径
 
@@ -314,11 +314,11 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 3 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-03` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 4 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-04` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 3 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke。 |
+| 已完成可运行化阶段 | 4 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
 | 未开始可运行化阶段 | 0 | 当前没有额外未开始的 `ADB-Run-*` 阶段。 |
 | 剩余需完成可运行化阶段 | 0 | 当前路线图内没有剩余可运行化阶段。 |
@@ -328,6 +328,7 @@ flowchart TB
 | 1 | ADB-Run-01 | 已完成 | ADB region node 可运行入口 | main 包启动类、参数解析、RaftServer 工厂、部署命令接入 | 部署计划生成的命令指向真实 main class，参数解析和 server 构造测试通过 |
 | 2 | ADB-Run-02 | 已完成 | 产品入口多进程 smoke | OS 级多进程测试切换到 `AdbRegionNodeMain`、host 参数补齐、失败日志诊断 | 3 个独立 JVM 使用产品 main class 启动，Raft/GRPC prewrite、commit 和 scan smoke 通过 |
 | 3 | ADB-Run-03 | 已完成 | SQL server 产品入口 | ADB SQL server main、参数解析、ready/stop 钩子、TCP/JDBC smoke | 独立 JVM 启动 h2db TCP Server，客户端通过 `jdbc:adb:tcp://...` 完成建表、写入和查询 |
+| 4 | ADB-Run-04 | 已完成 | runtime 发行包 | Gradle start scripts、SQL server 脚本、region node 脚本、runtime zip | `:vexra-adb:adbRuntimeDist` 生成包含 `bin/` 和 `lib/` 的可运行发行包 |
 
 ### ADB-Run-01 实施口径
 
@@ -375,6 +376,21 @@ flowchart TB
 
 - main 包新增 `AdbSqlServerConfig` 和 `AdbSqlServerMain`，支持 h2db TCP Server 启动参数、ready/stop 运维钩子和未启动 server 构造测试。
 - `AdbSqlServerMainTest` 已 fork 独立 JVM 启动 SQL server，并通过 `jdbc:adb:tcp://127.0.0.1:<port>/...` 完成 ADB 表建表、insert 和 select。
+
+### ADB-Run-04 实施口径
+
+`ADB-Run-04` 的目标是让 main 包产品入口形成可分发、可执行的 runtime 产物：
+
+- `vexra-adb` Gradle 构建新增 SQL server 和 region node 两套 `CreateStartScripts` 任务。
+- 新增 runtime zip 任务，把 `vexra-adb` jar、runtimeClasspath 依赖和两套启动脚本打包到 `lib/` 与 `bin/`。
+- 启动脚本只负责把 classpath 与 main class 固化到发行包，不内置生产参数、TLS、认证或服务编排。
+- 阶段验收要求 `:vexra-adb:adbRuntimeDist` 能生成 zip，zip 内包含 `bin/adb-sql-server`、`bin/adb-region-node` 和 `lib/vexra-adb-*.jar`。
+
+`ADB-Run-04` 已完成：
+
+- `vexra-adb` 新增 `adbSqlServerStartScripts`、`adbRegionNodeStartScripts` 和 `adbRuntimeDist` Gradle 任务。
+- `:vexra-adb:adbRuntimeDist` 已生成 `vexra-adb-0.1.0-SNAPSHOT-runtime.zip`。
+- zip 内容已验证包含 `bin/adb-sql-server`、`bin/adb-sql-server.bat`、`bin/adb-region-node`、`bin/adb-region-node.bat` 和 `lib/vexra-adb-0.1.0-SNAPSHOT.jar`。
 
 ### ADB-Prod-03 当前进展
 
