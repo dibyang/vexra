@@ -171,12 +171,12 @@ flowchart TB
 
 截至当前状态，ADB-Cluster-01 到 ADB-Cluster-07 的公共模型已完成，`vexra-adb` 真实写路径的 region write gate 和真实读路径的 region read router 也已完成。剩余工作不再是“模型定义”，而是把这些模型接到可运行的分布式执行、复制、事务和运维闭环中。
 
-当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 6 个需要完成，其中 2 个进行中、4 个尚未启动。
+当前路线图中的 ADB-Runtime-01 到 ADB-Runtime-11 已全部完成；如果只按 Runtime 阶段统计，剩余实现阶段为 0 个。但 TiDB-like 数据库要达到生产可用，还需要继续完成后续 Post-Runtime 生产化阶段。按阶段验收口径统计，生产化阶段仍有 5 个需要完成，其中 1 个进行中、4 个尚未启动。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
-| Post-Runtime 生产化阶段 | 6 | `ADB-Prod-01` 和 `ADB-Prod-02` 进行中，`ADB-Prod-03` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
+| Post-Runtime 生产化阶段 | 5 | `ADB-Prod-02` 已完成，`ADB-Prod-01` 进行中，`ADB-Prod-03` 到 `ADB-Prod-06` 未开始 | 见“Post-Runtime 生产化阶段” |
 
 下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到真实多节点部署、真实 Raft/RPC、证书/权限系统和长稳压测中。
 
@@ -289,22 +289,22 @@ flowchart TB
 ## Post-Runtime 生产化阶段
 
 当前 1-11 阶段之后继续按以下生产化阶段推进。截至 2026-06-13，按阶段验收口径统计，生产化阶段共 6 个；
-已完成 0 个、进行中 2 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 6 个；
-如果只统计“尚未启动”的阶段，则还剩 4 个。`ADB-Prod-01` 和 `ADB-Prod-02` 已完成部分子交付，但仍未达到阶段验收。
+已完成 1 个、进行中 1 个、未开始 4 个。因此，如果问题是“还有多少个阶段需要做到完成验收”，答案是还剩 5 个；
+如果只统计“尚未启动”的阶段，则还剩 4 个。`ADB-Prod-02` 已达到本阶段验收；`ADB-Prod-01` 仍缺 OS 级多进程多节点 smoke。
 
-本计划后续执行继续以 6 个生产化阶段为追踪对象：先收敛 `ADB-Prod-01` 的 OS 级多进程多节点 smoke 与 `ADB-Prod-02` 的集群级 lock/GC 闭环，再进入 `ADB-Prod-03` 到 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
+本计划后续执行继续以剩余 5 个生产化阶段为追踪对象：先收敛 `ADB-Prod-01` 的 OS 级多进程多节点 smoke，再进入 `ADB-Prod-03` 到 `ADB-Prod-06`。每个阶段完成后仍需本地提交。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、控制面路由 primary-status reader、RClient registry 刷新器、committed version GC cleaner、后台 committed version GC worker、集群级 GC 分片调度边界、region-scoped cleaner、进程内全局 safe point 推进边界和本地 safe point 持久化/租约边界，但仍缺真实部署层连接工厂接入、PD/etcd 级租约和长事务/部分提交验收闭环。 |
+| 已完成生产化阶段 | 1 | `ADB-Prod-02` 已通过 lock 过期处理、partial commit roll-forward、长事务 safe point 保护和租约保护集群 GC cycle 的本地验收闭环。 |
+| 进行中生产化阶段 | 1 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
-| 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
+| 剩余需完成生产化阶段 | 5 | 包含当前进行中的 `ADB-Prod-01` 和后续 4 个未开始阶段。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
-| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
+| 2 | ADB-Prod-02 | 已完成 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
@@ -468,6 +468,12 @@ flowchart TB
 - 新增一条验收级 JUnit 场景，把 primary 已提交、secondary 残留 lock、跨 region primary-status 查询结果、secondary roll-forward、safe point 长事务阻塞和租约保护集群 GC cycle 串成同一条流程。
 - 验收场景要求 resolver 在 primary 已提交时前滚 secondary，并要求后续 GC 在 active startTs 阻塞 safe point 推进时保留 active snapshot 仍可能读取到的历史版本。
 - 该验收仍运行在单进程真实 LDB store 和本地 region GC client 上，不代表 OS 多进程、多节点、真实 Raft/RPC 传输或 PD/etcd 级租约已经完成。
+
+`ADB-Prod-02` 阶段验收状态：
+
+- 本阶段已完成。阶段验收由 `AdbLockResolverTest`、`AdbCommittedVersionGcCleanerTest`、`AdbLeasedClusterCommittedVersionGcCycleTest` 和 `AdbProd02AcceptanceTest` 覆盖。
+- 验收覆盖锁过期 rollback、primary committed secondary roll-forward、长事务阻止 safe point 推进、region-scoped committed-version GC、租约保护集群 GC cycle，以及 partial commit + long transaction + GC 的组合闭环。
+- 尚未覆盖的 OS 多进程、真实远程传输、证书/权限、PD/etcd 级租约和长稳压测不再归入 `ADB-Prod-02`，继续由 `ADB-Prod-01`、`ADB-Prod-05` 和 `ADB-Prod-06` 追踪。
 
 ## 回滚策略
 

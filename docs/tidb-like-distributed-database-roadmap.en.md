@@ -171,12 +171,12 @@ After the write gate, the read path needs a pluggable region-routing entry point
 
 At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-07 are complete. The real `vexra-adb` write path also has a region write gate, and the real read path has a region read router. The remaining work is no longer model definition; it is wiring those models into runnable distributed execution, replication, transactions, and operations.
 
-ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 6 production phases remain: 2 are in progress and 4 have not started.
+ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 5 production phases remain: 1 is in progress and 4 have not started.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
-| Post-Runtime production phases | 6 | `ADB-Prod-01` and `ADB-Prod-02` are in progress; `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
+| Post-Runtime production phases | 5 | `ADB-Prod-02` is complete, `ADB-Prod-01` is in progress, and `ADB-Prod-03` through `ADB-Prod-06` have not started | See "Post-Runtime Production Phases" |
 
 The next highest-priority work is no longer feature completion inside phases 1-11. It is wiring these runtime boundaries to real multi-node deployment, real Raft/RPC, certificates/privileges, and long-running stress tests.
 
@@ -288,21 +288,21 @@ The current phases 1-11 have landed the key runtime boundaries required by a TiD
 
 ## Post-Runtime Production Phases
 
-After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 0 completed, 2 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 6 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-01` and `ADB-Prod-02` have completed several sub-deliverables, but they have not yet met phase acceptance.
+After the current phases 1-11, production work continues through the following phases. As of 2026-06-13, by phase acceptance status, there are 6 production phases in total: 1 completed, 1 in progress, and 4 not started. Therefore, if the question is "how many phases still need to reach acceptance", 5 phases remain. If only not-started phases are counted, 4 phases remain. `ADB-Prod-02` has met this phase's acceptance criteria; `ADB-Prod-01` still lacks OS-level multi-process multi-node smoke tests.
 
-The plan continues to track these 6 production phases: first finish the OS-level multi-process multi-node smoke work in `ADB-Prod-01` and the cluster-level lock/GC loop in `ADB-Prod-02`, then move through `ADB-Prod-03` to `ADB-Prod-06`. Each completed phase still requires a local commit.
+The plan continues to track the remaining 5 production phases: first finish the OS-level multi-process multi-node smoke work in `ADB-Prod-01`, then move through `ADB-Prod-03` to `ADB-Prod-06`. Each completed phase still requires a local commit.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed production phases | 0 | No production phase has reached full acceptance yet. |
-| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the control-plane-routed primary-status reader, the RClient registry refresher, the committed-version GC cleaner, the background committed-version GC worker, the cluster-level GC sharding boundary, the region-scoped cleaner, the in-process global safe-point advancement boundary, and the local safe-point persistence/lease boundary, but still lacks real deployment-level connection factory integration, PD/etcd-level leases, and acceptance loops for long transactions and partial commits. |
+| Completed production phases | 1 | `ADB-Prod-02` now has a local acceptance loop for lock expiration handling, partial-commit roll-forward, long-transaction safe-point protection, and the lease-protected cluster GC cycle. |
+| In-progress production phases | 1 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
-| Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
+| Production phases still to finish | 5 | Includes the in-progress `ADB-Prod-01` plus 4 not-started phases. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | In progress | Region Raft/RPC client integration | commit/scan transports, request/response models, timeout and error mapping | The 2PC coordinator can use a replaceable RPC client, with failure and timeout tests passing |
-| 2 | ADB-Prod-02 | In progress | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner, background committed-version GC worker | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
+| 2 | ADB-Prod-02 | Done | Real MVCC lock resolve and GC | lock columns, primary/secondary resolve, safe point, committed-version GC cleaner, background committed-version GC worker | Partial commit, lock expiration, long-transaction GC protection, and cluster-level background cleanup tests pass |
 | 3 | ADB-Prod-03 | Not started | Real SQL path integration | h2db optimizer adapter, `EXPLAIN DISTRIBUTED` SQL, statistics | JDBC SQL can produce and execute distributed plans |
 | 4 | ADB-Prod-04 | Not started | Online DDL backfill worker | index KV backfill, resumable progress, failure compensation | add index can recover and eventually become READY |
 | 5 | ADB-Prod-05 | Not started | Multi-node deployment and security | startup scripts, TLS/privileges, system tables, rolling upgrade | Multi-process smoke, backup/restore drill, and rolling-upgrade drill pass |
@@ -465,6 +465,12 @@ This `ADB-Prod-02` partial-commit and long-transaction GC acceptance increment u
 - Add an acceptance-level JUnit scenario that combines a committed primary, a leftover secondary lock, cross-region primary-status results, secondary roll-forward, long-transaction safe-point blocking, and the lease-protected cluster GC cycle in one flow.
 - The scenario requires the resolver to roll forward the secondary when the primary is committed, and requires the following GC cycle to preserve historical versions still reachable by an active snapshot when active startTs blocks safe-point advancement.
 - The acceptance scenario still runs in one process with a real LDB store and the local region GC client. It does not mean OS-level multi-process, multi-node, real Raft/RPC transport, or PD/etcd-level leases are complete.
+
+`ADB-Prod-02` phase acceptance status:
+
+- This phase is complete. Phase acceptance is covered by `AdbLockResolverTest`, `AdbCommittedVersionGcCleanerTest`, `AdbLeasedClusterCommittedVersionGcCycleTest`, and `AdbProd02AcceptanceTest`.
+- Acceptance covers expired-lock rollback, primary-committed secondary roll-forward, long transactions blocking safe-point advancement, region-scoped committed-version GC, the lease-protected cluster GC cycle, and the combined partial-commit + long-transaction + GC loop.
+- OS-level multi-process deployment, real remote transport, certificates/privileges, PD/etcd-level leases, and long-running stress tests are no longer tracked under `ADB-Prod-02`; they continue under `ADB-Prod-01`, `ADB-Prod-05`, and `ADB-Prod-06`.
 
 ## Rollback Strategy
 
