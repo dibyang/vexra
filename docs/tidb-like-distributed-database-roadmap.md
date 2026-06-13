@@ -296,7 +296,7 @@ flowchart TB
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、committed version GC cleaner 和后台 committed version GC worker，但仍缺集群级 primary 查询、GC worker 分片调度和长事务/部分提交验收闭环。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、primary-status read path、committed version GC cleaner 和后台 committed version GC worker，但仍缺基于控制面路由的集群级 primary 查询、GC worker 分片调度和长事务/部分提交验收闭环。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
@@ -390,6 +390,13 @@ flowchart TB
 - 新增可插拔 `AdbPrimaryLockStatusReader`，由 `AdbLockResolver` 通过该接口查询 primary lock 是否已经提交。
 - 默认实现仍读取当前 store 的 committed version，保持现有单机和同 region 行为；后续真实跨 region/RPC 查询只需要替换该接口实现。
 - 本增量不复用现有 `RegionScan` 可见行结果作为 primary 状态，因为当前 region scan proto 不返回 source txnId/commitTs；专用 primary-status RPC 或扩展字段继续留在后续增量。
+
+本轮 `ADB-Prod-02` 的 primary-status read path 口径：
+
+- 在 ADB read proto 中新增 `PrimaryLockStatusRequest` / `PrimaryLockStatusResult`，让 primary 所在 region 可以按 txnId 和 primary logical key 返回 committed/unknown 与 commitTs。
+- `AdbSMPlugin` 和 `LocalRClient` 复用同一 `AdbPrimaryLockStatusProto` 适配逻辑，服务端判断仍由 `LocalAdbPrimaryLockStatusReader` 完成，避免 region scan 可见行语义与 primary 状态语义混用。
+- 新增 `AdbRaftPrimaryLockStatusReader`，把 resolver 的 `AdbPrimaryLockStatusReader` 接口映射到现有 `RClient` read path；后续只需要由控制面选择 primary region 对应的 `RClient`。
+- 本增量不实现控制面路由、leader 定位、primary-status 缓存或失败重试策略；这些继续留在集群级 primary 查询收口阶段。
 
 本轮 `ADB-Prod-02` 的 committed version GC 口径：
 

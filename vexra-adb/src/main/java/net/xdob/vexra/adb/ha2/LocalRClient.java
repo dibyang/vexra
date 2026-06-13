@@ -124,6 +124,9 @@ public class LocalRClient implements RClient{
       } else if (readRequest.hasRegionScan()) {
         builder.setRegionScanResult(AdbRegionScanReader.scan(store,
             readRequest.getRegionScan()));
+      } else if (readRequest.hasPrimaryLockStatus()) {
+        builder.setPrimaryLockStatusResult(AdbPrimaryLockStatusProto.read(
+            store, readRequest.getPrimaryLockStatus()));
       } else {
         builder.setSuccess(false);
         builder.setEx(Proto2Util.toThrowable2Proto(

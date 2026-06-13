@@ -4,6 +4,8 @@ import net.xdob.vexra.adb.db.AdbRegionCommitRequest;
 import net.xdob.vexra.adb.db.AdbRegionMutation;
 import net.xdob.vexra.adb.db.AdbRegionScanRequest;
 import net.xdob.vexra.adb.db.AdbRpcRegionCommitClient;
+import net.xdob.vexra.adb.db.AdbPrimaryLockStatus;
+import net.xdob.vexra.adb.db.AdbTxnLock;
 import net.xdob.vexra.adb.db.Meta;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
@@ -57,9 +59,13 @@ class AdbRegionRpcSmokeTest {
 
       RegionQueryResult result = new AdbRaftRegionScanClient("adb", rClient)
           .scanAsync(scanRequest(20)).join();
+      AdbPrimaryLockStatus primaryStatus =
+          new AdbRaftPrimaryLockStatusReader("adb", rClient)
+              .readPrimaryStatus(lock(10, rowKey));
 
       assertEquals(1, result.getRows().size());
       assertEquals("rpc-smoke", result.getRows().get(0).get("payload"));
+      assertEquals(20, primaryStatus.getCommitTs());
     }
   }
 
@@ -75,6 +81,11 @@ class AdbRegionRpcSmokeTest {
     rowValue.txnId = txnId;
     rowValue.payload = RowCodec.encode(ValueVarchar.get(value));
     return rowValue;
+  }
+
+  private static AdbTxnLock lock(long txnId, RowKey primaryKey) {
+    return new AdbTxnLock(txnId, primaryKey.toBytes(), primaryKey.toBytes(),
+        1, "r1", 3000);
   }
 
   private static RowKey rowKey(long rowId) {

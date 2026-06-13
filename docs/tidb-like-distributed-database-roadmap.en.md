@@ -294,7 +294,7 @@ The plan continues to track these 6 production phases: first finish the OS-level
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
 | Completed production phases | 0 | No production phase has reached full acceptance yet. |
-| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the committed-version GC cleaner, and the background committed-version GC worker, but still lacks cluster-level primary lookup, sharded GC worker scheduling, and acceptance loops for long transactions and partial commits. |
+| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the committed-version GC cleaner, and the background committed-version GC worker, but still lacks control-plane-routed cluster-level primary lookup, sharded GC worker scheduling, and acceptance loops for long transactions and partial commits. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
 | Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
@@ -387,6 +387,13 @@ This `ADB-Prod-02` primary-status lookup boundary increment uses this scope:
 - Add a pluggable `AdbPrimaryLockStatusReader`, and make `AdbLockResolver` query primary commit state through this interface.
 - The default implementation still reads committed versions from the current store, preserving existing single-node and same-region behavior. Later cross-region/RPC lookup can replace this interface implementation.
 - This increment does not reuse the current `RegionScan` visible-row result as primary status, because the current region scan proto does not return source txnId/commitTs. A dedicated primary-status RPC or extended fields remain follow-up work.
+
+This `ADB-Prod-02` primary-status read path increment uses this scope:
+
+- Add `PrimaryLockStatusRequest` / `PrimaryLockStatusResult` to the ADB read proto so the primary region can return committed/unknown and commitTs by txnId and primary logical key.
+- `AdbSMPlugin` and `LocalRClient` share the same `AdbPrimaryLockStatusProto` adapter. The server-side decision still uses `LocalAdbPrimaryLockStatusReader`, so visible-row region scan semantics are not mixed with primary-status semantics.
+- Add `AdbRaftPrimaryLockStatusReader`, mapping the resolver's `AdbPrimaryLockStatusReader` interface to the existing `RClient` read path. Later work only needs the control plane to select the `RClient` for the primary region.
+- This increment does not implement control-plane routing, leader discovery, primary-status caching, or retry policy. Those remain part of the cluster-level primary lookup closure.
 
 This `ADB-Prod-02` committed-version GC increment uses this scope:
 
