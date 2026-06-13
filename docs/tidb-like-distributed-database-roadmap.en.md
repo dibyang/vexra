@@ -173,6 +173,10 @@ At the current state, the public models for ADB-Cluster-01 through ADB-Cluster-0
 
 ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If only Runtime phases are counted, there are 0 remaining implementation phases. However, to make the TiDB-like database production-ready, the follow-up Post-Runtime production phases still need to be completed. By phase acceptance status, 3 production phases remain, all not started.
 
+### Current Phase Count Snapshot
+
+As of 2026-06-13, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, plus production phases `ADB-Prod-01` through `ADB-Prod-03`. Three phases still need to be completed: `ADB-Prod-04`, `ADB-Prod-05`, and `ADB-Prod-06`. The next phase is `ADB-Prod-04`; after it is completed, the remaining phase count must be updated from 3 to 2. After each production phase is completed, this snapshot, the production phase table below, and the phase status notes must be updated together and committed locally.
+
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
