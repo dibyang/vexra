@@ -175,14 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-13，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`。当前路线图内剩余阶段数为 0。后续如果新增生产化阶段，必须同步更新本快照、下方生产化阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`，以及生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`。为把测试 harness 中的可运行能力提升为产品入口，新增可运行化阶段 `ADB-Run-01`。因此，按当前路线图统计，剩余需要完成的阶段数为 1 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 1 | `ADB-Run-01` 进行中 | 见“Runnable Cluster Hardening 阶段” |
 
-下一组优先级最高的落地工作不再是当前 1-11 阶段内的功能补齐，而是把这些运行时边界接到 Online DDL backfill、生产部署/安全和长稳压测中。
+下一组优先级最高的落地工作不再是当前 1-11 阶段或生产化阶段内的功能补齐，而是把测试专用多进程 region node 入口提升为 main 包产品入口，并让部署计划生成可直接执行的启动命令。
 
 ### ADB-Runtime-03 实施口径
 
@@ -310,6 +311,32 @@ flowchart TB
 | 4 | ADB-Prod-04 | 已完成 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 已完成 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
 | 6 | ADB-Prod-06 | 已完成 | 长稳与故障注入 | 网络分区、leader 切换、磁盘错误、压测报告 | 长稳和故障注入报告达标 |
+
+## Runnable Cluster Hardening 阶段
+
+当前生产化路线图已经完成，但距离“开箱可运行的 TiDB-like 分布式数据库”仍需要把测试 harness 中的可运行能力逐步提升为 main 包中的产品入口。后续新增 `ADB-Run-*` 阶段，专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前只规划 1 个可运行化阶段，完成 `ADB-Run-01` 后本组阶段剩余数归零；新增更多可运行化阶段前，需要先更新本节计数。
+
+| 口径 | 数量 | 说明 |
+| --- | --- | --- |
+| 已完成可运行化阶段 | 0 | 尚未完成 main 包 ADB region node 产品入口验收。 |
+| 进行中可运行化阶段 | 1 | `ADB-Run-01` 正在推进，目标是把测试专用 `AdbRaftRegionServerProcess` 提升为 main 包启动入口。 |
+| 未开始可运行化阶段 | 0 | 当前没有额外未开始的 `ADB-Run-*` 阶段。 |
+| 剩余需完成可运行化阶段 | 1 | 当前还剩 `ADB-Run-01` 这 1 个阶段需要完成。 |
+
+| 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | ADB-Run-01 | 进行中 | ADB region node 可运行入口 | main 包启动类、参数解析、RaftServer 工厂、部署命令接入 | 部署计划生成的命令指向真实 main class，参数解析和 server 构造测试通过 |
+
+### ADB-Run-01 实施口径
+
+`ADB-Run-01` 的目标是把 `ADB-Prod-01` 中测试专用的 `AdbRaftRegionServerProcess` 能力提升为 main 包可复用的节点入口：
+
+- 新增 main 包 ADB region node 启动类，支持 `--group`、`--node`、`--peers`、`--host`、`--port`、`--storage`、`--cache`、`--ready` 和 `--stop` 参数。
+- 新增可测试的启动配置对象和 RaftServer 工厂方法，复用 `AdbStateMachine`、GRPC RPC 类型、storage/cache 配置和现有 peer 解析。
+- `--ready` 和 `--stop` 参数保留为可选运维钩子：本地 smoke 可以用 ready 文件确认启动完成，用 stop 文件优雅退出；生产环境也可以由外部进程管理器省略它们。
+- `AdbDeploymentNodeSpec.startupCommand(...)` 改为生成 `java -cp <classpath> <mainClass> ...` 风格命令，并携带真实 region node 启动参数，而不是只生成没有 main 目标的占位 `-jar` 命令。
+- 本阶段不实现 TLS 证书加载、外部服务发现、systemd/容器模板或多 region 自动编排；这些继续作为部署系统集成工作。
+- 阶段验收要求 JUnit 覆盖启动参数解析、部署命令生成、RaftServer 构造和缺失参数拒绝。
 
 ### ADB-Prod-03 当前进展
 
