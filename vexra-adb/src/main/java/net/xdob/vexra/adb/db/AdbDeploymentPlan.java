@@ -1,5 +1,7 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -15,9 +17,13 @@ import java.util.Set;
  * 容器编排或服务管理器。</p>
  */
 public final class AdbDeploymentPlan {
+  /** 兼容旧部署计划构造器时使用的默认 ADB Raft group 标识。 */
+  public static final String DEFAULT_GROUP_ID = "adb-default-region";
   private final AdbDistributedRuntimeOptions runtimeOptions;
   private final String javaCommand;
-  private final String jarPath;
+  private final String classpath;
+  private final String mainClass;
+  private final String groupId;
   private final List<AdbDeploymentNodeSpec> nodes;
 
   /**
@@ -30,10 +36,45 @@ public final class AdbDeploymentPlan {
    */
   public AdbDeploymentPlan(AdbDistributedRuntimeOptions runtimeOptions,
       String javaCommand, String jarPath, List<AdbDeploymentNodeSpec> nodes) {
+    this(runtimeOptions, javaCommand, jarPath, AdbRegionNodeMain.MAIN_CLASS,
+        DEFAULT_GROUP_ID, nodes);
+  }
+
+  /**
+   * 创建带 Raft group 标识的 ADB 部署计划。
+   *
+   * @param runtimeOptions 分布式运行时安全选项
+   * @param javaCommand Java 命令
+   * @param classpath 节点运行 classpath
+   * @param groupId Raft group 标识
+   * @param nodes 节点规格列表
+   */
+  public AdbDeploymentPlan(AdbDistributedRuntimeOptions runtimeOptions,
+      String javaCommand, String classpath, String groupId,
+      List<AdbDeploymentNodeSpec> nodes) {
+    this(runtimeOptions, javaCommand, classpath, AdbRegionNodeMain.MAIN_CLASS,
+        groupId, nodes);
+  }
+
+  /**
+   * 创建完整指定 main class 的 ADB 部署计划。
+   *
+   * @param runtimeOptions 分布式运行时安全选项
+   * @param javaCommand Java 命令
+   * @param classpath 节点运行 classpath
+   * @param mainClass ADB region node main class
+   * @param groupId Raft group 标识
+   * @param nodes 节点规格列表
+   */
+  public AdbDeploymentPlan(AdbDistributedRuntimeOptions runtimeOptions,
+      String javaCommand, String classpath, String mainClass, String groupId,
+      List<AdbDeploymentNodeSpec> nodes) {
     this.runtimeOptions = Objects.requireNonNull(runtimeOptions,
         "runtimeOptions == null");
     this.javaCommand = normalize(javaCommand, "javaCommand");
-    this.jarPath = normalize(jarPath, "jarPath");
+    this.classpath = normalize(classpath, "classpath");
+    this.mainClass = normalize(mainClass, "mainClass");
+    this.groupId = normalize(groupId, "groupId");
     this.nodes = immutableNodes(nodes);
     validate();
   }
@@ -46,8 +87,25 @@ public final class AdbDeploymentPlan {
     return javaCommand;
   }
 
+  public String getClasspath() {
+    return classpath;
+  }
+
+  public String getMainClass() {
+    return mainClass;
+  }
+
+  public String getGroupId() {
+    return groupId;
+  }
+
+  /**
+   * 返回兼容旧调用方的 classpath 值。
+   *
+   * @return 节点运行 classpath
+   */
   public String getJarPath() {
-    return jarPath;
+    return classpath;
   }
 
   public List<AdbDeploymentNodeSpec> getNodes() {
@@ -61,10 +119,28 @@ public final class AdbDeploymentPlan {
    */
   public List<String> startupCommands() {
     List<String> commands = new ArrayList<>();
+    String peers = peersArgument();
     for (AdbDeploymentNodeSpec node : nodes) {
-      commands.add(node.startupCommand(javaCommand, jarPath));
+      commands.add(node.startupCommand(javaCommand, classpath, mainClass,
+          groupId, peers));
     }
     return Collections.unmodifiableList(commands);
+  }
+
+  /**
+   * 生成 `node@host:port` 格式的 Raft peer 参数。
+   *
+   * @return 按部署计划节点顺序排列的 peer 参数
+   */
+  public String peersArgument() {
+    StringBuilder builder = new StringBuilder();
+    for (AdbDeploymentNodeSpec node : nodes) {
+      if (builder.length() > 0) {
+        builder.append(',');
+      }
+      builder.append(node.getNodeId()).append('@').append(node.endpoint());
+    }
+    return builder.toString();
   }
 
   private void validate() {

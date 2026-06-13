@@ -1,5 +1,7 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
+
 import java.util.Objects;
 
 /**
@@ -86,19 +88,65 @@ public final class AdbDeploymentNodeSpec {
    * 生成该节点的启动命令。
    *
    * @param javaCommand Java 命令
-   * @param jarPath ADB 节点启动 jar 路径
+   * @param classpath ADB 节点运行 classpath
+   * @param mainClass ADB region node main class
+   * @param groupId Raft group 标识
+   * @param peers Raft peer 列表参数
    * @return 可审计启动命令
    */
-  public String startupCommand(String javaCommand, String jarPath) {
-    return normalize(javaCommand, "javaCommand")
-        + " -Dvexra.adb.nodeId=" + nodeId
-        + " -Dvexra.adb.host=" + host
+  public String startupCommand(String javaCommand, String classpath,
+      String mainClass, String groupId, String peers) {
+    return argument(javaCommand, "javaCommand")
+        + " -Dvexra.adb.nodeId=" + argument(nodeId, "nodeId")
+        + " -Dvexra.adb.host=" + argument(host, "host")
         + " -Dvexra.adb.grpcPort=" + grpcPort
-        + " -Dvexra.adb.dataDir=" + dataDir
+        + " -Dvexra.adb.dataDir=" + argument(dataDir, "dataDir")
         + " -Dvexra.adb.role=" + role.name()
-        + " -Dvexra.adb.tlsCert=" + tlsCertificatePath
-        + " -Dvexra.adb.privilegeConfig=" + privilegeConfigPath
-        + " -jar " + normalize(jarPath, "jarPath");
+        + " -Dvexra.adb.tlsCert=" + argument(tlsCertificatePath,
+            "tlsCertificatePath")
+        + " -Dvexra.adb.privilegeConfig=" + argument(privilegeConfigPath,
+            "privilegeConfigPath")
+        + " -cp " + argument(classpath, "classpath")
+        + " " + argument(mainClass, "mainClass")
+        + " --group " + argument(groupId, "groupId")
+        + " --node " + argument(nodeId, "nodeId")
+        + " --peers " + argument(peers, "peers")
+        + " --host " + argument(host, "host")
+        + " --port " + grpcPort
+        + " --storage " + argument(childPath(dataDir, "raft"), "storage")
+        + " --cache " + argument(childPath(dataDir, "cache"), "cache");
+  }
+
+  /**
+   * 兼容旧调用方的启动命令生成入口。
+   *
+   * <p>第二个参数保留旧名称，但现在按 classpath 使用，并生成真实 main class 命令而不是
+   * `-jar` 占位命令。单节点 peer 和默认 group 只用于兼容旧测试或外部调用，生产部署应使用带
+   * group 和 peers 的重载。</p>
+   *
+   * @param javaCommand Java 命令
+   * @param classpath ADB 节点运行 classpath
+   * @return 可审计启动命令
+   */
+  public String startupCommand(String javaCommand, String classpath) {
+    return startupCommand(javaCommand, classpath, AdbRegionNodeMain.MAIN_CLASS,
+        AdbDeploymentPlan.DEFAULT_GROUP_ID, nodeId + "@" + endpoint());
+  }
+
+  private static String childPath(String parent, String child) {
+    String normalized = normalize(parent, "parent");
+    if (normalized.endsWith("/") || normalized.endsWith("\\")) {
+      return normalized + child;
+    }
+    return normalized + "/" + child;
+  }
+
+  private static String argument(String value, String fieldName) {
+    String normalized = normalize(value, fieldName);
+    if (normalized.indexOf(' ') < 0 && normalized.indexOf('"') < 0) {
+      return normalized;
+    }
+    return "\"" + normalized.replace("\"", "\\\"") + "\"";
   }
 
   private static String normalize(String value, String fieldName) {

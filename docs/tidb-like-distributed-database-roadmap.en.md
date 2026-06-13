@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, plus production phases `ADB-Prod-01` through `ADB-Prod-06`. To promote test-harness runtime capability into a product entry point, runnable hardening phase `ADB-Run-01` has been added. Therefore, the current roadmap has 1 remaining phase to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phase `ADB-Run-01`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 1 | `ADB-Run-01` is in progress | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` is complete | See "Runnable Cluster Hardening Phases" |
 
-The next highest-priority work is no longer feature completion inside phases 1-11 or the production phases. It is promoting the test-only multi-process region node entry point into a main-package product entry point and making deployment plans emit directly runnable startup commands.
+There are no remaining phases in the current roadmap. Further work toward a more complete out-of-the-box cluster product should add independent phases for release packaging, installation scripts, end-to-end cluster smoke, and external deployment-system integration.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,18 +312,18 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete, but an out-of-the-box runnable TiDB-like distributed database still needs test-harness runtime capabilities to be promoted into main-package product entry points. New `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. Only 1 runnable hardening phase is currently planned; after `ADB-Run-01` is complete, the remaining count for this group returns to zero. Any additional runnable hardening phases must update this count first.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. Only 1 runnable hardening phase is currently planned, `ADB-Run-01` is complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 0 | The main-package ADB region node product entry point has not yet passed acceptance. |
-| Runnable hardening phases in progress | 1 | `ADB-Run-01` is in progress and promotes the test-only `AdbRaftRegionServerProcess` into a main-package startup entry point. |
+| Completed runnable hardening phases | 1 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point. |
+| Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
 | Not-started runnable hardening phases | 0 | There are no additional not-started `ADB-Run-*` phases in the current plan. |
-| Remaining runnable hardening phases | 1 | The current plan still needs `ADB-Run-01` to be completed. |
+| Remaining runnable hardening phases | 0 | There are no remaining runnable hardening phases in the current roadmap. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
-| 1 | ADB-Run-01 | In progress | Runnable ADB region node entry point | main-package startup class, argument parser, RaftServer factory, deployment command integration | Deployment-plan commands target a real main class, and argument parsing plus server construction tests pass |
+| 1 | ADB-Run-01 | Done | Runnable ADB region node entry point | main-package startup class, argument parser, RaftServer factory, deployment command integration | Deployment-plan commands target a real main class, and argument parsing plus server construction tests pass |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -335,6 +335,12 @@ The production roadmap is complete, but an out-of-the-box runnable TiDB-like dis
 - Change `AdbDeploymentNodeSpec.startupCommand(...)` to generate `java -cp <classpath> <mainClass> ...` commands with real region-node startup arguments instead of a placeholder `-jar` command without a main target.
 - This phase does not implement TLS certificate loading, external service discovery, systemd/container templates, or automatic multi-region orchestration; those remain deployment-system integration work.
 - Phase acceptance requires JUnit coverage for startup argument parsing, deployment command generation, RaftServer construction, and missing-argument rejection.
+
+`ADB-Run-01` is complete:
+
+- Main package now includes `AdbRegionNodeConfig` and `AdbRegionNodeMain` for real ADB region node argument parsing, RaftServer construction, and ready/stop operations hooks.
+- `AdbDeploymentPlan` now has groupId, classpath, mainClass, and peers aggregation; `AdbDeploymentNodeSpec` emits `java -cp ... net.xdob.vexra.adb.ha2.AdbRegionNodeMain ...` commands.
+- Test coverage includes `AdbRegionNodeConfigTest`, `AdbDeploymentPlanTest`, and `AdbDeploymentDrillTest`.
 
 ### ADB-Prod-03 Current Progress
 

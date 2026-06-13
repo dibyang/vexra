@@ -1,5 +1,6 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -20,17 +21,30 @@ class AdbDeploymentPlanTest {
   void shouldGenerateAuditableStartupCommands() {
     AdbDeploymentPlan plan = new AdbDeploymentPlan(
         new AdbDistributedRuntimeOptions(true, true, true),
-        "java", "vexra-adb-node.jar", Arrays.asList(
+        "java", "vexra-adb-node.jar", "region-group-1", Arrays.asList(
         node("node-a", 17701, "/data/a", AdbDeploymentNodeRole.DATA_NODE),
         node("node-b", 17702, "/data/b", AdbDeploymentNodeRole.DATA_NODE),
         node("witness-a", 17703, "/data/w",
             AdbDeploymentNodeRole.WITNESS_NODE)));
 
     assertEquals(3, plan.startupCommands().size());
-    assertTrue(plan.startupCommands().get(0).contains(
-        "-Dvexra.adb.nodeId=node-a"));
-    assertTrue(plan.startupCommands().get(0).contains(
-        "-Dvexra.adb.tlsCert=/tls/node-a.pem"));
+    assertEquals(
+        "node-a@127.0.0.1:17701,node-b@127.0.0.1:17702,"
+            + "witness-a@127.0.0.1:17703",
+        plan.peersArgument());
+    String command = plan.startupCommands().get(0);
+    assertTrue(command.contains("-Dvexra.adb.nodeId=node-a"));
+    assertTrue(command.contains("-Dvexra.adb.tlsCert=/tls/node-a.pem"));
+    assertTrue(command.contains("-cp vexra-adb-node.jar"));
+    assertTrue(command.contains(AdbRegionNodeMain.MAIN_CLASS));
+    assertTrue(command.contains("--group region-group-1"));
+    assertTrue(command.contains("--node node-a"));
+    assertTrue(command.contains("--peers " + plan.peersArgument()));
+    assertTrue(command.contains("--host 127.0.0.1"));
+    assertTrue(command.contains("--port 17701"));
+    assertTrue(command.contains("--storage /data/a/raft"));
+    assertTrue(command.contains("--cache /data/a/cache"));
+    assertFalse(command.contains("-jar"));
     assertTrue(plan.startupCommands().get(2).contains(
         "-Dvexra.adb.role=WITNESS_NODE"));
   }
