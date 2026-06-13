@@ -294,7 +294,7 @@ The plan continues to track these 6 production phases: first finish the OS-level
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
 | Completed production phases | 0 | No production phase has reached full acceptance yet. |
-| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the control-plane-routed primary-status reader, the RClient registry refresher, the committed-version GC cleaner, the background committed-version GC worker, the cluster-level GC sharding boundary, the region-scoped cleaner, and the in-process global safe-point advancement boundary, but still lacks real deployment-level connection factory integration, safe-point persistence/leases, and acceptance loops for long transactions and partial commits. |
+| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the control-plane-routed primary-status reader, the RClient registry refresher, the committed-version GC cleaner, the background committed-version GC worker, the cluster-level GC sharding boundary, the region-scoped cleaner, the in-process global safe-point advancement boundary, and the local safe-point persistence/lease boundary, but still lacks real deployment-level connection factory integration, PD/etcd-level leases, and acceptance loops for long transactions and partial commits. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
 | Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
@@ -438,6 +438,12 @@ This `ADB-Prod-02` global safe-point advancement increment uses this scope:
 - `TxnManager` records startTs values for transactions that have begun but have not yet committed or rolled back successfully, and exposes a read-only snapshot so GC safe-point advancement can protect long transactions.
 - Add `AdbGlobalSafePointAdvancer`, which computes a candidate safe point from the control-plane TSO or a replaceable candidate timestamp supplier, then calls `AdbGcSafePointManager.advanceTo(...)` so the safe point remains monotonic and never covers active transactions.
 - This increment does not persist the safe point, implement PD/etcd-level leases, backup safe points, cross-process active-transaction aggregation, or safe-point broadcast. Those remain follow-up work for the `ADB-Prod-02` cluster acceptance loop.
+
+This `ADB-Prod-02` local safe-point persistence/lease increment uses this scope:
+
+- Add `AdbSafePointLeaseStore` and `AdbSafePointLeaseRecord`, encoding the global safe point, lease owner, and lease expiration into the META CF as the local boundary for later control-plane replication or system-table exposure.
+- The local lease supports same-owner renewal, rejection of unexpired competing owners, takeover after expiration, monotonic safe-point advancement by the holder, and lease release.
+- This increment only provides single-store persistence and lease semantics. It does not provide cross-process linearizable CAS, PD/etcd-level leases, backup safe points, cross-node active-transaction aggregation, or safe-point broadcast.
 
 ## Rollback Strategy
 
