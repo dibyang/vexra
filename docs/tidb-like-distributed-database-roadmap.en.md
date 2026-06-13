@@ -374,6 +374,12 @@ This `ADB-Prod-02` primary-committed secondary roll-forward increment uses this 
 - The batch resolve result now includes a roll-forward count, so background workers and manual recovery commands can distinguish rollback from roll-forward effects.
 - This increment only handles cases where the primary committed version is visible from the resolver's current store. Cross-region primary lookups, primary-state caching, and periodic scheduling remain follow-up work.
 
+This `ADB-Prod-02` background lock resolve worker increment uses this scope:
+
+- Add a startable and closeable `AdbLockResolveWorker` that periodically calls `AdbLockResolver.resolveExpiredLocks(...)`, while keeping `resolveOnce()` as the test, diagnostic, and manual recovery entry point.
+- The worker records the latest batch result and latest failure, so runtime operations bridges or later admin/system tables can expose the state.
+- This increment only schedules expired locks resolvable from the current store. Cross-region primary lookups, GC deletion of historical versions, and cluster-level worker sharding remain follow-up work.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.

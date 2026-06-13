@@ -378,6 +378,12 @@ flowchart TB
 - 批量 resolve 结果新增前滚计数，便于后台 worker 和手动恢复命令区分 rollback 与 roll-forward 效果。
 - 本增量只处理 primary committed version 已在当前 resolver 可访问 store 中的场景；跨 region primary 查询、primary 状态缓存和周期调度继续留在后续增量。
 
+本轮 `ADB-Prod-02` 的后台 lock resolve worker 口径：
+
+- 新增可启动、可关闭的 `AdbLockResolveWorker`，周期调用 `AdbLockResolver.resolveExpiredLocks(...)`，并保留 `resolveOnce()` 作为测试、诊断和手动恢复入口。
+- worker 记录最近一次批处理结果和最近一次失败，调用方可以通过运行时 operations bridge 或后续 admin/system table 暴露这些状态。
+- 本增量只调度当前 store 可处理的过期 lock；跨 region primary 查询、GC 历史版本删除和集群级 worker 分片继续留在后续增量。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。
