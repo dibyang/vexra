@@ -296,14 +296,14 @@ flowchart TB
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
 | 已完成生产化阶段 | 0 | 尚无生产化阶段达到完整验收标准。 |
-| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界和 committed version GC cleaner，但仍缺集群级 primary 查询、GC worker 分片调度和长事务/部分提交验收闭环。 |
+| 进行中生产化阶段 | 2 | `ADB-Prod-01` 已完成真实 RaftServer/GRPC JUnit smoke，但仍缺 OS 级多进程多节点 smoke；`ADB-Prod-02` 已推进 durable lock、批量 resolve、secondary 前滚、后台 lock resolve worker、primary 状态查询边界、committed version GC cleaner 和后台 committed version GC worker，但仍缺集群级 primary 查询、GC worker 分片调度和长事务/部分提交验收闭环。 |
 | 未开始生产化阶段 | 4 | `ADB-Prod-03` 到 `ADB-Prod-06` 尚未开始。 |
 | 剩余需完成生产化阶段 | 6 | 包含当前进行中的 `ADB-Prod-01`、`ADB-Prod-02` 和后续 4 个未开始阶段。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | ADB-Prod-01 | 进行中 | region Raft/RPC client 接入 | commit/scan transport、请求响应模型、超时和错误映射 | 2PC coordinator 可替换为 RPC client，故障和超时测试通过 |
-| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
+| 2 | ADB-Prod-02 | 进行中 | 真实 MVCC lock resolve 与 GC | lock column、primary/secondary resolve、safe point、committed version GC cleaner、后台 committed version GC worker | 部分提交、锁过期、GC 保护长事务和集群级后台清理测试通过 |
 | 3 | ADB-Prod-03 | 未开始 | SQL 路径真实接入 | h2db optimizer adapter、`EXPLAIN DISTRIBUTED` SQL、统计信息 | JDBC SQL 可输出并执行分布式计划 |
 | 4 | ADB-Prod-04 | 未开始 | Online DDL backfill worker | index KV 回填、断点续跑、失败补偿 | add index 长任务可恢复并最终 READY |
 | 5 | ADB-Prod-05 | 未开始 | 多节点部署与安全 | 启动脚本、TLS/权限、系统表、滚动升级 | 多进程冒烟、备份恢复、滚动升级演练通过 |
@@ -396,6 +396,12 @@ flowchart TB
 - 新增保守的 committed version GC cleaner，扫描 DEFAULT CF 下的 committed version，并删除 GC safe point 之前的旧历史版本。
 - cleaner 必须保留每个 logical key 的最新 committed version，即使该版本早于 safe point，也不能把当前可见数据清空。
 - 本增量不删除 intent、lock record 或跨 region 历史版本，也不接入长期调度；集群级 GC worker 和 region 分片继续留在后续增量。
+
+本轮 `ADB-Prod-02` 的后台 committed version GC worker 口径：
+
+- 新增可启动、可关闭的 `AdbCommittedVersionGcWorker`，周期调用 `AdbCommittedVersionGcCleaner.cleanOnce(...)`，并保留 `cleanOnce()` 作为测试、诊断和手动恢复入口。
+- worker 记录最近一次成功 GC 结果和最近一次失败，后续可通过 runtime operations bridge、admin API 或 system table 暴露。
+- 本增量只调度当前 store 的 committed version GC，不负责跨 region 分片、safe point 全局推进、leader 选举或 worker 租约；集群级 GC worker 调度继续留在后续增量。
 
 ## 回滚策略
 
