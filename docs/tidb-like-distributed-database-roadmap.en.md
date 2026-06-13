@@ -294,7 +294,7 @@ The plan continues to track these 6 production phases: first finish the OS-level
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
 | Completed production phases | 0 | No production phase has reached full acceptance yet. |
-| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the control-plane-routed primary-status reader, the RClient registry refresher, the committed-version GC cleaner, the background committed-version GC worker, and the cluster-level GC sharding boundary, but still lacks real deployment-level connection factory integration, a region-scoped cleaner, global safe-point advancement, and acceptance loops for long transactions and partial commits. |
+| In-progress production phases | 2 | `ADB-Prod-01` has completed real RaftServer/GRPC JUnit smoke, but still lacks OS-level multi-process multi-node smoke. `ADB-Prod-02` has progressed durable locks, batch resolve, secondary roll-forward, the background lock resolve worker, the primary-status lookup boundary, the primary-status read path, the control-plane-routed primary-status reader, the RClient registry refresher, the committed-version GC cleaner, the background committed-version GC worker, the cluster-level GC sharding boundary, and the region-scoped cleaner, but still lacks real deployment-level connection factory integration, global safe-point advancement, and acceptance loops for long transactions and partial commits. |
 | Not-started production phases | 4 | `ADB-Prod-03` through `ADB-Prod-06` have not started. |
 | Production phases still to finish | 6 | Includes the in-progress `ADB-Prod-01`, `ADB-Prod-02`, plus 4 not-started phases. |
 
@@ -426,6 +426,12 @@ This `ADB-Prod-02` cluster-level GC sharding increment uses this scope:
 - Add `AdbClusterCommittedVersionGcScheduler`, which reads the current `AdbControlPlaneSnapshot`, creates one GC request per region, and passes `regionId`, `regionEpoch`, `leaderId`, `routeEpoch`, `KeyRange`, `safePoint`, `limit`, and `timeoutMillis` to an async `AdbRegionCommittedVersionGcClient`.
 - The scheduler only handles sharded dispatch, no-leader skips, timeout/failure mapping, and result aggregation. Real transport, worker leases, leader fencing, connection pools, and authentication remain responsibilities of deployment code or later RPC clients.
 - This increment does not change the local scan semantics of `AdbCommittedVersionGcCleaner` and does not yet implement true region-key-range-limited historical-version deletion. A region-scoped cleaner, global safe-point advancement, and multi-worker leases remain follow-up acceptance items.
+
+This `ADB-Prod-02` region-scoped cleaner increment uses this scope:
+
+- `AdbCommittedVersionGcCleaner` adds a `KeyRange`-scoped cleanup overload and can execute an `AdbRegionCommittedVersionGcRequest` directly. Cleanup only covers the region's logical-key range.
+- `AdbLocalRegionCommittedVersionGcClient` bridges cluster-scheduler region GC requests to the local cleaner for single-process use, tests, and later real RPC server-side reuse.
+- Range cleanup still preserves the safety rule that each logical key keeps at least its latest committed version, and it does not delete intents or lock records. Global safe-point advancement, multi-worker leases, real remote transport, and long-transaction/partial-commit acceptance remain follow-up work.
 
 ## Rollback Strategy
 
