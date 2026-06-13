@@ -463,6 +463,12 @@ flowchart TB
 - 未拿到 safe point lease 时，cycle 返回跳过结果，不派发任何 region GC 请求；拿到租约但 safe point 被长事务阻塞时，仍使用当前持久化 safe point 调度，保持清理保守。
 - 本增量只提供单进程/单 store 可验证的 GC 闭环编排，不替代真实远程传输、leader fencing、PD/etcd lease 或跨节点活跃事务汇总。
 
+本轮 `ADB-Prod-02` 的部分提交与长事务 GC 验收口径：
+
+- 新增一条验收级 JUnit 场景，把 primary 已提交、secondary 残留 lock、跨 region primary-status 查询结果、secondary roll-forward、safe point 长事务阻塞和租约保护集群 GC cycle 串成同一条流程。
+- 验收场景要求 resolver 在 primary 已提交时前滚 secondary，并要求后续 GC 在 active startTs 阻塞 safe point 推进时保留 active snapshot 仍可能读取到的历史版本。
+- 该验收仍运行在单进程真实 LDB store 和本地 region GC client 上，不代表 OS 多进程、多节点、真实 Raft/RPC 传输或 PD/etcd 级租约已经完成。
+
 ## 回滚策略
 
 - 每个阶段必须保留单机 ADB/H2 插件模式作为回滚目标。

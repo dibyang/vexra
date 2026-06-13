@@ -460,6 +460,12 @@ This `ADB-Prod-02` lease-protected cluster GC cycle increment uses this scope:
 - If the worker does not obtain the safe-point lease, the cycle returns a skipped result and dispatches no region GC requests. If the lease is obtained but safe-point advancement is blocked by a long transaction, the cycle still schedules with the current persisted safe point, keeping cleanup conservative.
 - This increment only provides a single-process/single-store verifiable GC loop. It does not replace real remote transport, leader fencing, PD/etcd leases, or cross-node active-transaction aggregation.
 
+This `ADB-Prod-02` partial-commit and long-transaction GC acceptance increment uses this scope:
+
+- Add an acceptance-level JUnit scenario that combines a committed primary, a leftover secondary lock, cross-region primary-status results, secondary roll-forward, long-transaction safe-point blocking, and the lease-protected cluster GC cycle in one flow.
+- The scenario requires the resolver to roll forward the secondary when the primary is committed, and requires the following GC cycle to preserve historical versions still reachable by an active snapshot when active startTs blocks safe-point advancement.
+- The acceptance scenario still runs in one process with a real LDB store and the local region GC client. It does not mean OS-level multi-process, multi-node, real Raft/RPC transport, or PD/etcd-level leases are complete.
+
 ## Rollback Strategy
 
 - Every phase must keep the single-node ADB/H2 plugin mode as a rollback target.
