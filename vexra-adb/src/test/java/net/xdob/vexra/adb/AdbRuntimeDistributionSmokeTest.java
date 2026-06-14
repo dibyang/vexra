@@ -234,7 +234,7 @@ class AdbRuntimeDistributionSmokeTest {
     }
     try {
       if (!handle.process.waitFor(10, TimeUnit.SECONDS)) {
-        handle.process.destroy();
+        destroyProcessTree(handle.process);
         if (!handle.process.waitFor(5, TimeUnit.SECONDS)) {
           handle.process.destroyForcibly();
           handle.process.waitFor(10, TimeUnit.SECONDS);
@@ -249,6 +249,34 @@ class AdbRuntimeDistributionSmokeTest {
 
   private static boolean isWindows() {
     return System.getProperty("os.name", "").toLowerCase().contains("win");
+  }
+
+  private static void destroyProcessTree(Process process) {
+    if (isWindows()) {
+      Long pid = processId(process);
+      if (pid != null) {
+        try {
+          Process killer = new ProcessBuilder("taskkill", "/PID",
+              String.valueOf(pid), "/T", "/F").start();
+          killer.waitFor(10, TimeUnit.SECONDS);
+          return;
+        } catch (IOException | InterruptedException e) {
+          if (e instanceof InterruptedException) {
+            Thread.currentThread().interrupt();
+          }
+        }
+      }
+    }
+    process.destroy();
+  }
+
+  private static Long processId(Process process) {
+    try {
+      Object value = Process.class.getMethod("pid").invoke(process);
+      return value instanceof Number ? ((Number) value).longValue() : null;
+    } catch (ReflectiveOperationException | SecurityException e) {
+      return null;
+    }
   }
 
   private static int findFreePort() throws IOException {

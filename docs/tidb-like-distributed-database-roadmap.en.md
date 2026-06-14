@@ -175,13 +175,13 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-05`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-06`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-05` are complete | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-06` are complete | See "Runnable Cluster Hardening Phases" |
 
 There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for installers, automatic SQL-server-to-region-node orchestration, authentication/TLS, and end-to-end cluster stress gates.
 
@@ -312,11 +312,11 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 5 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-05` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 6 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-06` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 5 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script. |
+| Completed runnable hardening phases | 6 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
 | Not-started runnable hardening phases | 0 | There are no additional not-started `ADB-Run-*` phases in the current plan. |
 | Remaining runnable hardening phases | 0 | There are no remaining runnable hardening phases in the current roadmap. |
@@ -328,6 +328,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | 3 | ADB-Run-03 | Done | SQL server product entry point | ADB SQL server main, argument parser, ready/stop hooks, TCP/JDBC smoke | An independent JVM starts h2db TCP Server, and a client completes create-table, insert, and query through `jdbc:adb:tcp://...` |
 | 4 | ADB-Run-04 | Done | Runtime distribution | Gradle start scripts, SQL server script, region node script, runtime zip | `:vexra-adb:adbRuntimeDist` produces a runnable archive containing `bin/` and `lib/` |
 | 5 | ADB-Run-05 | Done | Runtime script-level smoke | extract runtime zip, execute packaged SQL server script, TCP/JDBC verification, process cleanup | `:vexra-adb:test` covers SQL server startup through the packaged script and completes JDBC create-table/write/read |
+| 6 | ADB-Run-06 | Done | Region-node script-level multi-process smoke | extract runtime zip, execute packaged region node script, Raft/GRPC verification, process cleanup | `:vexra-adb:test` covers 3 region nodes started through packaged scripts and completes prewrite, commit, and scan |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -405,6 +406,21 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 - The `vexra-adb` `test` task now depends on `adbRuntimeDist`, ensuring script-level smoke uses the latest runtime zip.
 - `AdbRuntimeDistributionSmokeTest` extracts the runtime zip and starts SQL server through the packaged `bin/adb-sql-server` or `bin/adb-sql-server.bat` script.
 - The test completes ADB table create, insert, select, and stop-file shutdown through `jdbc:adb:tcp://127.0.0.1:<port>/...`.
+
+### ADB-Run-06 Implementation Scope
+
+`ADB-Run-06` verifies that the region node script inside the runtime distribution is runnable:
+
+- Add a test that extracts the runtime zip into a temporary directory and starts 3 independent region node processes through `bin/adb-region-node` or `bin/adb-region-node.bat`.
+- Each process uses `--group`, `--node`, `--peers`, `--host`, `--port`, `--storage`, `--cache`, `--ready`, and `--stop` arguments, covering the full packaged-script-to-`AdbRegionNodeMain` argument path.
+- The test uses real `RaftRClient`, `AdbRpcRegionCommitClient`, and `AdbRaftRegionScanClient` to complete prewrite, commit, and region scan, then cleans up child processes through stop files.
+- This phase does not implement automatic SQL-server-to-region-node orchestration; it only proves the packaged region node script is runnable and can serve the Raft/GRPC data path.
+
+`ADB-Run-06` is complete:
+
+- `AdbRuntimeRegionNodeDistributionSmokeTest` extracts the runtime zip and starts 3 region node processes through the packaged `bin/adb-region-node` or `bin/adb-region-node.bat` script.
+- The test completes prewrite, commit, and region scan through real `RaftRClient`, `AdbRpcRegionCommitClient`, and `AdbRaftRegionScanClient`.
+- Windows test cleanup now terminates leftover Java child processes by runtime extraction directory, preventing script smoke from locking distribution jars.
 
 ### ADB-Prod-03 Current Progress
 

@@ -175,13 +175,13 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-05`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-06`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-05` 已完成 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-06` 已完成 | 见“Runnable Cluster Hardening 阶段” |
 
 当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖安装器、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
 
@@ -314,11 +314,11 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 5 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-05` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 6 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-06` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 5 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke。 |
+| 已完成可运行化阶段 | 6 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
 | 未开始可运行化阶段 | 0 | 当前没有额外未开始的 `ADB-Run-*` 阶段。 |
 | 剩余需完成可运行化阶段 | 0 | 当前路线图内没有剩余可运行化阶段。 |
@@ -330,6 +330,7 @@ flowchart TB
 | 3 | ADB-Run-03 | 已完成 | SQL server 产品入口 | ADB SQL server main、参数解析、ready/stop 钩子、TCP/JDBC smoke | 独立 JVM 启动 h2db TCP Server，客户端通过 `jdbc:adb:tcp://...` 完成建表、写入和查询 |
 | 4 | ADB-Run-04 | 已完成 | runtime 发行包 | Gradle start scripts、SQL server 脚本、region node 脚本、runtime zip | `:vexra-adb:adbRuntimeDist` 生成包含 `bin/` 和 `lib/` 的可运行发行包 |
 | 5 | ADB-Run-05 | 已完成 | runtime 脚本级 smoke | 解包 runtime zip、执行发行包 SQL server 脚本、TCP/JDBC 验证、进程清理 | `:vexra-adb:test` 覆盖发行包脚本启动 SQL server 并完成 JDBC 建表写读 |
+| 6 | ADB-Run-06 | 已完成 | region node 脚本级多进程 smoke | 解包 runtime zip、执行发行包 region node 脚本、Raft/GRPC 验证、进程清理 | `:vexra-adb:test` 覆盖发行包脚本启动 3 个 region node 并完成 prewrite、commit 和 scan |
 
 ### ADB-Run-01 实施口径
 
@@ -407,6 +408,21 @@ flowchart TB
 - `vexra-adb` 的 `test` 任务已依赖 `adbRuntimeDist`，确保脚本级 smoke 使用最新 runtime zip。
 - 新增 `AdbRuntimeDistributionSmokeTest`，解压 runtime zip 后通过发行包内 `bin/adb-sql-server` 或 `bin/adb-sql-server.bat` 启动 SQL server。
 - 该测试已通过 `jdbc:adb:tcp://127.0.0.1:<port>/...` 完成 ADB 表建表、insert、select 和 stop 文件关闭。
+
+### ADB-Run-06 实施口径
+
+`ADB-Run-06` 的目标是验证 runtime 发行包内 region node 脚本本身可运行：
+
+- 新增测试解压 runtime zip 到临时目录，通过 `bin/adb-region-node` 或 `bin/adb-region-node.bat` 启动 3 个独立 region node 进程。
+- 每个进程使用 `--group`、`--node`、`--peers`、`--host`、`--port`、`--storage`、`--cache`、`--ready` 和 `--stop` 参数，覆盖发行包脚本到 `AdbRegionNodeMain` 的完整参数链路。
+- 测试通过真实 `RaftRClient`、`AdbRpcRegionCommitClient` 和 `AdbRaftRegionScanClient` 完成 prewrite、commit 和 region scan，并通过 stop 文件清理子进程。
+- 本阶段不实现 SQL server 与 region node 的自动编排；它只证明发行包 region node 脚本可运行并可承载 Raft/GRPC 数据路径。
+
+`ADB-Run-06` 已完成：
+
+- 新增 `AdbRuntimeRegionNodeDistributionSmokeTest`，解压 runtime zip 后通过发行包内 `bin/adb-region-node` 或 `bin/adb-region-node.bat` 启动 3 个 region node 进程。
+- 测试已通过真实 `RaftRClient`、`AdbRpcRegionCommitClient` 和 `AdbRaftRegionScanClient` 完成 prewrite、commit 和 region scan。
+- Windows 测试清理已按 runtime 解包目录精准终止遗留 Java 子进程，避免脚本 smoke 锁住发行包 jar。
 
 ### ADB-Prod-03 当前进展
 
