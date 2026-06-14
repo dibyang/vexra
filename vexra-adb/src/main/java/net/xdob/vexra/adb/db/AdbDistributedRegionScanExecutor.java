@@ -93,7 +93,8 @@ public final class AdbDistributedRegionScanExecutor {
     List<RegionFuture> futures = new ArrayList<>();
     for (RegionScanTask task : plan.getTasks()) {
       AdbRegionScanRequest request = new AdbRegionScanRequest(task,
-          txn.getTxnId(), txn.getStartTs(), plan.isCountOnly(), timeoutMillis);
+          txn.getTxnId(), task.getReadTimestamp(), plan.isCountOnly(),
+          timeoutMillis);
       futures.add(new RegionFuture(task.getRegionId(), scanAsync(request)));
     }
 

@@ -364,7 +364,15 @@ public class AdbTable extends TableBase {
 
   @Override
   public void close(SessionLocal session) {
-    // ignore
+    AdbSqlDistributedScanRuntime runtime = getSqlDistributedScanRuntime();
+    if (runtime != null) {
+      try {
+        runtime.close();
+      } catch (Exception e) {
+        throw convertException(new SQLException(
+            "Failed to close ADB SQL distributed scan runtime", e));
+      }
+    }
   }
 
   @Override

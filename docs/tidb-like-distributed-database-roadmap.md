@@ -175,15 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-06`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-14，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-07`。因此，按当前路线图统计，剩余需要完成的阶段数为 0 个。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-06` 已完成 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 0 | `ADB-Run-01` 到 `ADB-Run-07` 已完成 | 见“Runnable Cluster Hardening 阶段” |
 
-当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖安装器、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
+当前路线图内没有剩余阶段。后续如果继续推进开箱集群产品化，需要新增独立阶段覆盖 SQL 写入路由到 region node、安装器、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
 
 ### ADB-Runtime-03 实施口径
 
@@ -314,11 +314,11 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 6 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-06` 均已完成，本组阶段剩余数为 0；新增更多可运行化阶段前，需要先更新本节计数。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 7 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-07` 均已完成，本组阶段剩余数为 0。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 6 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke。 |
+| 已完成可运行化阶段 | 7 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke；`ADB-Run-07` 已完成 SQL server 远端 Raft region scan smoke。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
 | 未开始可运行化阶段 | 0 | 当前没有额外未开始的 `ADB-Run-*` 阶段。 |
 | 剩余需完成可运行化阶段 | 0 | 当前路线图内没有剩余可运行化阶段。 |
@@ -331,6 +331,7 @@ flowchart TB
 | 4 | ADB-Run-04 | 已完成 | runtime 发行包 | Gradle start scripts、SQL server 脚本、region node 脚本、runtime zip | `:vexra-adb:adbRuntimeDist` 生成包含 `bin/` 和 `lib/` 的可运行发行包 |
 | 5 | ADB-Run-05 | 已完成 | runtime 脚本级 smoke | 解包 runtime zip、执行发行包 SQL server 脚本、TCP/JDBC 验证、进程清理 | `:vexra-adb:test` 覆盖发行包脚本启动 SQL server 并完成 JDBC 建表写读 |
 | 6 | ADB-Run-06 | 已完成 | region node 脚本级多进程 smoke | 解包 runtime zip、执行发行包 region node 脚本、Raft/GRPC 验证、进程清理 | `:vexra-adb:test` 覆盖发行包脚本启动 3 个 region node 并完成 prewrite、commit 和 scan |
+| 7 | ADB-Run-07 | 已完成 | SQL server 远端 region 读路径 | table-engine 远端 scan 参数、Raft scan client 选择、针对 forked region node 的 SQL/JDBC smoke | SQL 可显式 opt-in 远端 Raft region scan，并读取通过 region-node 数据路径提交的行 |
 
 ### ADB-Run-01 实施口径
 
@@ -423,6 +424,29 @@ flowchart TB
 - 新增 `AdbRuntimeRegionNodeDistributionSmokeTest`，解压 runtime zip 后通过发行包内 `bin/adb-region-node` 或 `bin/adb-region-node.bat` 启动 3 个 region node 进程。
 - 测试已通过真实 `RaftRClient`、`AdbRpcRegionCommitClient` 和 `AdbRaftRegionScanClient` 完成 prewrite、commit 和 region scan。
 - Windows 测试清理已按 runtime 解包目录精准终止遗留 Java 子进程，避免脚本 smoke 锁住发行包 jar。
+
+### ADB-Run-07 实施口径
+
+`ADB-Run-07` 的目标是把显式 opt-in 的 SQL distributed scan 接到远端 Raft region node：
+
+- 扩展 table-engine `WITH` 参数，增加远端 scan client 模式、远端 table id/epoch 映射、Raft group id、peer 列表和可选固定读时间戳；默认仍使用本地 scan。
+- 表显式启用远端 scan 时，`AdbSqlDistributedScanRuntime` 创建基于 `RaftRClient` 的 `AdbRaftRegionScanClient`；未启用时保持现有单机行为。
+- 增加生命周期清理，ADB table 关闭或移除时关闭 SQL distributed scan runtime 持有的远端 Raft client。
+- 增加 SQL/JDBC smoke：启动 forked region node，通过 region-node commit 路径提交一行，创建带远端 scan 参数的 ADB 表，并验证 SQL 能读取该远端行。
+- 本阶段只闭合 SQL 读路径；SQL 写入仍走现有本地 ADB table commit 路径，后续阶段再接入 region commit coordinator。在 SQL server 和 region node 共享真实 catalog/TSO 前，远端 scan 测试通过显式 table id 和读时间戳参数对齐 key 前缀与可见性。
+
+`ADB-Run-07` 验收要求：
+
+- 覆盖远端 scan table-engine 参数解析与校验的单元测试。
+- 覆盖 `EXPLAIN SELECT` 能显示远端 scan 模式的集成测试。
+- 覆盖 forked-process smoke，证明 SQL 可以读取真实 Raft/GRPC region node 提供的数据。
+
+`ADB-Run-07` 已完成：
+
+- `AdbSqlDistributedScanConfig` 已支持从 table-engine 参数解析远端 scan client、远端 table id/epoch、显式读时间戳、Raft group、peers 和 db name。
+- `AdbSqlDistributedScanRuntime` 已在 `client=raft` 时选择 `AdbRaftRegionScanClient`，并通过 table 生命周期清理关闭底层 `RaftRClient`，同时在 plan marker 中暴露远端模式。
+- `AdbDistributedRegionScanExecutor` 已改为使用 task read timestamp 派发 scan request，使显式读时间戳和后续控制面 TSO 时间戳能被远端 client 使用。
+- `AdbSqlServerRemoteRegionScanSmokeTest` 已启动 forked region node 和 forked SQL server，通过 region-node 路径提交一行，验证直接 Raft scan，并验证 SQL/JDBC 可通过远端 distributed scan 读到该行。
 
 ### ADB-Prod-03 当前进展
 

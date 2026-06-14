@@ -1,6 +1,8 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.DbStore;
+import net.xdob.vexra.adb.ha2.AdbRaftRegionScanClient;
+import net.xdob.vexra.adb.ha2.RaftRClient;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
@@ -21,6 +23,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Properties;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * ADB SQL 分布式 scan runtime。
@@ -30,7 +34,7 @@ import java.util.Objects;
  * 再把 region 返回的 ADB payload 还原为 H2 `Row`。它只在表显式开启时生效，
  * 不改变默认本地 scan 行为。</p>
  */
-public final class AdbSqlDistributedScanRuntime {
+public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
   /**
    * region scan 结果中保存原始 ADB row payload 的字段名。
    */
@@ -39,6 +43,8 @@ public final class AdbSqlDistributedScanRuntime {
   private final DbStore store;
   private final AdbSqlDistributedScanConfig config;
   private final AdbDistributedRegionScanExecutor executor;
+  private final AutoCloseable closeable;
+  private final AtomicBoolean closed = new AtomicBoolean(false);
 
   /**
    * 创建 SQL 分布式 scan runtime。
@@ -48,8 +54,7 @@ public final class AdbSqlDistributedScanRuntime {
    */
   public AdbSqlDistributedScanRuntime(DbStore store,
       AdbSqlDistributedScanConfig config) {
-    this(store, config, new AdbDistributedRegionScanExecutor(
-        new AdbLocalRegionScanClient(new AdbLocalRegionScanExecutor(store))));
+    this(store, config, scanTarget(store, config));
   }
 
   /**
@@ -65,6 +70,16 @@ public final class AdbSqlDistributedScanRuntime {
     this.store = Objects.requireNonNull(store, "store == null");
     this.config = Objects.requireNonNull(config, "config == null");
     this.executor = Objects.requireNonNull(executor, "executor == null");
+    this.closeable = () -> {
+    };
+  }
+
+  private AdbSqlDistributedScanRuntime(DbStore store,
+      AdbSqlDistributedScanConfig config, ScanTarget target) {
+    this.store = Objects.requireNonNull(store, "store == null");
+    this.config = Objects.requireNonNull(config, "config == null");
+    this.executor = Objects.requireNonNull(target, "target == null").executor;
+    this.closeable = target.closeable;
   }
 
   /**
@@ -119,7 +134,26 @@ public final class AdbSqlDistributedScanRuntime {
   public String getPlanMarker() {
     return "ADB_DISTRIBUTED_SCAN regions=" + configuredRegionCount()
         + " splitRow=" + config.getSplitRowId()
+        + " client=" + config.getScanClient()
+        + " tableId=" + config.getTableId()
+        + " tableEpoch=" + config.getTableEpoch()
+        + " readTs=" + config.getReadTimestamp()
         + " timeoutMillis=" + config.getTimeoutMillis();
+  }
+
+  /**
+   * 关闭 SQL distributed scan runtime 持有的远端连接资源。
+   *
+   * <p>本地 scan 没有实际资源；远端 raft scan 会关闭内部 `RaftRClient`。该方法幂等，便于
+   * H2 table close/remove 多次调用。</p>
+   *
+   * @throws Exception 关闭底层远端 client 失败时抛出
+   */
+  @Override
+  public void close() throws Exception {
+    if (closed.compareAndSet(false, true)) {
+      closeable.close();
+    }
   }
 
   private int configuredRegionCount() {
@@ -128,13 +162,29 @@ public final class AdbSqlDistributedScanRuntime {
 
   private DistributedPlan buildPlan(TabId tabId, Long minRowId, Long maxRowId,
       long readTimestamp, boolean countOnly) {
-    return adapter(tabId).tableRowScan(tabId, minRowId, maxRowId,
-        Collections.emptyList(), Collections.emptyList(), 0, readTimestamp,
-        countOnly);
+    TabId remoteTabId = remoteTabId(tabId);
+    return adapter(remoteTabId).tableRowScan(remoteTabId, minRowId, maxRowId,
+        Collections.emptyList(), Collections.emptyList(), 0,
+        effectiveReadTimestamp(readTimestamp), countOnly);
+  }
+
+  private long effectiveReadTimestamp(long transactionReadTimestamp) {
+    Long configured = config.getReadTimestamp();
+    return configured == null ? transactionReadTimestamp : configured;
   }
 
   private AdbDistributedPlanAdapter adapter(TabId tabId) {
     return new AdbDistributedPlanAdapter(router(tabId));
+  }
+
+  private TabId remoteTabId(TabId localTabId) {
+    Integer tableId = config.getTableId();
+    Long tableEpoch = config.getTableEpoch();
+    if (tableId == null && tableEpoch == null) {
+      return localTabId;
+    }
+    return TabId.of(tableId == null ? localTabId.id : tableId,
+        tableEpoch == null ? localTabId.epoch : tableEpoch);
   }
 
   private RegionRouter router(TabId tabId) {
@@ -143,13 +193,13 @@ public final class AdbSqlDistributedScanRuntime {
     List<RegionMetadata> regions = new ArrayList<>();
     Long splitRowId = config.getSplitRowId();
     if (splitRowId == null) {
-      regions.add(region("sql-r1", new KeyRange(tableStart,
+      regions.add(region("r1", new KeyRange(tableStart,
           normalizeEnd(tableEnd)), "sql-node-a", 1));
     } else {
       byte[] splitKey = RowKey.of(tabId, splitRowId).toBytes();
-      regions.add(region("sql-r1", new KeyRange(tableStart, splitKey),
+      regions.add(region("r1", new KeyRange(tableStart, splitKey),
           "sql-node-a", 1));
-      regions.add(region("sql-r2", new KeyRange(splitKey,
+      regions.add(region("r2", new KeyRange(splitKey,
           normalizeEnd(tableEnd)), "sql-node-b", 1));
     }
     return new RegionRouter(regions);
@@ -164,6 +214,25 @@ public final class AdbSqlDistributedScanRuntime {
                 new VirtualNodeReplica("sql-node-b", ReplicaRole.DATA_VOTER),
                 new VirtualNodeReplica("sql-witness", ReplicaRole.WITNESS_VOTER)),
             0, 0, 0));
+  }
+
+  private static ScanTarget scanTarget(DbStore store,
+      AdbSqlDistributedScanConfig config) {
+    Objects.requireNonNull(store, "store == null");
+    Objects.requireNonNull(config, "config == null");
+    if (!config.isRaftScanClient()) {
+      return new ScanTarget(new AdbDistributedRegionScanExecutor(
+          new AdbLocalRegionScanClient(new AdbLocalRegionScanExecutor(store))),
+          () -> {
+          });
+    }
+    Properties properties = new Properties();
+    properties.setProperty("HA2.GROUP", config.getRaftGroup());
+    properties.setProperty("HA2.NODES", config.getRaftPeers());
+    RaftRClient rClient = new RaftRClient(properties);
+    return new ScanTarget(new AdbDistributedRegionScanExecutor(
+        new AdbRaftRegionScanClient(config.getRaftDbName(), rClient)),
+        rClient);
   }
 
   private static byte[] normalizeEnd(byte[] endKey) {
@@ -219,6 +288,17 @@ public final class AdbSqlDistributedScanRuntime {
     @Override
     public boolean previous() {
       throw org.h2.message.DbException.getUnsupportedException("previous");
+    }
+  }
+
+  private static final class ScanTarget {
+    private final AdbDistributedRegionScanExecutor executor;
+    private final AutoCloseable closeable;
+
+    private ScanTarget(AdbDistributedRegionScanExecutor executor,
+        AutoCloseable closeable) {
+      this.executor = Objects.requireNonNull(executor, "executor == null");
+      this.closeable = Objects.requireNonNull(closeable, "closeable == null");
     }
   }
 }

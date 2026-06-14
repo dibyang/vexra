@@ -129,7 +129,8 @@ class AdbDistributedRegionScanExecutorTest {
 
       List<Map<String, Object>> rows = executor.executeRows(
           manager.beginTransaction(),
-          new DistributedPlan(Collections.singletonList(rowTask("r-local")), false),
+          new DistributedPlan(Collections.singletonList(rowTask("r-local",
+              manager.lastCommitTs())), false),
           1000);
 
       assertEquals(1, rows.size());
@@ -150,10 +151,14 @@ class AdbDistributedRegionScanExecutorTest {
   }
 
   private static RegionScanTask rowTask(String regionId) {
+    return rowTask(regionId, 0);
+  }
+
+  private static RegionScanTask rowTask(String regionId, long readTimestamp) {
     byte[] prefix = RowPrefix.of(tabId()).toBytes();
     return new RegionScanTask(regionId,
         new KeyRange(prefix, KeyCodec.prefixEnd(prefix)),
-        Collections.emptyList(), Collections.emptyList(), 0, 0);
+        Collections.emptyList(), Collections.emptyList(), 0, readTimestamp);
   }
 
   private static TabId tabId() {

@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-06`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-14, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-07`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-06` are complete | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-07` are complete | See "Runnable Cluster Hardening Phases" |
 
-There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for installers, automatic SQL-server-to-region-node orchestration, authentication/TLS, and end-to-end cluster stress gates.
+There are no remaining phases in the current roadmap. Further out-of-the-box cluster productization should add independent phases for SQL write routing to region nodes, installers, automatic SQL-server-to-region-node orchestration, authentication/TLS, and end-to-end cluster stress gates.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,11 +312,11 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 6 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-06` are complete, and the remaining count for this group is 0. Any additional runnable hardening phases must update this count first.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 7 runnable hardening phases planned, `ADB-Run-01` through `ADB-Run-07` are complete, and the remaining count for this group is 0.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 6 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke. |
+| Completed runnable hardening phases | 7 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke; `ADB-Run-07` has passed SQL server remote Raft region scan smoke. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
 | Not-started runnable hardening phases | 0 | There are no additional not-started `ADB-Run-*` phases in the current plan. |
 | Remaining runnable hardening phases | 0 | There are no remaining runnable hardening phases in the current roadmap. |
@@ -329,6 +329,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | 4 | ADB-Run-04 | Done | Runtime distribution | Gradle start scripts, SQL server script, region node script, runtime zip | `:vexra-adb:adbRuntimeDist` produces a runnable archive containing `bin/` and `lib/` |
 | 5 | ADB-Run-05 | Done | Runtime script-level smoke | extract runtime zip, execute packaged SQL server script, TCP/JDBC verification, process cleanup | `:vexra-adb:test` covers SQL server startup through the packaged script and completes JDBC create-table/write/read |
 | 6 | ADB-Run-06 | Done | Region-node script-level multi-process smoke | extract runtime zip, execute packaged region node script, Raft/GRPC verification, process cleanup | `:vexra-adb:test` covers 3 region nodes started through packaged scripts and completes prewrite, commit, and scan |
+| 7 | ADB-Run-07 | Done | SQL server remote region read path | table-engine remote scan parameters, Raft scan client selection, SQL/JDBC smoke against forked region nodes | SQL can opt in to remote Raft region scan and read a row committed through the region-node data path |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -421,6 +422,29 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 - `AdbRuntimeRegionNodeDistributionSmokeTest` extracts the runtime zip and starts 3 region node processes through the packaged `bin/adb-region-node` or `bin/adb-region-node.bat` script.
 - The test completes prewrite, commit, and region scan through real `RaftRClient`, `AdbRpcRegionCommitClient`, and `AdbRaftRegionScanClient`.
 - Windows test cleanup now terminates leftover Java child processes by runtime extraction directory, preventing script smoke from locking distribution jars.
+
+### ADB-Run-07 Implementation Scope
+
+`ADB-Run-07` connects the opt-in SQL distributed scan path to remote Raft region nodes:
+
+- Extend table-engine `WITH` parameters with an explicit remote scan client mode, remote table id/epoch mapping, Raft group id, peer list, and optional fixed read timestamp, while keeping local scan as the default.
+- When a table opts in to remote scan, `AdbSqlDistributedScanRuntime` builds an `AdbRaftRegionScanClient` backed by `RaftRClient`; local scan remains unchanged for existing databases.
+- Add lifecycle cleanup so the SQL distributed scan runtime closes the remote Raft client when the ADB table is closed or removed.
+- Add a SQL/JDBC smoke that starts forked region nodes, commits a row through the region-node commit path, creates an ADB table with remote scan parameters, and verifies SQL can read the remote row.
+- This phase only closes the SQL read path. SQL writes still use the existing local ADB table commit path unless a later phase wires table writes to the region commit coordinator. Until SQL server and region nodes share a real catalog/TSO, remote scan tests use explicit table-id and read-timestamp parameters.
+
+`ADB-Run-07` acceptance requires:
+
+- Unit coverage for the remote scan table-engine parameter parser and validation.
+- Integration coverage showing `EXPLAIN SELECT` reports the remote scan mode.
+- A forked-process smoke proving SQL can read data served by real Raft/GRPC region nodes.
+
+`ADB-Run-07` is complete:
+
+- `AdbSqlDistributedScanConfig` parses remote scan client, remote table id/epoch, explicit read timestamp, Raft group, peers, and db name from table-engine parameters.
+- `AdbSqlDistributedScanRuntime` selects `AdbRaftRegionScanClient` for `client=raft`, closes the underlying `RaftRClient` through table lifecycle cleanup, and reports the remote mode in the plan marker.
+- `AdbDistributedRegionScanExecutor` now dispatches each scan request with the task read timestamp, so explicit read timestamps and later control-plane TSO timestamps are honored by remote clients.
+- `AdbSqlServerRemoteRegionScanSmokeTest` starts forked region nodes and a forked SQL server, commits a row through the region-node path, validates direct Raft scan, and verifies SQL/JDBC can read it through remote distributed scan.
 
 ### ADB-Prod-03 Current Progress
 
