@@ -66,3 +66,7 @@ tasks.register('adbRuntimeDist', Zip) {
         fileMode = 0755
     }
 }
+
+tasks.named('test') {
+    dependsOn tasks.named('adbRuntimeDist')
+}
