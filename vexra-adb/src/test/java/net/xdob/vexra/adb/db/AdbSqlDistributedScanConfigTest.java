@@ -29,7 +29,10 @@ class AdbSqlDistributedScanConfigTest {
     assertTrue(config.isEnabled());
     assertEquals("local", config.getScanClient());
     assertFalse(config.isRaftScanClient());
+    assertEquals("local", config.getWriteClient());
+    assertFalse(config.isRaftWriteClient());
     assertEquals(5000L, config.getTimeoutMillis());
+    assertEquals(5000L, config.getWriteTimeoutMillis());
   }
 
   /**
@@ -46,15 +49,19 @@ class AdbSqlDistributedScanConfigTest {
             "adb.distributed.scan.timeoutMillis=30000",
             "adb.distributed.scan.readTs=20000",
             "adb.distributed.scan.client=raft",
+            "adb.distributed.write.client=raft",
+            "adb.distributed.write.timeoutMillis=31000",
             "adb.distributed.raft.group=group-1",
             "adb.distributed.raft.peers=n1@127.0.0.1:9001,n2@127.0.0.1:9002",
             "adb.distributed.raft.dbName=adb-test"));
 
     assertTrue(config.isRaftScanClient());
+    assertTrue(config.isRaftWriteClient());
     assertEquals(Long.valueOf(100L), config.getSplitRowId());
     assertEquals(Integer.valueOf(7), config.getTableId());
     assertEquals(Long.valueOf(2L), config.getTableEpoch());
     assertEquals(30000L, config.getTimeoutMillis());
+    assertEquals(31000L, config.getWriteTimeoutMillis());
     assertEquals(Long.valueOf(20000L), config.getReadTimestamp());
     assertEquals("group-1", config.getRaftGroup());
     assertEquals("n1@127.0.0.1:9001,n2@127.0.0.1:9002",
@@ -78,6 +85,21 @@ class AdbSqlDistributedScanConfigTest {
   }
 
   /**
+   * 验证远端写入模式缺少 Raft group 时也会失败，避免只开启写入却没有目标集群。
+   */
+  @Test
+  void shouldRequireRaftGroupWhenRaftWriteIsEnabled() {
+    IllegalArgumentException error = assertThrows(
+        IllegalArgumentException.class,
+        () -> AdbSqlDistributedScanConfig.fromTableEngineParams(Arrays.asList(
+            "adb.distributed.sql=true",
+            "adb.distributed.write.client=raft",
+            "adb.distributed.raft.peers=n1@127.0.0.1:9001")));
+
+    assertTrue(error.getMessage().contains("adb.distributed.raft.group"));
+  }
+
+  /**
    * 验证未知 scan client 会失败，避免配置拼写错误静默降级。
    */
   @Test
@@ -86,5 +108,16 @@ class AdbSqlDistributedScanConfigTest {
         () -> AdbSqlDistributedScanConfig.fromTableEngineParams(Arrays.asList(
             "adb.distributed.sql=true",
             "adb.distributed.scan.client=unknown")));
+  }
+
+  /**
+   * 验证未知 write client 会失败，避免配置拼写错误时静默降级为本地写。
+   */
+  @Test
+  void shouldRejectUnknownWriteClient() {
+    assertThrows(IllegalArgumentException.class,
+        () -> AdbSqlDistributedScanConfig.fromTableEngineParams(Arrays.asList(
+            "adb.distributed.sql=true",
+            "adb.distributed.write.client=unknown")));
   }
 }

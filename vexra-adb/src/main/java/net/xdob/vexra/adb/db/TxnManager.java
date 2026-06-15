@@ -28,6 +28,7 @@ public class TxnManager {
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
   private volatile AdbTimestampProvider timestampProvider;
   private volatile AdbSqlDistributedScanRuntime sqlDistributedScanRuntime;
+  private volatile AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -111,6 +112,25 @@ public class TxnManager {
    */
   public AdbSqlDistributedScanRuntime getSqlDistributedScanRuntime() {
     return sqlDistributedScanRuntime;
+  }
+
+  /**
+   * 设置 SQL 分布式写入 runtime。
+   *
+   * @param sqlDistributedWriteRuntime SQL 分布式写入 runtime；null 表示关闭
+   */
+  public void setSqlDistributedWriteRuntime(
+      AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime) {
+    this.sqlDistributedWriteRuntime = sqlDistributedWriteRuntime;
+  }
+
+  /**
+   * 返回当前 SQL 分布式写入 runtime。
+   *
+   * @return runtime；未启用时为 null
+   */
+  public AdbSqlDistributedWriteRuntime getSqlDistributedWriteRuntime() {
+    return sqlDistributedWriteRuntime;
   }
 
   public AdbTimestampProvider getTimestampProvider() {

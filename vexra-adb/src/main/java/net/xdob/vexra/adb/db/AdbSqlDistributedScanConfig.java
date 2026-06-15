@@ -18,12 +18,17 @@ public final class AdbSqlDistributedScanConfig {
   static final String TIMEOUT_PARAM = "adb.distributed.scan.timeoutmillis";
   static final String READ_TS_PARAM = "adb.distributed.scan.readts";
   static final String SCAN_CLIENT_PARAM = "adb.distributed.scan.client";
+  static final String WRITE_CLIENT_PARAM = "adb.distributed.write.client";
+  static final String WRITE_TIMEOUT_PARAM =
+      "adb.distributed.write.timeoutmillis";
   static final String RAFT_GROUP_PARAM = "adb.distributed.raft.group";
   static final String RAFT_PEERS_PARAM = "adb.distributed.raft.peers";
   static final String RAFT_DB_NAME_PARAM = "adb.distributed.raft.dbname";
 
   private static final String LOCAL_SCAN_CLIENT = "local";
   private static final String RAFT_SCAN_CLIENT = "raft";
+  private static final String LOCAL_WRITE_CLIENT = "local";
+  private static final String RAFT_WRITE_CLIENT = "raft";
   private static final String DEFAULT_RAFT_DB_NAME = "adb";
 
   private final boolean enabled;
@@ -31,8 +36,10 @@ public final class AdbSqlDistributedScanConfig {
   private final Integer tableId;
   private final Long tableEpoch;
   private final long timeoutMillis;
+  private final long writeTimeoutMillis;
   private final Long readTimestamp;
   private final String scanClient;
+  private final String writeClient;
   private final String raftGroup;
   private final String raftPeers;
   private final String raftDbName;
@@ -47,7 +54,8 @@ public final class AdbSqlDistributedScanConfig {
   public AdbSqlDistributedScanConfig(boolean enabled, Long splitRowId,
       long timeoutMillis) {
     this(enabled, splitRowId, timeoutMillis, LOCAL_SCAN_CLIENT, null, null,
-        DEFAULT_RAFT_DB_NAME, null, null, null);
+        DEFAULT_RAFT_DB_NAME, null, null, null, LOCAL_WRITE_CLIENT,
+        timeoutMillis);
   }
 
   /**
@@ -68,9 +76,39 @@ public final class AdbSqlDistributedScanConfig {
       long timeoutMillis, String scanClient, String raftGroup,
       String raftPeers, String raftDbName, Long readTimestamp,
       Integer tableId, Long tableEpoch) {
+    this(enabled, splitRowId, timeoutMillis, scanClient, raftGroup, raftPeers,
+        raftDbName, readTimestamp, tableId, tableEpoch, LOCAL_WRITE_CLIENT,
+        timeoutMillis);
+  }
+
+  /**
+   * 创建 SQL 分布式读写配置。
+   *
+   * @param enabled 是否启用 SQL 分布式能力
+   * @param splitRowId 可选测试 split rowId；null 表示单 region 全表范围
+   * @param timeoutMillis 分布式 scan 超时时间；0 表示不限制
+   * @param scanClient scan client 类型，local 或 raft
+   * @param raftGroup Raft group id；raft 读或写模式需要
+   * @param raftPeers Raft peer 列表；raft 读或写模式需要
+   * @param raftDbName ADB region node 使用的数据库名
+   * @param readTimestamp 可选固定读时间戳；null 表示使用当前事务 startTs
+   * @param tableId 可选远端 table id；null 表示使用 H2 本地 table id
+   * @param tableEpoch 可选远端 table epoch；null 表示使用 H2 本地 table epoch
+   * @param writeClient write client 类型，local 或 raft
+   * @param writeTimeoutMillis 分布式写单阶段超时时间；0 表示不限制
+   */
+  public AdbSqlDistributedScanConfig(boolean enabled, Long splitRowId,
+      long timeoutMillis, String scanClient, String raftGroup,
+      String raftPeers, String raftDbName, Long readTimestamp,
+      Integer tableId, Long tableEpoch, String writeClient,
+      long writeTimeoutMillis) {
     if (timeoutMillis < 0) {
       throw new IllegalArgumentException("timeoutMillis is negative: "
           + timeoutMillis);
+    }
+    if (writeTimeoutMillis < 0) {
+      throw new IllegalArgumentException("writeTimeoutMillis is negative: "
+          + writeTimeoutMillis);
     }
     this.enabled = enabled;
     this.splitRowId = splitRowId;
@@ -91,10 +129,12 @@ public final class AdbSqlDistributedScanConfig {
     }
     this.readTimestamp = readTimestamp;
     this.scanClient = normalizeScanClient(scanClient);
+    this.writeClient = normalizeWriteClient(writeClient);
+    this.writeTimeoutMillis = writeTimeoutMillis;
     this.raftGroup = trimToNull(raftGroup);
     this.raftPeers = trimToNull(raftPeers);
     this.raftDbName = trimToDefault(raftDbName, DEFAULT_RAFT_DB_NAME);
-    validateRemoteScan();
+    validateRemoteRaft();
   }
 
   /**
@@ -108,7 +148,9 @@ public final class AdbSqlDistributedScanConfig {
     boolean enabled = false;
     Long splitRowId = null;
     long timeoutMillis = 5000L;
+    long writeTimeoutMillis = 5000L;
     String scanClient = LOCAL_SCAN_CLIENT;
+    String writeClient = LOCAL_WRITE_CLIENT;
     String raftGroup = null;
     String raftPeers = null;
     String raftDbName = DEFAULT_RAFT_DB_NAME;
@@ -142,6 +184,10 @@ public final class AdbSqlDistributedScanConfig {
           readTimestamp = Long.valueOf(value);
         } else if (SCAN_CLIENT_PARAM.equals(key)) {
           scanClient = value;
+        } else if (WRITE_CLIENT_PARAM.equals(key)) {
+          writeClient = value;
+        } else if (WRITE_TIMEOUT_PARAM.equals(key)) {
+          writeTimeoutMillis = Long.parseLong(value);
         } else if (RAFT_GROUP_PARAM.equals(key)) {
           raftGroup = value;
         } else if (RAFT_PEERS_PARAM.equals(key)) {
@@ -153,7 +199,7 @@ public final class AdbSqlDistributedScanConfig {
     }
     return new AdbSqlDistributedScanConfig(enabled, splitRowId, timeoutMillis,
         scanClient, raftGroup, raftPeers, raftDbName, readTimestamp, tableId,
-        tableEpoch);
+        tableEpoch, writeClient, writeTimeoutMillis);
   }
 
   public boolean isEnabled() {
@@ -176,6 +222,10 @@ public final class AdbSqlDistributedScanConfig {
     return timeoutMillis;
   }
 
+  public long getWriteTimeoutMillis() {
+    return writeTimeoutMillis;
+  }
+
   public Long getReadTimestamp() {
     return readTimestamp;
   }
@@ -186,6 +236,14 @@ public final class AdbSqlDistributedScanConfig {
 
   public boolean isRaftScanClient() {
     return enabled && RAFT_SCAN_CLIENT.equals(scanClient);
+  }
+
+  public String getWriteClient() {
+    return writeClient;
+  }
+
+  public boolean isRaftWriteClient() {
+    return enabled && RAFT_WRITE_CLIENT.equals(writeClient);
   }
 
   public String getRaftGroup() {
@@ -200,8 +258,8 @@ public final class AdbSqlDistributedScanConfig {
     return raftDbName;
   }
 
-  private void validateRemoteScan() {
-    if (!isRaftScanClient()) {
+  private void validateRemoteRaft() {
+    if (!isRaftScanClient() && !isRaftWriteClient()) {
       return;
     }
     if (raftGroup == null) {
@@ -221,6 +279,17 @@ public final class AdbSqlDistributedScanConfig {
         && !RAFT_SCAN_CLIENT.equals(normalized)) {
       throw new IllegalArgumentException(
           "unsupported distributed scan client: " + value);
+    }
+    return normalized;
+  }
+
+  private static String normalizeWriteClient(String value) {
+    String normalized = trimToDefault(value, LOCAL_WRITE_CLIENT)
+        .toLowerCase(Locale.ROOT);
+    if (!LOCAL_WRITE_CLIENT.equals(normalized)
+        && !RAFT_WRITE_CLIENT.equals(normalized)) {
+      throw new IllegalArgumentException(
+          "unsupported distributed write client: " + value);
     }
     return normalized;
   }

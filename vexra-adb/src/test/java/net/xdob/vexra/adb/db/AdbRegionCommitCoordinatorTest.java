@@ -96,6 +96,34 @@ class AdbRegionCommitCoordinatorTest {
   }
 
   /**
+   * 验证 SQL 远端写入可在提交前把本地表 key 映射为远端表 key。
+   */
+  @Test
+  void shouldMapWriteKeysBeforeSendingToRegionClient() throws Exception {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    TxnManager manager = new TxnManager(store);
+    TabId remoteTabId = TabId.of(7, 2L);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Collections.singletonList(region("r1",
+            new KeyRange(new byte[0], new byte[0]), "node-a", 3, 3))),
+        client, key -> RowKey.of(remoteTabId, key.getRowId()), true));
+
+    Transaction2 txn = txnWithWrites(rowKey(11));
+    manager.commit(txn);
+
+    assertEquals(1, client.prewrites.size());
+    assertEquals(1, client.commits.size());
+    AdbRegionCommitRequest request = client.prewrites.get(0);
+    DataKey mappedKey = request.getWriteKeys().get(0);
+    assertEquals(7, mappedKey.getTableId());
+    assertEquals(2L, mappedKey.getEpoch());
+    assertEquals(11L, mappedKey.getRowId());
+    assertEquals(mappedKey, request.getMutations().get(0).getKey());
+    assertEquals(mappedKey, request.getPrimaryKey());
+  }
+
+  /**
    * 验证跨 region 写入会通过 2PC 完成 prewrite 和 commit。
    */
   @Test

@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.function.Function;
 
 /**
  * ADB region commit 协调器。
@@ -28,6 +29,8 @@ public final class AdbRegionCommitCoordinator {
 
   private final RegionRouter router;
   private final AdbRegionCommitClient client;
+  private final Function<DataKey, DataKey> keyMapper;
+  private final boolean prewriteSingleRegion;
 
   /**
    * 创建 ADB region commit 协调器。
@@ -37,8 +40,44 @@ public final class AdbRegionCommitCoordinator {
    */
   public AdbRegionCommitCoordinator(RegionRouter router,
       AdbRegionCommitClient client) {
+    this(router, client, Function.identity());
+  }
+
+  /**
+   * 创建 ADB region commit 协调器，并在路由/远端提交前映射 write key。
+   *
+   * <p>该构造用于 SQL server 与 region node 暂未共享真实 catalog 的过渡阶段：
+   * SQL 表本地 table id 可以显式映射成远端 region table id。默认构造保持 identity
+   * 映射，不影响单机和既有分布式写入路径。</p>
+   *
+   * @param router region 路由快照
+   * @param client region commit client
+   * @param keyMapper 写入 key 映射器
+   */
+  public AdbRegionCommitCoordinator(RegionRouter router,
+      AdbRegionCommitClient client, Function<DataKey, DataKey> keyMapper) {
+    this(router, client, keyMapper, false);
+  }
+
+  /**
+   * 创建 ADB region commit 协调器，并可强制单 region 也执行 PREWRITE。
+   *
+   * <p>本地 bridge client 可以复用既有单 region fast path；真实远端 Raft/RPC
+   * client 需要在 COMMIT 前写入 durable intent，因此可通过该开关让单 region 也走
+   * prewrite + commit 流程。</p>
+   *
+   * @param router region 路由快照
+   * @param client region commit client
+   * @param keyMapper 写入 key 映射器
+   * @param prewriteSingleRegion 是否强制单 region 也执行 PREWRITE
+   */
+  public AdbRegionCommitCoordinator(RegionRouter router,
+      AdbRegionCommitClient client, Function<DataKey, DataKey> keyMapper,
+      boolean prewriteSingleRegion) {
     this.router = Objects.requireNonNull(router, "router == null");
     this.client = Objects.requireNonNull(client, "client == null");
+    this.keyMapper = Objects.requireNonNull(keyMapper, "keyMapper == null");
+    this.prewriteSingleRegion = prewriteSingleRegion;
   }
 
   /**
@@ -55,7 +94,7 @@ public final class AdbRegionCommitCoordinator {
     try {
       List<RegionWriteSet> participants = buildParticipants(txn, commitTs,
           writeKeys, metas);
-      if (participants.size() == 1) {
+      if (participants.size() == 1 && !prewriteSingleRegion) {
         return nonNullFuture(client.commitAsync(participants.get(0).request),
             "commitAsync returned null");
       }
@@ -78,10 +117,12 @@ public final class AdbRegionCommitCoordinator {
     DataKey primaryKey = null;
     String primaryRegionId = null;
     for (DataKey key : writeKeys) {
-      RegionMetadata region = router.route(key.toBytes());
+      DataKey mappedKey = Objects.requireNonNull(keyMapper.apply(key),
+          "mapped write key is null");
+      RegionMetadata region = router.route(mappedKey.toBytes());
       validateRegion(region);
       if (primaryKey == null) {
-        primaryKey = key;
+        primaryKey = mappedKey;
         primaryRegionId = region.getRegionId();
       }
       RegionBuilder builder = builders.get(region.getRegionId());
@@ -89,13 +130,13 @@ public final class AdbRegionCommitCoordinator {
         builder = new RegionBuilder(region);
         builders.put(region.getRegionId(), builder);
       }
-      builder.writeKeys.add(key);
+      builder.writeKeys.add(mappedKey);
       RowValue value = txn.getLocalWrite(key);
       if (value == null) {
         throw new IllegalStateException("Missing local write value, key="
             + key);
       }
-      builder.mutations.add(new AdbRegionMutation(key, value));
+      builder.mutations.add(new AdbRegionMutation(mappedKey, value));
     }
 
     List<RegionWriteSet> participants = new ArrayList<>();

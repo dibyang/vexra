@@ -3,9 +3,12 @@ package net.xdob.vexra.adb.h2plugin;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.AdbSqlDistributedScanConfig;
 import net.xdob.vexra.adb.db.AdbSqlDistributedScanRuntime;
+import net.xdob.vexra.adb.db.AdbSqlDistributedTimestampProvider;
+import net.xdob.vexra.adb.db.AdbSqlDistributedWriteRuntime;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import net.xdob.vexra.adb.db.DbStoreType;
 import net.xdob.vexra.adb.db.TxnManager;
+import net.xdob.vexra.adb.key.TabId;
 import org.h2.api.PluginCapability;
 import org.h2.api.TableEngineContext;
 import org.h2.api.TableEngineProvider;
@@ -85,7 +88,19 @@ public final class AdbTableProvider implements TableEngineProvider {
             txnManager.setSqlDistributedScanRuntime(
                 new AdbSqlDistributedScanRuntime(dbStore, scanConfig));
         }
-        return new AdbTable(data, context.getDatabase().getStore(), dbStore, txnManager);
+        AdbTable table = new AdbTable(data, context.getDatabase().getStore(),
+            dbStore, txnManager);
+        if (scanConfig.isRaftWriteClient()) {
+            AdbSqlDistributedWriteRuntime writeRuntime =
+                new AdbSqlDistributedWriteRuntime(scanConfig);
+            txnManager.setSqlDistributedWriteRuntime(writeRuntime);
+            txnManager.setTimestampProvider(
+                new AdbSqlDistributedTimestampProvider(
+                    scanConfig.getReadTimestamp()));
+            txnManager.setRegionCommitCoordinator(writeRuntime.coordinator(
+                TabId.of(table.getId(), 0L)));
+        }
+        return table;
     }
 
     private static boolean isH2SystemTable(CreateTableData data) {

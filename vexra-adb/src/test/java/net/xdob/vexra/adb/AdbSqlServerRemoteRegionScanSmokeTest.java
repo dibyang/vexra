@@ -1,26 +1,18 @@
 package net.xdob.vexra.adb;
 
-import net.xdob.vexra.adb.db.AdbRegionCommitRequest;
-import net.xdob.vexra.adb.db.AdbRegionMutation;
 import net.xdob.vexra.adb.db.AdbRegionScanRequest;
-import net.xdob.vexra.adb.db.AdbRpcRegionCommitClient;
 import net.xdob.vexra.adb.db.DbStoreEngine;
-import net.xdob.vexra.adb.db.Meta;
-import net.xdob.vexra.adb.db.RowCodec;
-import net.xdob.vexra.adb.db.RowValue;
-import net.xdob.vexra.adb.ha2.AdbRaftRegionCommitTransport;
+import net.xdob.vexra.adb.db.KeyCodec;
 import net.xdob.vexra.adb.ha2.AdbRaftRegionScanClient;
 import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
 import net.xdob.vexra.adb.ha2.RaftRClient;
-import net.xdob.vexra.adb.key.DataKey;
-import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.cluster.region.KeyRange;
 import net.xdob.vexra.cluster.sql.RegionQueryResult;
 import net.xdob.vexra.cluster.sql.RegionScanTask;
 import net.xdob.vexra.protocol.RaftGroupId;
 import net.xdob.vexra.protocol.RaftPeer;
-import org.h2.value.ValueVarchar;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -54,7 +46,6 @@ import static org.junit.jupiter.api.Assertions.fail;
  * Raft scan client，读取父进程已通过 region commit 路径写入到 forked region node 的行。</p>
  */
 class AdbSqlServerRemoteRegionScanSmokeTest {
-  private static final long ROW_ID = 42L;
   private static final String REMOTE_VALUE = "remote-region-sql";
   private static final int REMOTE_TABLE_ID = 1;
 
@@ -67,7 +58,7 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
    * @throws Exception 子进程启动、region 写入或 SQL 查询失败时抛出
    */
   @Test
-  void shouldReadRemoteRegionRowsThroughSqlServer() throws Exception {
+  void shouldWriteAndReadRemoteRegionRowsThroughSqlServer() throws Exception {
     int[] regionPorts = findFreePorts(3);
     int sqlPort = findFreePort();
     RaftGroupId groupId = RaftGroupId.randomId();
@@ -83,13 +74,12 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
         regionProcesses.add(startRegionNode(groupId, peers, peer));
       }
       waitForReady(regionProcesses, "region node");
-      commitRemoteRowsEventually(groupId, peers, regionProcesses);
-      assertRemoteScanHasRowEventually(groupId, peers, regionProcesses);
 
       sqlServer = startSqlServer(sqlPort, sqlDir);
       waitForReady(Collections.singletonList(sqlServer), "sql server");
       executeRemoteSqlSmoke(sqlPort, databaseName, groupId, peers,
           regionProcesses);
+      assertRemoteScanHasRowEventually(groupId, peers, regionProcesses);
     } catch (Exception e) {
       throw withProcessLogs(e, regionProcesses, sqlServer);
     } finally {
@@ -155,47 +145,6 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
     return new ProcessHandle(name, process, ready, stop, logText, logReader);
   }
 
-  private static void commitRemoteRowsEventually(RaftGroupId groupId,
-      List<RaftPeer> peers, List<ProcessHandle> processes) throws Exception {
-    Exception last = null;
-    for (int attempt = 0; attempt < 12; attempt++) {
-      try (RaftRClient rClient = new RaftRClient(clientProperties(groupId,
-          peers));
-           AdbRpcRegionCommitClient commitClient =
-               new AdbRpcRegionCommitClient(
-                   new AdbRaftRegionCommitTransport("adb", rClient),
-                   TimeUnit.SECONDS.toMillis(30))) {
-        commitRemoteRows(commitClient, attempt + 1);
-        return;
-      } catch (Exception e) {
-        last = e;
-        if (!allAlive(processes)) {
-          throw e;
-        }
-        Thread.sleep(500L);
-      }
-    }
-    throw last;
-  }
-
-  private static void commitRemoteRows(AdbRpcRegionCommitClient commitClient,
-      int attempt) throws Exception {
-    long txnId = 9000L + attempt;
-    long commitTs = 10000L + attempt;
-    List<DataKey> keys = new ArrayList<>();
-    List<AdbRegionMutation> mutations = new ArrayList<>();
-    RowKey key = rowKey(REMOTE_TABLE_ID, ROW_ID);
-    keys.add(key);
-    mutations.add(new AdbRegionMutation(key, rowValue(txnId, REMOTE_VALUE)));
-    AdbRegionCommitRequest request = new AdbRegionCommitRequest(
-        "r1", 1, "n1", txnId, txnId, commitTs, "r1",
-        rowKey(1, ROW_ID), 30000, true, keys, mutations,
-        Collections.<Meta>emptyList());
-
-    commitClient.prewriteAsync(request).get(30, TimeUnit.SECONDS);
-    commitClient.commitAsync(request).get(30, TimeUnit.SECONDS);
-  }
-
   private static void executeRemoteSqlSmoke(int port, String databaseName,
       RaftGroupId groupId, List<RaftPeer> peers,
       List<ProcessHandle> regionProcesses) throws Exception {
@@ -207,25 +156,26 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
       statement.execute("CREATE TABLE TEST(NAME VARCHAR) ENGINE \"adb_table\" WITH "
           + "\"adb.distributed.sql=true\", "
           + "\"adb.distributed.scan.client=raft\", "
+          + "\"adb.distributed.write.client=raft\", "
           + "\"adb.distributed.table.id=" + REMOTE_TABLE_ID + "\", "
           + "\"adb.distributed.table.epoch=0\", "
           + "\"adb.distributed.raft.group=" + groupId + "\", "
           + "\"adb.distributed.raft.peers=" + nodes(peers) + "\", "
           + "\"adb.distributed.scan.readTs=20000\", "
+          + "\"adb.distributed.write.timeoutMillis=30000\", "
           + "\"adb.distributed.scan.timeoutMillis=30000\"");
-      statement.executeUpdate("INSERT INTO TEST(NAME) VALUES ('local-seed')");
+      statement.executeUpdate("INSERT INTO TEST(NAME) VALUES ('"
+          + REMOTE_VALUE + "')");
 
       String explain = singleString(statement,
-          "EXPLAIN SELECT NAME FROM TEST WHERE _ROWID_ BETWEEN " + ROW_ID
-              + " AND " + (ROW_ID + 1));
+          "EXPLAIN SELECT NAME FROM TEST");
       assertTrue(explain.contains("ADB_DISTRIBUTED_SCAN"), explain);
       assertTrue(explain.contains("client=raft"), explain);
       assertTrue(explain.contains("tableId=" + REMOTE_TABLE_ID), explain);
       assertTrue(explain.contains("readTs=20000"), explain);
 
       assertEquals(REMOTE_VALUE, singleString(statement,
-          "SELECT NAME FROM TEST WHERE _ROWID_ BETWEEN " + ROW_ID
-              + " AND " + (ROW_ID + 1)));
+          "SELECT NAME FROM TEST"));
     }
   }
 
@@ -253,15 +203,17 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
         peers))) {
       AdbRaftRegionScanClient scanClient =
           new AdbRaftRegionScanClient("adb", rClient);
+      byte[] tableStart = RowPrefix.of(TabId.of(REMOTE_TABLE_ID, 0L))
+          .toBytes();
       RegionQueryResult result = scanClient.scanAsync(new AdbRegionScanRequest(
           new RegionScanTask("r1",
-              new KeyRange(rowKey(REMOTE_TABLE_ID, ROW_ID).toBytes(),
-                  rowKey(REMOTE_TABLE_ID, ROW_ID + 1).toBytes()),
+              new KeyRange(tableStart, KeyCodec.prefixEnd(tableStart)),
               Collections.emptyList(), Collections.emptyList(), 0, 20000),
           7, 20000, false, 0)).get(30, TimeUnit.SECONDS);
       assertEquals(1, result.getRows().size(),
           "direct remote scan should see committed row");
-      assertEquals(REMOTE_VALUE, result.getRows().get(0).get("payload"));
+      assertTrue(String.valueOf(result.getRows().get(0).get("payload"))
+          .contains(REMOTE_VALUE));
     }
   }
 
@@ -271,17 +223,6 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
       resultSet.next();
       return resultSet.getString(1);
     }
-  }
-
-  private static RowValue rowValue(long txnId, String value) {
-    RowValue rowValue = new RowValue();
-    rowValue.txnId = txnId;
-    rowValue.payload = RowCodec.encode(ValueVarchar.get(value));
-    return rowValue;
-  }
-
-  private static RowKey rowKey(int tableId, long rowId) {
-    return RowKey.of(TabId.of(tableId, 0L), rowId);
   }
 
   private static void waitForReady(List<ProcessHandle> processes, String label)

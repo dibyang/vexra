@@ -191,6 +191,15 @@ public class AdbTable extends TableBase {
     return txnManager.getSqlDistributedScanRuntime();
   }
 
+  /**
+   * 返回当前表绑定的 SQL 分布式写入 runtime。
+   *
+   * @return runtime；未启用时为 null
+   */
+  public AdbSqlDistributedWriteRuntime getSqlDistributedWriteRuntime() {
+    return txnManager.getSqlDistributedWriteRuntime();
+  }
+
   @Override
   public long getRowCount(SessionLocal session){
     TxnMap2 map = getTxnMap(session);
@@ -371,6 +380,16 @@ public class AdbTable extends TableBase {
       } catch (Exception e) {
         throw convertException(new SQLException(
             "Failed to close ADB SQL distributed scan runtime", e));
+      }
+    }
+    AdbSqlDistributedWriteRuntime writeRuntime =
+        getSqlDistributedWriteRuntime();
+    if (writeRuntime != null) {
+      try {
+        writeRuntime.close();
+      } catch (Exception e) {
+        throw convertException(new SQLException(
+            "Failed to close ADB SQL distributed write runtime", e));
       }
     }
   }
