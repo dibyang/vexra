@@ -805,3 +805,24 @@ flowchart TB
 - 第一阶段是否只支持单表事务，还是直接支持跨表事务。
 - h2db plan 到分布式执行计划的转换边界需要进一步原型验证。
 - `vexra-ldb` 是否需要新增 region snapshot、range split 和 learner 相关插件契约。
+
+## 生产级 MVP 加固路线
+
+完整规划见 `docs/adb-production-mvp-hardening-plan.md`，英文副本见
+`docs/adb-production-mvp-hardening-plan.en.md`。该规划不替代本文的 TiDB-like
+长期路线，而是从当前能力出发，定义“尽快生产级可用”的最小闭环。
+
+生产级 MVP 路线新增 7 个阶段：
+
+| 阶段 | 名称 | 与本文关系 |
+| --- | --- | --- |
+| ADB-GA-01 | 生产 MVP 范围冻结 | 将本文的长期能力拆成第一版支持范围和禁止范围 |
+| ADB-GA-02 | 数据安全闭环 | 优先验收 commit、落盘、宕机恢复和 leader 切换 |
+| ADB-GA-03 | 轻量控制面 | 将 shared catalog / TSO 原型升级为运行时事实来源 |
+| ADB-GA-04 | 事务最小生产化 | 先固化单 region 事务，默认拒绝未验收的跨 region 事务 |
+| ADB-GA-05 | 安装与运维产品化 | 将 2 data + 1 witness 拓扑变成可部署、可恢复、可升级形态 |
+| ADB-GA-06 | 可观测性与诊断 | 补齐 metrics、system table、slow SQL 和 diagnostic bundle |
+| ADB-GA-07 | 发布门禁与试生产 | 把长稳、故障注入、备份恢复和滚动升级纳入 release gate |
+
+后续如果继续推进“生产可用”目标，应优先按 `ADB-GA-01` 到 `ADB-GA-07`
+实施，而不是继续扩大 TiDB-like 长期能力面。

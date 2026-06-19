@@ -802,3 +802,26 @@ This `ADB-Prod-02` partial-commit and long-transaction GC acceptance increment u
 - Should the first transaction phase support only single-table transactions or cross-table transactions?
 - The h2db plan to distributed plan boundary needs prototype validation.
 - Does `vexra-ldb` need new plugin contracts for region snapshot, range split, and learner flows?
+
+## Production MVP Hardening Route
+
+The complete plan is in `docs/adb-production-mvp-hardening-plan.md`, with the
+English copy in `docs/adb-production-mvp-hardening-plan.en.md`. This plan does
+not replace the long-term TiDB-like roadmap in this document. It defines the
+minimum closure needed to make the current system production-usable as quickly
+as possible.
+
+The production MVP route adds 7 phases:
+
+| Phase | Name | Relationship to this roadmap |
+| --- | --- | --- |
+| ADB-GA-01 | Production MVP Scope Freeze | Split long-term capabilities into first-release supported and forbidden scope |
+| ADB-GA-02 | Data Safety Closure | Validate commit, durability, crash recovery, and leader switch first |
+| ADB-GA-03 | Lightweight Control Plane | Upgrade the shared catalog / TSO prototype into a runtime source of truth |
+| ADB-GA-04 | Minimum Production Transactions | Solidify single-region transactions and reject unvalidated cross-region transactions by default |
+| ADB-GA-05 | Install and Operations Productization | Make 2 data + 1 witness deployable, recoverable, and upgradeable |
+| ADB-GA-06 | Observability and Diagnostics | Add metrics, system tables, slow SQL, and diagnostic bundles |
+| ADB-GA-07 | Release Gate and Trial Production | Put soak, failure injection, backup/restore, and rolling upgrade into the release gate |
+
+Future work that targets production usability should execute `ADB-GA-01` through
+`ADB-GA-07` before expanding the broader TiDB-like long-term capability surface.
