@@ -1,0 +1,223 @@
+# Vexra User Guide
+
+This guide describes the current Vexra ADB runtime modes, JDBC URLs, SQL table engine parameters, scripts, and troubleshooting notes. It documents the implemented state and does not present later TiDB-like goals as already completed.
+
+## 1. Modules and Runtime Modes
+
+| Mode | Entry Point | Use Case | Current Status |
+| --- | --- | --- | --- |
+| Embedded JDBC | `org.h2.Driver` + `jdbc:adb:*` | Single-process development, unit tests, local checks | Available |
+| SQL Server | `bin\adb-sql-server.bat` | Standalone JVM exposing TCP JDBC | Available |
+| Region Node | `bin\adb-region-node.bat` | Local Raft region node for remote scan/write smoke tests | Available |
+| Distributed SQL | `adb_table` + `WITH "adb.distributed.*"` | SQL Server accessing remote region nodes | Prototype available, explicit parameters required |
+
+ADB does not copy the h2db SQL parser, JDBC, Server, or toolchain. It registers its own URL prefix and table provider through h2db plugins.
+
+## 2. JDBC URLs
+
+| URL | Description | Example |
+| --- | --- | --- |
+| `jdbc:adb:mem:<name>` | In-memory database with `adb_table` as the default table engine | `jdbc:adb:mem:demo;DB_CLOSE_DELAY=-1` |
+| `jdbc:adb:ldb:<path>` | File-backed database using the legacy ADB-compatible entry, mapped to an h2db file URL | `jdbc:adb:ldb:D:/data/adb/demo;DB_CLOSE_DELAY=0` |
+| `jdbc:adb:tcp://<host>:<port>/<db>` | Connect to ADB SQL Server | `jdbc:adb:tcp://127.0.0.1:9123/demo;DB_CLOSE_DELAY=0` |
+| `jdbc:h2:*;DEFAULT_TABLE_ENGINE=adb_table` | Use an h2db URL directly and select the ADB table engine | `jdbc:h2:mem:demo;DEFAULT_TABLE_ENGINE=adb_table` |
+
+Example:
+
+```java
+String url = "jdbc:adb:mem:demo;DB_CLOSE_DELAY=-1";
+try (Connection connection = new org.h2.Driver().connect(url, new Properties())) {
+  // Use the h2db JDBC API.
+}
+```
+
+Notes:
+
+- `jdbc:adb:*` is mapped to `jdbc:h2:*` and appends `DEFAULT_TABLE_ENGINE=adb_table` when the setting is not already present.
+- `jdbc:adb:rocksdb:` is recognized as a historical compatibility prefix, but this guide recommends `jdbc:adb:ldb:` or direct h2db URLs for current usage.
+- If the URL already contains `DEFAULT_TABLE_ENGINE`, the plugin does not override it.
+
+## 3. ADB Tables
+
+Explicit table creation:
+
+```sql
+CREATE TABLE NOTES(
+  ID BIGINT,
+  NAME VARCHAR
+) ENGINE "adb_table";
+```
+
+When using `jdbc:adb:*` without overriding `DEFAULT_TABLE_ENGINE`, regular table creation defaults to the ADB table provider:
+
+```sql
+CREATE TABLE NOTES(ID BIGINT, NAME VARCHAR);
+```
+
+## 4. Embedded JDBC Example
+
+```java
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.Properties;
+
+public class AdbEmbeddedExample {
+  public static void main(String[] args) throws Exception {
+    String url = "jdbc:adb:ldb:D:/work/java2/vexra/work/manual/embedded;DB_CLOSE_DELAY=0";
+    try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+         Statement statement = connection.createStatement()) {
+      statement.execute("DROP TABLE IF EXISTS USERS");
+      statement.execute("CREATE TABLE USERS(ID BIGINT, NAME VARCHAR) ENGINE \"adb_table\"");
+      statement.executeUpdate("INSERT INTO USERS(ID, NAME) VALUES (1, 'alice')");
+      try (ResultSet rs = statement.executeQuery("SELECT NAME FROM USERS WHERE ID = 1")) {
+        if (rs.next()) {
+          System.out.println(rs.getString(1));
+        }
+      }
+    }
+  }
+}
+```
+
+## 5. SQL Server
+
+Build the runtime package:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbRuntimeDist
+New-Item -ItemType Directory -Force .\build | Out-Null
+Expand-Archive -Force .\vexra-adb\build\distributions\vexra-adb-0.1.0-SNAPSHOT-runtime.zip .\build\adb-runtime
+```
+
+Startup parameters:
+
+| Parameter | Required | Description | Example |
+| --- | --- | --- | --- |
+| `--port` | Yes | TCP JDBC port | `--port 9123` |
+| `--baseDir` | No | Database root directory | `--baseDir .\work\sql` |
+| `--tcpAllowOthers` | No | Whether to allow non-localhost connections | `--tcpAllowOthers true` |
+| `--ifNotExists` | No | h2db Server if-not-exists behavior | `--ifNotExists true` |
+| `--ready` | No | Ready file written after startup | `--ready .\run\sql.ready` |
+| `--stop` | No | Process exits after this file appears | `--stop .\run\sql.stop` |
+
+Startup example:
+
+```powershell
+.\bin\adb-sql-server.bat --port 9123 --baseDir .\work\sql --ifNotExists true --ready .\run\sql.ready --stop .\run\sql.stop
+```
+
+TCP JDBC example:
+
+```java
+String url = "jdbc:adb:tcp://127.0.0.1:9123/manual;DB_CLOSE_DELAY=0";
+try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+     Statement statement = connection.createStatement()) {
+  statement.execute("CREATE TABLE IF NOT EXISTS ITEMS(NAME VARCHAR) ENGINE \"adb_table\"");
+  statement.executeUpdate("INSERT INTO ITEMS(NAME) VALUES ('tcp-adb')");
+}
+```
+
+## 6. Region Node
+
+A region node stores remote region data and provides scan/write smoke capability through the Raft client.
+
+Startup parameters:
+
+| Parameter | Required | Description | Example |
+| --- | --- | --- | --- |
+| `--group` | Yes | Raft group id. It must be the same for all nodes in the group | `--group 11111111-1111-1111-1111-111111111111` |
+| `--node` | Yes | Current node id | `--node n1` |
+| `--peers` | Yes | Full peer list | `--peers n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003` |
+| `--host` | Yes | Current node bind address | `--host 127.0.0.1` |
+| `--port` | Yes | Current node bind port | `--port 19001` |
+| `--storage` | Yes | Raft / region persistence directory | `--storage .\work\n1\storage` |
+| `--cache` | Yes | Cache directory | `--cache .\work\n1\cache` |
+| `--ready` | No | Ready file written after startup | `--ready .\run\n1.ready` |
+| `--stop` | No | Process exits after this file appears | `--stop .\run\n1.stop` |
+
+Three-node example:
+
+```powershell
+$group = "11111111-1111-1111-1111-111111111111"
+$peers = "n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003"
+
+.\bin\adb-region-node.bat --group $group --node n1 --peers $peers --host 127.0.0.1 --port 19001 --storage .\work\n1\storage --cache .\work\n1\cache --ready .\run\n1.ready --stop .\run\n1.stop
+```
+
+For `n2` and `n3`, keep the same `$group` and `$peers`, but replace `--node`, `--port`, directories, and ready/stop files.
+
+## 7. Distributed SQL Parameters
+
+Distributed SQL is explicitly enabled through `WITH` parameters on `adb_table`.
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `adb.distributed.sql` | `false` | Enables the distributed SQL path |
+| `adb.distributed.split.row` | empty | Local test split rowId. Empty means one full-table range |
+| `adb.distributed.table.id` | H2 local table id | Table id used by remote regions |
+| `adb.distributed.table.epoch` | H2 local table epoch | Table epoch used by remote regions |
+| `adb.distributed.scan.client` | `local` | `local` or `raft` |
+| `adb.distributed.write.client` | `local` | `local` or `raft` |
+| `adb.distributed.raft.group` | empty | Required when Raft read or write is enabled |
+| `adb.distributed.raft.peers` | empty | Required when Raft read or write is enabled |
+| `adb.distributed.raft.dbName` | `adb` | Database name used by region nodes |
+| `adb.distributed.scan.readTs` | current transaction startTs | Fixed read timestamp, currently used for smoke checks |
+| `adb.distributed.scan.timeoutMillis` | `5000` | Scan timeout. `0` means unlimited |
+| `adb.distributed.write.timeoutMillis` | `5000` | Write timeout. `0` means unlimited |
+
+Remote read/write example:
+
+```sql
+CREATE TABLE TEST(NAME VARCHAR) ENGINE "adb_table" WITH
+  "adb.distributed.sql=true",
+  "adb.distributed.scan.client=raft",
+  "adb.distributed.write.client=raft",
+  "adb.distributed.table.id=1",
+  "adb.distributed.table.epoch=0",
+  "adb.distributed.raft.group=11111111-1111-1111-1111-111111111111",
+  "adb.distributed.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003",
+  "adb.distributed.scan.readTs=20000",
+  "adb.distributed.scan.timeoutMillis=30000",
+  "adb.distributed.write.timeoutMillis=30000";
+
+INSERT INTO TEST(NAME) VALUES ('remote-region-sql');
+SELECT NAME FROM TEST;
+```
+
+## 8. Tests and Verification
+
+Common test command:
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+Run only URL prefix and table provider tests:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbJdbcUrlPrefixProviderTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest
+```
+
+Run only the remote region SQL smoke test:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbSqlServerRemoteRegionScanSmokeTest
+```
+
+## 9. Troubleshooting
+
+| Symptom | Possible Cause | Check |
+| --- | --- | --- |
+| JDBC connection refused | SQL Server is not started or the port differs | Check the `--ready` file, port, and process logs |
+| `SELECT` does not see remote writes | `readTs` is earlier than commit timestamp, or table id / epoch differs | Use `readTs=20000` from the example and verify `table.id=1`, `table.epoch=0` |
+| Raft read/write timeout | Peers, group, ports, or region node count do not match | Confirm all 3 region nodes are ready and `$peers` is identical |
+| Table is created as a regular h2db table | URL overrides `DEFAULT_TABLE_ENGINE` or `ENGINE "adb_table"` is missing | Use the default `jdbc:adb:*` entry or specify `ENGINE "adb_table"` explicitly |
+| Parameter has no effect | A `WITH` parameter is misspelled | Parameter keys are case-insensitive, but copying the guide spelling is recommended |
+
+## 10. Current Boundaries
+
+- The current default capability is suitable for local development, integration tests, and distributed read/write path smoke checks.
+- SQL-to-region routing parameters are still manually supplied through table `WITH` options.
+- Automatic catalog, automatic table/region metadata, global TSO, transaction coordination, distributed optimizer plans, node scheduling, 2 data nodes + witness, highly available deployment, and the operations control plane remain planned work.
+- The examples do not cover secure production deployment. Authentication, TLS, auditing, quotas, backup, and restore require separate designs.
