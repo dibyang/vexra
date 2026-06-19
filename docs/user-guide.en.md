@@ -238,6 +238,14 @@ Run only the remote region SQL smoke test:
 .\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbSqlServerRemoteRegionScanSmokeTest
 ```
 
+End-to-end cluster stress gate model:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbEndToEndClusterStressGateTest
+```
+
+The gate requires the long-running stress report, fault-injection matrix, SQL/region read/write smoke, recovery drill, and rolling-upgrade drill to all pass. A real long-duration stress platform can feed data into the `AdbEndToEndClusterStressReport` shape.
+
 ## 9. Troubleshooting
 
 | Symptom | Possible Cause | Check |
@@ -253,4 +261,4 @@ Run only the remote region SQL smoke test:
 - The current default capability is suitable for local development, integration tests, and distributed read/write path smoke checks.
 - The SQL-to-region catalog/TSO prototype now supports a properties snapshot, but cluster configuration, service discovery, and region orchestration still need later phases.
 - Automatic table/region metadata, persistent global TSO, transaction coordination, distributed optimizer plans, node scheduling, 2 data nodes + witness, highly available deployment, and the operations control plane remain planned work.
-- This guide now covers secure installer templates and secure-default gates. A real authentication system, certificate issuance, auditing, quotas, backup, and restore still require separate designs or deployment-system integration.
+- This guide now covers secure installer templates, secure-default gates, and the end-to-end cluster stress gate model. A real authentication system, certificate issuance, auditing, quotas, backup/restore, and external long-duration stress execution still require separate designs or deployment-system integration.

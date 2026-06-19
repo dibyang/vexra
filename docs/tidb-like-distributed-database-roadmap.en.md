@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-20, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-11`. Therefore, the current roadmap has 1 remaining phase to complete: `ADB-Run-12`. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-20, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-12`. Therefore, the current roadmap has 0 remaining phases to complete. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 1 | `ADB-Run-01` through `ADB-Run-11` are complete; `ADB-Run-12` continues to track TiDB-like productization gaps | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 0 | `ADB-Run-01` through `ADB-Run-12` are complete | See "Runnable Cluster Hardening Phases" |
 
-The roadmap now adds 5 runnable productization phases, and `ADB-Run-11` is complete. The next priority is `ADB-Run-12`, which adds the end-to-end cluster stress gate.
+The roadmap now adds 5 runnable productization phases, and `ADB-Run-12` is complete. The current runnable hardening phases are closed; future TiDB-like productization goals should add new phases and update this section.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,14 +312,14 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 12 runnable hardening phases planned. `ADB-Run-01` through `ADB-Run-11` are complete, and `ADB-Run-12` tracks the remaining productization gap toward TiDB-like capability. The remaining count for this group is 1.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 12 runnable hardening phases planned. `ADB-Run-01` through `ADB-Run-12` are complete. The remaining count for this group is 0.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 11 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke; `ADB-Run-07` has passed SQL server remote Raft region scan smoke; `ADB-Run-08` has passed SQL server remote Raft region write smoke; `ADB-Run-09` has passed the SQL server shared catalog/TSO prototype gate; `ADB-Run-10` has passed the SQL-server-to-region-node orchestration prototype gate; `ADB-Run-11` has passed installer and secure-default template gates. |
+| Completed runnable hardening phases | 12 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke; `ADB-Run-07` has passed SQL server remote Raft region scan smoke; `ADB-Run-08` has passed SQL server remote Raft region write smoke; `ADB-Run-09` has passed the SQL server shared catalog/TSO prototype gate; `ADB-Run-10` has passed the SQL-server-to-region-node orchestration prototype gate; `ADB-Run-11` has passed installer and secure-default template gates; `ADB-Run-12` has passed the end-to-end cluster stress gate model. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
-| Not-started runnable hardening phases | 1 | `ADB-Run-12` is not started. |
-| Remaining runnable hardening phases | 1 | The newly added runnable productization phases have 1 phase remaining. |
+| Not-started runnable hardening phases | 0 | There are no not-started `ADB-Run-*` phases. |
+| Remaining runnable hardening phases | 0 | The newly added runnable productization phases are complete. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
@@ -334,7 +334,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | 9 | ADB-Run-09 | Done | SQL server shared catalog/TSO prototype | table id/epoch/catalog snapshot, read/write timestamp source, reduced explicit parameters | SQL no longer depends on manual table id or readTs parameters for the read/write loop |
 | 10 | ADB-Run-10 | Done | Automatic SQL-server-to-region-node orchestration | peers/group discovery, runtime config generation, connection preflight | A runtime distribution can start SQL and region nodes from one cluster config |
 | 11 | ADB-Run-11 | Done | Installer and secure defaults | service installation templates, auth/TLS config, least-privilege startup | SQL/region smoke passes with secure defaults |
-| 12 | ADB-Run-12 | Not started | End-to-end cluster stress gate | long-running stress scripts, fault-injection matrix, release report | Cluster read/write, recovery, and rolling-upgrade reports meet the gate |
+| 12 | ADB-Run-12 | Done | End-to-end cluster stress gate | long-running stress scripts, fault-injection matrix, release report | Cluster read/write, recovery, and rolling-upgrade reports meet the gate |
 
 ### ADB-Run-01 Implementation Scope
 
@@ -506,6 +506,18 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 
 - `AdbSecureInstallPlanTest` covers distributed security rejection when authentication is disabled, plus SQL/region systemd templates and Windows service commands.
 - This phase does not issue certificates, implement a real user privilege system, or call the operating system service installer. Those remain deployment-system or later productization integrations.
+
+### ADB-Run-12 Implementation Scope
+
+`ADB-Run-12` adds an end-to-end cluster gate on top of the existing long-running evaluator:
+
+- Add `AdbEndToEndClusterStressReport`, which combines the long-running stress report, SQL/region read/write smoke, recovery drill, rolling-upgrade drill, and smoke-cycle count into one release evidence object.
+- Add `AdbEndToEndClusterStressGate`, which reuses `AdbLongRunStressEvaluator` for failure rate, P99, maintenance cycles, and fault-matrix checks, then additionally requires cluster read/write, recovery, and rolling upgrade to pass.
+
+`ADB-Run-12` is complete:
+
+- `AdbEndToEndClusterStressGateTest` covers full report pass, cluster read/write failure, missing recovery/rolling-upgrade evidence, and failing underlying long-run metrics.
+- This phase provides the release-gate model and test evidence. It does not directly execute an external long-duration stress platform; real long-run data can be plugged into the same report shape.
 
 ### ADB-Prod-03 Current Progress
 

@@ -238,6 +238,14 @@ SELECT NAME FROM TEST;
 .\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbSqlServerRemoteRegionScanSmokeTest
 ```
 
+端到端集群压测门禁模型：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbEndToEndClusterStressGateTest
+```
+
+门禁要求长稳压测报告、故障注入矩阵、SQL/region 读写 smoke、恢复演练和滚动升级演练全部满足验收。真实长时间压测平台可以按 `AdbEndToEndClusterStressReport` 的结构接入。
+
 ## 9. 故障排查
 
 | 现象 | 可能原因 | 排查方式 |
@@ -253,4 +261,4 @@ SELECT NAME FROM TEST;
 - 当前默认能力适合本地开发、集成测试和分布式读写链路 smoke。
 - SQL 到 region 的 catalog/TSO 原型已支持 properties 快照，但集群配置、节点发现和 region 编排仍需后续阶段补齐。
 - 自动 table/region 元数据、持久化全局 TSO、事务协调、SQL 优化器分布式计划、节点调度、2 数据节点 + witness、高可用部署和运维控制面仍在后续规划中。
-- 本文已覆盖安全安装模板和默认安全门禁；真实鉴权系统、证书签发、审计、配额和备份恢复仍需要单独设计或外部部署系统集成。
+- 本文已覆盖安全安装模板、默认安全门禁和端到端集群压测门禁模型；真实鉴权系统、证书签发、审计、配额、备份恢复和外部长时间压测执行仍需要单独设计或部署系统集成。
