@@ -1,7 +1,11 @@
 package net.xdob.vexra.adb.db;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 
@@ -17,6 +21,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * 需要显式声明 group 和 peers，避免只开启分布式 SQL 就误连远端集群。</p>
  */
 class AdbSqlDistributedScanConfigTest {
+  @TempDir
+  Path tempDir;
+
   /**
    * 验证默认配置保持本地 scan，不改变旧表行为。
    */
@@ -62,6 +69,41 @@ class AdbSqlDistributedScanConfigTest {
     assertEquals(Long.valueOf(2L), config.getTableEpoch());
     assertEquals(30000L, config.getTimeoutMillis());
     assertEquals(31000L, config.getWriteTimeoutMillis());
+    assertEquals(Long.valueOf(20000L), config.getReadTimestamp());
+    assertEquals("group-1", config.getRaftGroup());
+    assertEquals("n1@127.0.0.1:9001,n2@127.0.0.1:9002",
+        config.getRaftPeers());
+    assertEquals("adb-test", config.getRaftDbName());
+  }
+
+  /**
+   * 验证共享 catalog 可以补齐 table id、epoch、Raft 目标和读时间戳。
+   */
+  @Test
+  void shouldResolveSharedCatalogParameters() throws Exception {
+    Path catalog = tempDir.resolve("adb-catalog.properties");
+    Files.write(catalog, Arrays.asList(
+        "adb.catalog.raft.group=group-1",
+        "adb.catalog.raft.peers=n1@127.0.0.1:9001,n2@127.0.0.1:9002",
+        "adb.catalog.raft.dbName=adb-test",
+        "adb.catalog.tso.current=19000",
+        "adb.catalog.tso.readDelay=1000",
+        "adb.catalog.table.TEST.id=7",
+        "adb.catalog.table.TEST.epoch=2"), StandardCharsets.UTF_8);
+
+    AdbSqlDistributedScanConfig config =
+        AdbSqlDistributedScanConfig.fromTableEngineParams(Arrays.asList(
+            "adb.distributed.sql=true",
+            "adb.distributed.scan.client=raft",
+            "adb.distributed.write.client=raft",
+            "adb.distributed.catalog.path="
+                + catalog.toAbsolutePath().toString().replace('\\', '/')),
+            "TEST");
+
+    assertTrue(config.isRaftScanClient());
+    assertTrue(config.isRaftWriteClient());
+    assertEquals(Integer.valueOf(7), config.getTableId());
+    assertEquals(Long.valueOf(2L), config.getTableEpoch());
     assertEquals(Long.valueOf(20000L), config.getReadTimestamp());
     assertEquals("group-1", config.getRaftGroup());
     assertEquals("n1@127.0.0.1:9001,n2@127.0.0.1:9002",

@@ -175,15 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-15，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-08`。因此，按当前路线图统计，剩余需要完成的阶段数为 4 个，分别是 `ADB-Run-09` 到 `ADB-Run-12`。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-20，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-09`。因此，按当前路线图统计，剩余需要完成的阶段数为 3 个，分别是 `ADB-Run-10` 到 `ADB-Run-12`。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 4 | `ADB-Run-01` 到 `ADB-Run-08` 已完成，`ADB-Run-09` 到 `ADB-Run-12` 继续追踪 TiDB-like 产品化缺口 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 3 | `ADB-Run-01` 到 `ADB-Run-09` 已完成，`ADB-Run-10` 到 `ADB-Run-12` 继续追踪 TiDB-like 产品化缺口 | 见“Runnable Cluster Hardening 阶段” |
 
-当前路线图已新增 5 个可运行化产品阶段，其中 `ADB-Run-08` 已完成。下一步优先推进 `ADB-Run-09`，把显式 table id/readTs 参数收敛到共享 catalog/TSO 原型；后续阶段继续覆盖安装器、SQL server 与 region node 自动编排、认证/TLS 和端到端集群压测门禁。
+当前路线图已新增 5 个可运行化产品阶段，其中 `ADB-Run-09` 已完成。下一步优先推进 `ADB-Run-10`，把 SQL server 与 region node 的手工启动参数收敛到统一集群配置和自动编排；后续阶段继续覆盖安装器、认证/TLS、安全默认值和端到端集群压测门禁。
 
 ### ADB-Runtime-03 实施口径
 
@@ -314,14 +314,14 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 12 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-08` 均已完成，`ADB-Run-09` 到 `ADB-Run-12` 追踪继续产品化到 TiDB-like 能力的缺口，本组阶段剩余数为 4。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 12 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-09` 均已完成，`ADB-Run-10` 到 `ADB-Run-12` 追踪继续产品化到 TiDB-like 能力的缺口，本组阶段剩余数为 3。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 8 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke；`ADB-Run-07` 已完成 SQL server 远端 Raft region scan smoke；`ADB-Run-08` 已完成 SQL server 远端 Raft region 写入 smoke。 |
+| 已完成可运行化阶段 | 9 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke；`ADB-Run-07` 已完成 SQL server 远端 Raft region scan smoke；`ADB-Run-08` 已完成 SQL server 远端 Raft region 写入 smoke；`ADB-Run-09` 已完成 SQL server 共享 catalog/TSO 原型。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
-| 未开始可运行化阶段 | 4 | `ADB-Run-09` 到 `ADB-Run-12` 尚未开始。 |
-| 剩余需完成可运行化阶段 | 4 | 新增可运行化产品阶段剩余 4 个。 |
+| 未开始可运行化阶段 | 3 | `ADB-Run-10` 到 `ADB-Run-12` 尚未开始。 |
+| 剩余需完成可运行化阶段 | 3 | 新增可运行化产品阶段剩余 3 个。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
@@ -333,7 +333,7 @@ flowchart TB
 | 6 | ADB-Run-06 | 已完成 | region node 脚本级多进程 smoke | 解包 runtime zip、执行发行包 region node 脚本、Raft/GRPC 验证、进程清理 | `:vexra-adb:test` 覆盖发行包脚本启动 3 个 region node 并完成 prewrite、commit 和 scan |
 | 7 | ADB-Run-07 | 已完成 | SQL server 远端 region 读路径 | table-engine 远端 scan 参数、Raft scan client 选择、针对 forked region node 的 SQL/JDBC smoke | SQL 可显式 opt-in 远端 Raft region scan，并读取通过 region-node 数据路径提交的行 |
 | 8 | ADB-Run-08 | 已完成 | SQL server 远端 region 写路径 | table-engine 远端 write 参数、Raft commit client 装配、SQL/JDBC 写后远端读 smoke | SQL 可显式 opt-in 把 INSERT 写入远端 region node，并通过远端 scan 读回 |
-| 9 | ADB-Run-09 | 未开始 | SQL server 共享 catalog/TSO 原型 | 表 id/epoch/catalog 快照、读写时间戳来源、显式参数收敛 | SQL 不再依赖手工 table id/readTs 参数完成读写闭环 |
+| 9 | ADB-Run-09 | 已完成 | SQL server 共享 catalog/TSO 原型 | 表 id/epoch/catalog 快照、读写时间戳来源、显式参数收敛 | SQL 不再依赖手工 table id/readTs 参数完成读写闭环 |
 | 10 | ADB-Run-10 | 未开始 | SQL server 与 region node 自动编排 | peers/group 发现、runtime 配置生成、连接预检 | runtime 发行包可用一份集群配置启动 SQL 与 region 节点 |
 | 11 | ADB-Run-11 | 未开始 | 安装器与安全默认值 | 服务安装模板、认证/TLS 配置、最小权限启动 | 默认安全配置下 SQL/region smoke 通过 |
 | 12 | ADB-Run-12 | 未开始 | 端到端集群压测门禁 | 长稳压测脚本、故障注入矩阵、发布报告 | 集群读写、故障恢复和滚动升级报告满足门禁 |
@@ -468,6 +468,20 @@ flowchart TB
 - `AdbTableProvider` 在显式开启 raft write client 时安装 SQL distributed write runtime、timestamp provider 和 region commit coordinator。
 - `AdbSqlServerRemoteRegionScanSmokeTest` 已升级为 forked SQL server 通过 SQL `INSERT` 写入远端 region node，再通过 SQL 远端 scan 和 direct Raft scan 读回。
 - 覆盖测试包括 `AdbSqlDistributedScanConfigTest`、`AdbSqlDistributedTimestampProviderTest`、`AdbRegionCommitCoordinatorTest` 和 `AdbSqlServerRemoteRegionScanSmokeTest`。
+
+### ADB-Run-09 实施口径
+
+`ADB-Run-09` 把显式 table id、table epoch、Raft 目标和固定 readTs 收敛到共享 catalog/TSO 原型：
+
+- 新增 UTF-8 properties 形式的共享 catalog 快照，包含 `adb.catalog.raft.*`、`adb.catalog.tso.*` 和 `adb.catalog.table.<name>.*`。
+- table-engine 参数新增 `adb.distributed.catalog.path` 和 `adb.distributed.catalog.table`；未显式提供 table id、table epoch、Raft group、peers、dbName 或 readTs 时，自动从 catalog 快照补齐。
+- `AdbTableProvider` 按当前 SQL 表名解析 catalog，使远端 SQL 读写建表不再依赖手工 `adb.distributed.table.id`、`adb.distributed.table.epoch` 和 `adb.distributed.scan.readTs`。
+
+`ADB-Run-09` 已完成：
+
+- `AdbSqlSharedCatalogSnapshot` 已提供共享 catalog/TSO 快照解析和表绑定校验。
+- `AdbSqlDistributedScanConfigTest` 覆盖 catalog 参数补齐。
+- `AdbSqlServerRemoteRegionScanSmokeTest` 已改为通过 catalog 文件完成 SQL server 到远端 region node 的写入和读取闭环。
 
 ### ADB-Prod-03 当前进展
 

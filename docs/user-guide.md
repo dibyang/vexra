@@ -159,12 +159,25 @@ $peers = "n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003"
 | `adb.distributed.table.epoch` | H2 本地 table epoch | 远端 region 使用的 table epoch |
 | `adb.distributed.scan.client` | `local` | `local` 或 `raft` |
 | `adb.distributed.write.client` | `local` | `local` 或 `raft` |
+| `adb.distributed.catalog.path` | 空 | 共享 catalog properties 文件；可补齐 table id、epoch、Raft 目标和 readTs |
+| `adb.distributed.catalog.table` | 当前 SQL 表名 | catalog 中使用的表名覆盖值 |
 | `adb.distributed.raft.group` | 空 | Raft 读或写为 `raft` 时必填 |
 | `adb.distributed.raft.peers` | 空 | Raft 读或写为 `raft` 时必填 |
 | `adb.distributed.raft.dbName` | `adb` | Region node 使用的数据库名 |
 | `adb.distributed.scan.readTs` | 当前事务 startTs | 固定读取时间戳；当前用于 smoke 验证 |
 | `adb.distributed.scan.timeoutMillis` | `5000` | scan 超时时间，`0` 表示不限制 |
 | `adb.distributed.write.timeoutMillis` | `5000` | write 超时时间，`0` 表示不限制 |
+
+共享 catalog 示例：
+
+```properties
+adb.catalog.raft.group=11111111-1111-1111-1111-111111111111
+adb.catalog.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003
+adb.catalog.raft.dbName=adb
+adb.catalog.tso.readTs=20000
+adb.catalog.table.TEST.id=1
+adb.catalog.table.TEST.epoch=0
+```
 
 远端读写示例：
 
@@ -173,11 +186,7 @@ CREATE TABLE TEST(NAME VARCHAR) ENGINE "adb_table" WITH
   "adb.distributed.sql=true",
   "adb.distributed.scan.client=raft",
   "adb.distributed.write.client=raft",
-  "adb.distributed.table.id=1",
-  "adb.distributed.table.epoch=0",
-  "adb.distributed.raft.group=11111111-1111-1111-1111-111111111111",
-  "adb.distributed.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003",
-  "adb.distributed.scan.readTs=20000",
+  "adb.distributed.catalog.path=D:/work/java2/vexra/build/adb-runtime/run/adb-catalog.properties",
   "adb.distributed.scan.timeoutMillis=30000",
   "adb.distributed.write.timeoutMillis=30000";
 
@@ -210,7 +219,7 @@ SELECT NAME FROM TEST;
 | 现象 | 可能原因 | 排查方式 |
 | --- | --- | --- |
 | JDBC 连接被拒绝 | SQL Server 未启动或端口不一致 | 检查 `--ready` 文件、端口和进程日志 |
-| `SELECT` 查不到远端写入 | `readTs` 早于提交时间戳，或 table id / epoch 不一致 | 使用示例中的 `readTs=20000`，确认 `table.id=1`、`table.epoch=0` |
+| `SELECT` 查不到远端写入 | catalog 中的 `readTs` 早于提交时间戳，或 table id / epoch 不一致 | 确认 catalog 中 `adb.catalog.tso.readTs=20000`、`adb.catalog.table.TEST.id=1`、`adb.catalog.table.TEST.epoch=0` |
 | Raft 读写超时 | peers、group、端口或 region node 数量不匹配 | 确认 3 个 region node 都已 ready，且 `$peers` 完全一致 |
 | 建表进入普通 h2db 表 | URL 覆盖了 `DEFAULT_TABLE_ENGINE` 或未指定 `ENGINE "adb_table"` | 使用 `jdbc:adb:*` 默认入口，或显式指定 `ENGINE "adb_table"` |
 | 参数未生效 | `WITH` 参数拼写错误 | 参数 key 大小写不敏感，但建议按本文写法复制 |
@@ -218,6 +227,6 @@ SELECT NAME FROM TEST;
 ## 10. 当前边界
 
 - 当前默认能力适合本地开发、集成测试和分布式读写链路 smoke。
-- SQL 到 region 的路由参数仍由建表 `WITH` 手工提供。
-- 自动 catalog、自动 table/region 元数据、全局 TSO、事务协调、SQL 优化器分布式计划、节点调度、2 数据节点 + witness、高可用部署和运维控制面仍在后续规划中。
+- SQL 到 region 的 catalog/TSO 原型已支持 properties 快照，但集群配置、节点发现和 region 编排仍需后续阶段补齐。
+- 自动 table/region 元数据、持久化全局 TSO、事务协调、SQL 优化器分布式计划、节点调度、2 数据节点 + witness、高可用部署和运维控制面仍在后续规划中。
 - 本文示例不覆盖安全生产部署；鉴权、TLS、审计、配额和备份恢复需要单独设计。

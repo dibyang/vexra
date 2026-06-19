@@ -30,6 +30,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
@@ -77,7 +78,8 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
 
       sqlServer = startSqlServer(sqlPort, sqlDir);
       waitForReady(Collections.singletonList(sqlServer), "sql server");
-      executeRemoteSqlSmoke(sqlPort, databaseName, groupId, peers,
+      Path catalog = writeSharedCatalog(sqlDir, groupId, peers);
+      executeRemoteSqlSmoke(sqlPort, databaseName, groupId, peers, catalog,
           regionProcesses);
       assertRemoteScanHasRowEventually(groupId, peers, regionProcesses);
     } catch (Exception e) {
@@ -146,7 +148,7 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
   }
 
   private static void executeRemoteSqlSmoke(int port, String databaseName,
-      RaftGroupId groupId, List<RaftPeer> peers,
+      RaftGroupId groupId, List<RaftPeer> peers, Path catalog,
       List<ProcessHandle> regionProcesses) throws Exception {
     String url = "jdbc:adb:tcp://127.0.0.1:" + port + "/" + databaseName
         + ";DB_CLOSE_DELAY=0";
@@ -157,11 +159,8 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
           + "\"adb.distributed.sql=true\", "
           + "\"adb.distributed.scan.client=raft\", "
           + "\"adb.distributed.write.client=raft\", "
-          + "\"adb.distributed.table.id=" + REMOTE_TABLE_ID + "\", "
-          + "\"adb.distributed.table.epoch=0\", "
-          + "\"adb.distributed.raft.group=" + groupId + "\", "
-          + "\"adb.distributed.raft.peers=" + nodes(peers) + "\", "
-          + "\"adb.distributed.scan.readTs=20000\", "
+          + "\"adb.distributed.catalog.path="
+          + catalog.toAbsolutePath().toString().replace('\\', '/') + "\", "
           + "\"adb.distributed.write.timeoutMillis=30000\", "
           + "\"adb.distributed.scan.timeoutMillis=30000\"");
       statement.executeUpdate("INSERT INTO TEST(NAME) VALUES ('"
@@ -177,6 +176,21 @@ class AdbSqlServerRemoteRegionScanSmokeTest {
       assertEquals(REMOTE_VALUE, singleString(statement,
           "SELECT NAME FROM TEST"));
     }
+  }
+
+  private static Path writeSharedCatalog(Path sqlDir, RaftGroupId groupId,
+      List<RaftPeer> peers) throws IOException {
+    Path catalog = sqlDir.resolve("adb-shared-catalog.properties");
+    Files.createDirectories(sqlDir);
+    Files.write(catalog, Arrays.asList(
+        "adb.catalog.raft.group=" + groupId,
+        "adb.catalog.raft.peers=" + nodes(peers),
+        "adb.catalog.raft.dbName=adb",
+        "adb.catalog.tso.readTs=20000",
+        "adb.catalog.table.TEST.id=" + REMOTE_TABLE_ID,
+        "adb.catalog.table.TEST.epoch=0"), StandardCharsets.UTF_8,
+        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+    return catalog;
   }
 
   private static void assertRemoteScanHasRowEventually(RaftGroupId groupId,

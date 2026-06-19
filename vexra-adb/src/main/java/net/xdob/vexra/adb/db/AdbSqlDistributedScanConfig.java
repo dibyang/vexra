@@ -24,6 +24,8 @@ public final class AdbSqlDistributedScanConfig {
   static final String RAFT_GROUP_PARAM = "adb.distributed.raft.group";
   static final String RAFT_PEERS_PARAM = "adb.distributed.raft.peers";
   static final String RAFT_DB_NAME_PARAM = "adb.distributed.raft.dbname";
+  static final String CATALOG_PATH_PARAM = "adb.distributed.catalog.path";
+  static final String CATALOG_TABLE_PARAM = "adb.distributed.catalog.table";
 
   private static final String LOCAL_SCAN_CLIENT = "local";
   private static final String RAFT_SCAN_CLIENT = "raft";
@@ -145,6 +147,18 @@ public final class AdbSqlDistributedScanConfig {
    */
   public static AdbSqlDistributedScanConfig fromTableEngineParams(
       List<String> params) {
+    return fromTableEngineParams(params, null);
+  }
+
+  /**
+   * 从 h2db table engine `WITH` 参数解析配置，并可按表名接入共享 catalog。
+   *
+   * @param params table engine 参数；可以为 null
+   * @param tableName 当前 SQL 表名；使用 catalog.path 时用于解析 table id/epoch
+   * @return SQL 分布式 scan 配置
+   */
+  public static AdbSqlDistributedScanConfig fromTableEngineParams(
+      List<String> params, String tableName) {
     boolean enabled = false;
     Long splitRowId = null;
     long timeoutMillis = 5000L;
@@ -157,6 +171,8 @@ public final class AdbSqlDistributedScanConfig {
     Long readTimestamp = null;
     Integer tableId = null;
     Long tableEpoch = null;
+    String catalogPath = null;
+    String catalogTable = null;
     if (params != null) {
       for (String raw : params) {
         if (raw == null) {
@@ -194,7 +210,35 @@ public final class AdbSqlDistributedScanConfig {
           raftPeers = value;
         } else if (RAFT_DB_NAME_PARAM.equals(key)) {
           raftDbName = value;
+        } else if (CATALOG_PATH_PARAM.equals(key)) {
+          catalogPath = value;
+        } else if (CATALOG_TABLE_PARAM.equals(key)) {
+          catalogTable = value;
         }
+      }
+    }
+    if (trimToNull(catalogPath) != null) {
+      AdbSqlSharedCatalogSnapshot catalog =
+          AdbSqlSharedCatalogSnapshot.load(catalogPath);
+      AdbSqlSharedCatalogSnapshot.TableBinding binding = catalog.table(
+          trimToDefault(catalogTable, tableName));
+      if (tableId == null) {
+        tableId = binding.getTableId();
+      }
+      if (tableEpoch == null) {
+        tableEpoch = binding.getTableEpoch();
+      }
+      if (readTimestamp == null) {
+        readTimestamp = catalog.getReadTimestamp();
+      }
+      if (raftGroup == null) {
+        raftGroup = catalog.getRaftGroup();
+      }
+      if (raftPeers == null) {
+        raftPeers = catalog.getRaftPeers();
+      }
+      if (DEFAULT_RAFT_DB_NAME.equals(raftDbName)) {
+        raftDbName = catalog.getRaftDbName();
       }
     }
     return new AdbSqlDistributedScanConfig(enabled, splitRowId, timeoutMillis,

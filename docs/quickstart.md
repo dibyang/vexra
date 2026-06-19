@@ -143,18 +143,27 @@ Test-Path .\run\n3.ready
 
 ## 5. 远端 Region SQL 读写示例
 
-先启动 SQL Server，然后使用 `jdbc:adb:tcp://127.0.0.1:9123/quickstart;DB_CLOSE_DELAY=0` 建表：
+先准备共享 catalog 文件：
+
+```powershell
+@"
+adb.catalog.raft.group=11111111-1111-1111-1111-111111111111
+adb.catalog.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003
+adb.catalog.raft.dbName=adb
+adb.catalog.tso.readTs=20000
+adb.catalog.table.TEST.id=1
+adb.catalog.table.TEST.epoch=0
+"@ | Set-Content -Encoding UTF8 .\run\adb-catalog.properties
+```
+
+再启动 SQL Server，然后使用 `jdbc:adb:tcp://127.0.0.1:9123/quickstart;DB_CLOSE_DELAY=0` 建表：
 
 ```sql
 CREATE TABLE TEST(NAME VARCHAR) ENGINE "adb_table" WITH
   "adb.distributed.sql=true",
   "adb.distributed.scan.client=raft",
   "adb.distributed.write.client=raft",
-  "adb.distributed.table.id=1",
-  "adb.distributed.table.epoch=0",
-  "adb.distributed.raft.group=11111111-1111-1111-1111-111111111111",
-  "adb.distributed.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003",
-  "adb.distributed.scan.readTs=20000",
+  "adb.distributed.catalog.path=D:/work/java2/vexra/build/adb-runtime/run/adb-catalog.properties",
   "adb.distributed.scan.timeoutMillis=30000",
   "adb.distributed.write.timeoutMillis=30000";
 
@@ -164,7 +173,7 @@ EXPLAIN SELECT NAME FROM TEST;
 SELECT NAME FROM TEST;
 ```
 
-`EXPLAIN` 中应能看到 `ADB_DISTRIBUTED_SCAN`、`client=raft`、`tableId=1`、`readTs=20000` 等信息。
+`EXPLAIN` 中应能看到 `ADB_DISTRIBUTED_SCAN`、`client=raft`、`tableId=1`、`readTs=20000` 等信息。这些 table id、epoch、Raft 目标和 readTs 来自 catalog 文件，不需要再写在 SQL 里。
 
 ## 6. 停止进程
 
@@ -192,6 +201,6 @@ New-Item -ItemType File -Force .\run\n3.stop | Out-Null
 ## 当前限制
 
 - `jdbc:adb:*` 前缀已经由 h2db 插件支持，但真正连接、SQL 解析、Server 和工具链仍由 h2db 提供。
-- 远端 region SQL 读写目前需要显式 `WITH` 参数，尚未接入自动 catalog、自动 table id 分配和全局 TSO。
-- `adb.distributed.scan.readTs` 示例使用固定读时间戳，只适合 smoke 验证；生产形态需要后续 TSO 与事务快照规划。
+- 远端 region SQL 读写仍需要显式开启 `adb.distributed.sql=true`，但 table id、epoch、Raft 目标和 readTs 已可从共享 catalog/TSO 原型解析。
+- catalog 示例使用固定读时间戳，只适合 smoke 验证；生产形态仍需要后续持久化 TSO、事务快照和控制面租约规划。
 - 当前示例是本地开发验证，不包含鉴权、TLS、节点发现、自动拉起、自动扩缩容和运维控制面。

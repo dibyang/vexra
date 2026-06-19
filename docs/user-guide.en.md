@@ -159,12 +159,25 @@ Distributed SQL is explicitly enabled through `WITH` parameters on `adb_table`.
 | `adb.distributed.table.epoch` | H2 local table epoch | Table epoch used by remote regions |
 | `adb.distributed.scan.client` | `local` | `local` or `raft` |
 | `adb.distributed.write.client` | `local` | `local` or `raft` |
+| `adb.distributed.catalog.path` | empty | Shared catalog properties file that can resolve table id, epoch, Raft target, and readTs |
+| `adb.distributed.catalog.table` | current SQL table name | Table-name override used for catalog lookup |
 | `adb.distributed.raft.group` | empty | Required when Raft read or write is enabled |
 | `adb.distributed.raft.peers` | empty | Required when Raft read or write is enabled |
 | `adb.distributed.raft.dbName` | `adb` | Database name used by region nodes |
 | `adb.distributed.scan.readTs` | current transaction startTs | Fixed read timestamp, currently used for smoke checks |
 | `adb.distributed.scan.timeoutMillis` | `5000` | Scan timeout. `0` means unlimited |
 | `adb.distributed.write.timeoutMillis` | `5000` | Write timeout. `0` means unlimited |
+
+Shared catalog example:
+
+```properties
+adb.catalog.raft.group=11111111-1111-1111-1111-111111111111
+adb.catalog.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003
+adb.catalog.raft.dbName=adb
+adb.catalog.tso.readTs=20000
+adb.catalog.table.TEST.id=1
+adb.catalog.table.TEST.epoch=0
+```
 
 Remote read/write example:
 
@@ -173,11 +186,7 @@ CREATE TABLE TEST(NAME VARCHAR) ENGINE "adb_table" WITH
   "adb.distributed.sql=true",
   "adb.distributed.scan.client=raft",
   "adb.distributed.write.client=raft",
-  "adb.distributed.table.id=1",
-  "adb.distributed.table.epoch=0",
-  "adb.distributed.raft.group=11111111-1111-1111-1111-111111111111",
-  "adb.distributed.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003",
-  "adb.distributed.scan.readTs=20000",
+  "adb.distributed.catalog.path=D:/work/java2/vexra/build/adb-runtime/run/adb-catalog.properties",
   "adb.distributed.scan.timeoutMillis=30000",
   "adb.distributed.write.timeoutMillis=30000";
 
@@ -210,7 +219,7 @@ Run only the remote region SQL smoke test:
 | Symptom | Possible Cause | Check |
 | --- | --- | --- |
 | JDBC connection refused | SQL Server is not started or the port differs | Check the `--ready` file, port, and process logs |
-| `SELECT` does not see remote writes | `readTs` is earlier than commit timestamp, or table id / epoch differs | Use `readTs=20000` from the example and verify `table.id=1`, `table.epoch=0` |
+| `SELECT` does not see remote writes | Catalog `readTs` is earlier than commit timestamp, or table id / epoch differs | Verify `adb.catalog.tso.readTs=20000`, `adb.catalog.table.TEST.id=1`, and `adb.catalog.table.TEST.epoch=0` in the catalog |
 | Raft read/write timeout | Peers, group, ports, or region node count do not match | Confirm all 3 region nodes are ready and `$peers` is identical |
 | Table is created as a regular h2db table | URL overrides `DEFAULT_TABLE_ENGINE` or `ENGINE "adb_table"` is missing | Use the default `jdbc:adb:*` entry or specify `ENGINE "adb_table"` explicitly |
 | Parameter has no effect | A `WITH` parameter is misspelled | Parameter keys are case-insensitive, but copying the guide spelling is recommended |
@@ -218,6 +227,6 @@ Run only the remote region SQL smoke test:
 ## 10. Current Boundaries
 
 - The current default capability is suitable for local development, integration tests, and distributed read/write path smoke checks.
-- SQL-to-region routing parameters are still manually supplied through table `WITH` options.
-- Automatic catalog, automatic table/region metadata, global TSO, transaction coordination, distributed optimizer plans, node scheduling, 2 data nodes + witness, highly available deployment, and the operations control plane remain planned work.
+- The SQL-to-region catalog/TSO prototype now supports a properties snapshot, but cluster configuration, service discovery, and region orchestration still need later phases.
+- Automatic table/region metadata, persistent global TSO, transaction coordination, distributed optimizer plans, node scheduling, 2 data nodes + witness, highly available deployment, and the operations control plane remain planned work.
 - The examples do not cover secure production deployment. Authentication, TLS, auditing, quotas, backup, and restore require separate designs.

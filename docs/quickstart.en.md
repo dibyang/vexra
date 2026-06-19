@@ -143,18 +143,27 @@ Test-Path .\run\n3.ready
 
 ## 5. Remote Region SQL Read/Write Example
 
-Start SQL Server first, then create a table through `jdbc:adb:tcp://127.0.0.1:9123/quickstart;DB_CLOSE_DELAY=0`:
+Prepare a shared catalog file first:
+
+```powershell
+@"
+adb.catalog.raft.group=11111111-1111-1111-1111-111111111111
+adb.catalog.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003
+adb.catalog.raft.dbName=adb
+adb.catalog.tso.readTs=20000
+adb.catalog.table.TEST.id=1
+adb.catalog.table.TEST.epoch=0
+"@ | Set-Content -Encoding UTF8 .\run\adb-catalog.properties
+```
+
+Then start SQL Server and create a table through `jdbc:adb:tcp://127.0.0.1:9123/quickstart;DB_CLOSE_DELAY=0`:
 
 ```sql
 CREATE TABLE TEST(NAME VARCHAR) ENGINE "adb_table" WITH
   "adb.distributed.sql=true",
   "adb.distributed.scan.client=raft",
   "adb.distributed.write.client=raft",
-  "adb.distributed.table.id=1",
-  "adb.distributed.table.epoch=0",
-  "adb.distributed.raft.group=11111111-1111-1111-1111-111111111111",
-  "adb.distributed.raft.peers=n1@127.0.0.1:19001,n2@127.0.0.1:19002,n3@127.0.0.1:19003",
-  "adb.distributed.scan.readTs=20000",
+  "adb.distributed.catalog.path=D:/work/java2/vexra/build/adb-runtime/run/adb-catalog.properties",
   "adb.distributed.scan.timeoutMillis=30000",
   "adb.distributed.write.timeoutMillis=30000";
 
@@ -164,7 +173,7 @@ EXPLAIN SELECT NAME FROM TEST;
 SELECT NAME FROM TEST;
 ```
 
-`EXPLAIN` should include `ADB_DISTRIBUTED_SCAN`, `client=raft`, `tableId=1`, and `readTs=20000`.
+`EXPLAIN` should include `ADB_DISTRIBUTED_SCAN`, `client=raft`, `tableId=1`, and `readTs=20000`. The table id, epoch, Raft target, and readTs come from the catalog file and no longer need to be written in SQL.
 
 ## 6. Stop Processes
 
@@ -192,6 +201,6 @@ Run only the SQL Server to remote region smoke test:
 ## Current Limitations
 
 - The `jdbc:adb:*` prefix is supported through h2db plugins, but h2db still provides the actual connection, SQL parser, Server, and toolchain.
-- Remote region SQL read/write currently requires explicit `WITH` parameters. Automatic catalog, automatic table id allocation, and global TSO are not integrated yet.
-- The sample `adb.distributed.scan.readTs` uses a fixed read timestamp for smoke verification only. A production shape needs the later TSO and transaction snapshot work.
+- Remote region SQL read/write still needs explicit `adb.distributed.sql=true`, but table id, epoch, Raft target, and readTs can now be resolved from the shared catalog/TSO prototype.
+- The catalog example uses a fixed read timestamp for smoke verification only. A production shape still needs persistent TSO, transaction snapshots, and control-plane leases.
 - These examples are local development checks. Authentication, TLS, discovery, process orchestration, autoscaling, and an operations control plane are not included.

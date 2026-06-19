@@ -83,7 +83,7 @@ public final class AdbTableProvider implements TableEngineProvider {
         TxnManager txnManager = new TxnManager(dbStore);
         AdbSqlDistributedScanConfig scanConfig =
             AdbSqlDistributedScanConfig.fromTableEngineParams(
-                context.getTableEngineParams());
+                context.getTableEngineParams(), data.tableName);
         if (scanConfig.isEnabled()) {
             txnManager.setSqlDistributedScanRuntime(
                 new AdbSqlDistributedScanRuntime(dbStore, scanConfig));
