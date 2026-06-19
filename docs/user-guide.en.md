@@ -98,6 +98,22 @@ Automatic orchestration plan entry:
 
 `cluster.properties` describes SQL Server, region nodes, Raft peers, and the shared catalog together. The command prints `[preflight]`, `[catalog]`, `[sql]`, and `[region]` sections. The `[sql]` and `[region]` sections are executable startup commands, and `--writeCatalog true` writes catalog properties to `adb.cluster.catalog.path`.
 
+Secure installer templates use these configuration keys:
+
+```properties
+adb.security.distributed=true
+adb.security.tls.enabled=true
+adb.security.auth.enabled=true
+adb.security.leastPrivilege.enabled=true
+adb.security.tls.ca=conf/ca.pem
+adb.security.tls.certDir=conf/tls
+adb.security.auth.tokenFile=conf/tokens.properties
+adb.security.privilege.dir=conf/privileges
+adb.security.serviceUser=vexra
+```
+
+Runtime code rejects distributed configurations that disable TLS, authentication, or least privilege. Installer templates generate systemd unit text and Windows `sc.exe` command text. This phase does not issue certificates, create OS users, or install OS services.
+
 Startup parameters:
 
 | Parameter | Required | Description | Example |
@@ -237,4 +253,4 @@ Run only the remote region SQL smoke test:
 - The current default capability is suitable for local development, integration tests, and distributed read/write path smoke checks.
 - The SQL-to-region catalog/TSO prototype now supports a properties snapshot, but cluster configuration, service discovery, and region orchestration still need later phases.
 - Automatic table/region metadata, persistent global TSO, transaction coordination, distributed optimizer plans, node scheduling, 2 data nodes + witness, highly available deployment, and the operations control plane remain planned work.
-- The examples do not cover secure production deployment. Authentication, TLS, auditing, quotas, backup, and restore require separate designs.
+- This guide now covers secure installer templates and secure-default gates. A real authentication system, certificate issuance, auditing, quotas, backup, and restore still require separate designs or deployment-system integration.

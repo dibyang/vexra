@@ -98,6 +98,22 @@ Expand-Archive -Force .\vexra-adb\build\distributions\vexra-adb-0.1.0-SNAPSHOT-r
 
 `cluster.properties` 同时描述 SQL Server、region nodes、Raft peers 和共享 catalog。命令会输出 `[preflight]`、`[catalog]`、`[sql]` 和 `[region]` 四段；其中 `[sql]` 与 `[region]` 是可执行启动命令，`--writeCatalog true` 会把 catalog properties 写到 `adb.cluster.catalog.path`。
 
+安全安装模板使用以下配置前缀：
+
+```properties
+adb.security.distributed=true
+adb.security.tls.enabled=true
+adb.security.auth.enabled=true
+adb.security.leastPrivilege.enabled=true
+adb.security.tls.ca=conf/ca.pem
+adb.security.tls.certDir=conf/tls
+adb.security.auth.tokenFile=conf/tokens.properties
+adb.security.privilege.dir=conf/privileges
+adb.security.serviceUser=vexra
+```
+
+运行时代码会拒绝分布式模式下关闭 TLS、认证或最小权限的配置；安装模板会生成 systemd unit 和 Windows `sc.exe` 命令文本。当前阶段不负责签发证书、创建系统用户或安装 OS 服务。
+
 启动参数：
 
 | 参数 | 必填 | 说明 | 示例 |
@@ -237,4 +253,4 @@ SELECT NAME FROM TEST;
 - 当前默认能力适合本地开发、集成测试和分布式读写链路 smoke。
 - SQL 到 region 的 catalog/TSO 原型已支持 properties 快照，但集群配置、节点发现和 region 编排仍需后续阶段补齐。
 - 自动 table/region 元数据、持久化全局 TSO、事务协调、SQL 优化器分布式计划、节点调度、2 数据节点 + witness、高可用部署和运维控制面仍在后续规划中。
-- 本文示例不覆盖安全生产部署；鉴权、TLS、审计、配额和备份恢复需要单独设计。
+- 本文已覆盖安全安装模板和默认安全门禁；真实鉴权系统、证书签发、审计、配额和备份恢复仍需要单独设计或外部部署系统集成。

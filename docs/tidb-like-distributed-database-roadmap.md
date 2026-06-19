@@ -175,15 +175,15 @@ flowchart TB
 
 ### 当前阶段计数快照
 
-截至 2026-06-20，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-10`。因此，按当前路线图统计，剩余需要完成的阶段数为 2 个，分别是 `ADB-Run-11` 到 `ADB-Run-12`。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
+截至 2026-06-20，当前计划已经完成 `ADB-Runtime-01` 到 `ADB-Runtime-11`、生产化阶段 `ADB-Prod-01` 到 `ADB-Prod-06`，以及可运行化阶段 `ADB-Run-01` 到 `ADB-Run-11`。因此，按当前路线图统计，剩余需要完成的阶段数为 1 个，即 `ADB-Run-12`。后续如果新增阶段，必须同步更新本快照、下方阶段表和阶段状态说明，并进行本地提交。
 
 | 口径 | 剩余阶段数 | 当前状态 | 后续追踪位置 |
 | --- | --- | --- | --- |
 | Runtime 运行时集成阶段 | 0 | `ADB-Runtime-01` 到 `ADB-Runtime-11` 已完成 | 保留为历史完成记录 |
 | Post-Runtime 生产化阶段 | 0 | `ADB-Prod-01` 到 `ADB-Prod-06` 已完成 | 见“Post-Runtime 生产化阶段” |
-| Runnable Cluster Hardening 可运行化阶段 | 2 | `ADB-Run-01` 到 `ADB-Run-10` 已完成，`ADB-Run-11` 到 `ADB-Run-12` 继续追踪 TiDB-like 产品化缺口 | 见“Runnable Cluster Hardening 阶段” |
+| Runnable Cluster Hardening 可运行化阶段 | 1 | `ADB-Run-01` 到 `ADB-Run-11` 已完成，`ADB-Run-12` 继续追踪 TiDB-like 产品化缺口 | 见“Runnable Cluster Hardening 阶段” |
 
-当前路线图已新增 5 个可运行化产品阶段，其中 `ADB-Run-10` 已完成。下一步优先推进 `ADB-Run-11`，补齐安装器、认证/TLS 和安全默认值；后续阶段继续覆盖端到端集群压测门禁。
+当前路线图已新增 5 个可运行化产品阶段，其中 `ADB-Run-11` 已完成。下一步优先推进 `ADB-Run-12`，补齐端到端集群压测门禁。
 
 ### ADB-Runtime-03 实施口径
 
@@ -314,14 +314,14 @@ flowchart TB
 
 ## Runnable Cluster Hardening 阶段
 
-当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 12 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-10` 均已完成，`ADB-Run-11` 到 `ADB-Run-12` 追踪继续产品化到 TiDB-like 能力的缺口，本组阶段剩余数为 2。
+当前生产化路线图已经完成，`ADB-Run-*` 阶段专门追踪真实进程入口、启动命令、运行手册和端到端 smoke。当前规划 12 个可运行化阶段，`ADB-Run-01` 到 `ADB-Run-11` 均已完成，`ADB-Run-12` 追踪继续产品化到 TiDB-like 能力的缺口，本组阶段剩余数为 1。
 
 | 口径 | 数量 | 说明 |
 | --- | --- | --- |
-| 已完成可运行化阶段 | 10 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke；`ADB-Run-07` 已完成 SQL server 远端 Raft region scan smoke；`ADB-Run-08` 已完成 SQL server 远端 Raft region 写入 smoke；`ADB-Run-09` 已完成 SQL server 共享 catalog/TSO 原型；`ADB-Run-10` 已完成 SQL server 与 region node 自动编排原型。 |
+| 已完成可运行化阶段 | 11 | `ADB-Run-01` 已完成 main 包 ADB region node 产品入口验收；`ADB-Run-02` 已完成产品 main class OS 多进程 Raft/GRPC smoke；`ADB-Run-03` 已完成 SQL server 产品入口和 TCP/JDBC smoke；`ADB-Run-04` 已完成 runtime 发行包和双入口启动脚本；`ADB-Run-05` 已完成 runtime zip 解包后的脚本级 SQL/JDBC smoke；`ADB-Run-06` 已完成 runtime zip 解包后的 region node 脚本级多进程 Raft/GRPC smoke；`ADB-Run-07` 已完成 SQL server 远端 Raft region scan smoke；`ADB-Run-08` 已完成 SQL server 远端 region 写入 smoke；`ADB-Run-09` 已完成 SQL server 共享 catalog/TSO 原型；`ADB-Run-10` 已完成 SQL server 与 region node 自动编排原型；`ADB-Run-11` 已完成安装器与安全默认值模板。 |
 | 进行中可运行化阶段 | 0 | 当前没有进行中的 `ADB-Run-*` 阶段。 |
-| 未开始可运行化阶段 | 2 | `ADB-Run-11` 到 `ADB-Run-12` 尚未开始。 |
-| 剩余需完成可运行化阶段 | 2 | 新增可运行化产品阶段剩余 2 个。 |
+| 未开始可运行化阶段 | 1 | `ADB-Run-12` 尚未开始。 |
+| 剩余需完成可运行化阶段 | 1 | 新增可运行化产品阶段剩余 1 个。 |
 
 | 顺序 | 阶段 | 状态 | 目标 | 主要交付物 | 验收 |
 | --- | --- | --- | --- | --- | --- |
@@ -335,7 +335,7 @@ flowchart TB
 | 8 | ADB-Run-08 | 已完成 | SQL server 远端 region 写路径 | table-engine 远端 write 参数、Raft commit client 装配、SQL/JDBC 写后远端读 smoke | SQL 可显式 opt-in 把 INSERT 写入远端 region node，并通过远端 scan 读回 |
 | 9 | ADB-Run-09 | 已完成 | SQL server 共享 catalog/TSO 原型 | 表 id/epoch/catalog 快照、读写时间戳来源、显式参数收敛 | SQL 不再依赖手工 table id/readTs 参数完成读写闭环 |
 | 10 | ADB-Run-10 | 已完成 | SQL server 与 region node 自动编排 | peers/group 发现、runtime 配置生成、连接预检 | runtime 发行包可用一份集群配置启动 SQL 与 region 节点 |
-| 11 | ADB-Run-11 | 未开始 | 安装器与安全默认值 | 服务安装模板、认证/TLS 配置、最小权限启动 | 默认安全配置下 SQL/region smoke 通过 |
+| 11 | ADB-Run-11 | 已完成 | 安装器与安全默认值 | 服务安装模板、认证/TLS 配置、最小权限启动 | 默认安全配置下 SQL/region smoke 通过 |
 | 12 | ADB-Run-12 | 未开始 | 端到端集群压测门禁 | 长稳压测脚本、故障注入矩阵、发布报告 | 集群读写、故障恢复和滚动升级报告满足门禁 |
 
 ### ADB-Run-01 实施口径
@@ -495,6 +495,19 @@ flowchart TB
 
 - `AdbClusterOrchestrationConfigTest` 覆盖单配置生成 SQL/region/catal​​og 计划、写出 catalog 文件和重复 endpoint 预检拒绝。
 - `:vexra-adb:adbRuntimeDist` 已包含 `bin/adb-cluster-plan.bat`。
+
+### ADB-Run-11 实施口径
+
+`ADB-Run-11` 把安全默认值和安装模板固定到可测试边界：
+
+- 新增 `AdbSecureRuntimeConfig`，集中校验分布式部署必须同时开启 TLS、认证和最小权限，并生成 SQL/region 服务 JVM 安全参数。
+- 新增 `AdbSecureInstallPlan`，基于 Run-10 编排计划生成 SQL server 与 region node 的 systemd unit 模板和 Windows `sc.exe` 安装命令。
+- 模板包含服务用户、`ADB_SQL_SERVER_OPTS` / `ADB_REGION_NODE_OPTS`、TLS CA、节点证书、认证 token 文件、权限配置和 `NoNewPrivileges=true`。
+
+`ADB-Run-11` 已完成：
+
+- `AdbSecureInstallPlanTest` 覆盖关闭认证时拒绝分布式安全配置、生成 SQL/region systemd 模板和 Windows 服务命令。
+- 本阶段不签发证书、不实现真实用户权限系统，也不调用操作系统安装服务；这些由部署系统或后续产品化集成承接。
 
 ### ADB-Prod-03 当前进展
 

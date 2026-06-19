@@ -175,15 +175,15 @@ ADB-Runtime-01 through ADB-Runtime-11 in the current roadmap are complete. If on
 
 ### Current Phase Count Snapshot
 
-As of 2026-06-20, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-10`. Therefore, the current roadmap has 2 remaining phases to complete: `ADB-Run-11` through `ADB-Run-12`. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
+As of 2026-06-20, the plan has completed `ADB-Runtime-01` through `ADB-Runtime-11`, production phases `ADB-Prod-01` through `ADB-Prod-06`, and runnable hardening phases `ADB-Run-01` through `ADB-Run-11`. Therefore, the current roadmap has 1 remaining phase to complete: `ADB-Run-12`. If new phases are added later, this snapshot, the phase tables below, and the phase status notes must be updated together and committed locally.
 
 | Counting Scope | Remaining Phases | Current Status | Tracking Location |
 | --- | --- | --- | --- |
 | Runtime integration phases | 0 | `ADB-Runtime-01` through `ADB-Runtime-11` are complete | Kept as historical completion records |
 | Post-Runtime production phases | 0 | `ADB-Prod-01` through `ADB-Prod-06` are complete | See "Post-Runtime Production Phases" |
-| Runnable Cluster Hardening phases | 2 | `ADB-Run-01` through `ADB-Run-10` are complete; `ADB-Run-11` through `ADB-Run-12` continue to track TiDB-like productization gaps | See "Runnable Cluster Hardening Phases" |
+| Runnable Cluster Hardening phases | 1 | `ADB-Run-01` through `ADB-Run-11` are complete; `ADB-Run-12` continues to track TiDB-like productization gaps | See "Runnable Cluster Hardening Phases" |
 
-The roadmap now adds 5 runnable productization phases, and `ADB-Run-10` is complete. The next priority is `ADB-Run-11`, which adds installer templates, authentication/TLS, and secure defaults. The later phase covers the end-to-end cluster stress gate.
+The roadmap now adds 5 runnable productization phases, and `ADB-Run-11` is complete. The next priority is `ADB-Run-12`, which adds the end-to-end cluster stress gate.
 
 ### ADB-Runtime-03 Implementation Scope
 
@@ -312,14 +312,14 @@ The plan has no remaining production phases. Future phases should still follow t
 
 ## Runnable Cluster Hardening Phases
 
-The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 12 runnable hardening phases planned. `ADB-Run-01` through `ADB-Run-10` are complete, and `ADB-Run-11` through `ADB-Run-12` track the remaining productization gaps toward TiDB-like capability. The remaining count for this group is 2.
+The production roadmap is complete. `ADB-Run-*` phases track real process entry points, startup commands, runbooks, and end-to-end smoke coverage. There are currently 12 runnable hardening phases planned. `ADB-Run-01` through `ADB-Run-11` are complete, and `ADB-Run-12` tracks the remaining productization gap toward TiDB-like capability. The remaining count for this group is 1.
 
 | Counting Scope | Count | Notes |
 | --- | --- | --- |
-| Completed runnable hardening phases | 10 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke; `ADB-Run-07` has passed SQL server remote Raft region scan smoke; `ADB-Run-08` has passed SQL server remote Raft region write smoke; `ADB-Run-09` has passed the SQL server shared catalog/TSO prototype gate; `ADB-Run-10` has passed the SQL-server-to-region-node orchestration prototype gate. |
+| Completed runnable hardening phases | 11 | `ADB-Run-01` has passed acceptance for the main-package ADB region node product entry point; `ADB-Run-02` has passed product-main-class OS-level multi-process Raft/GRPC smoke; `ADB-Run-03` has passed the SQL server product entry point and TCP/JDBC smoke; `ADB-Run-04` has passed runtime distribution and dual-entry startup script acceptance; `ADB-Run-05` has passed runtime-zip extraction plus SQL/JDBC startup smoke through the packaged script; `ADB-Run-06` has passed runtime-zip extraction plus region-node script-level multi-process Raft/GRPC smoke; `ADB-Run-07` has passed SQL server remote Raft region scan smoke; `ADB-Run-08` has passed SQL server remote Raft region write smoke; `ADB-Run-09` has passed the SQL server shared catalog/TSO prototype gate; `ADB-Run-10` has passed the SQL-server-to-region-node orchestration prototype gate; `ADB-Run-11` has passed installer and secure-default template gates. |
 | Runnable hardening phases in progress | 0 | There are no `ADB-Run-*` phases currently in progress. |
-| Not-started runnable hardening phases | 2 | `ADB-Run-11` through `ADB-Run-12` are not started. |
-| Remaining runnable hardening phases | 2 | The newly added runnable productization phases have 2 phases remaining. |
+| Not-started runnable hardening phases | 1 | `ADB-Run-12` is not started. |
+| Remaining runnable hardening phases | 1 | The newly added runnable productization phases have 1 phase remaining. |
 
 | Order | Phase | Status | Goal | Main Deliverables | Acceptance |
 | --- | --- | --- | --- | --- | --- |
@@ -333,7 +333,7 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 | 8 | ADB-Run-08 | Done | SQL server remote region write path | table-engine remote write parameters, Raft commit client wiring, SQL/JDBC write-then-remote-read smoke | SQL can explicitly opt in to INSERT into remote region nodes and read the row back through remote scan |
 | 9 | ADB-Run-09 | Done | SQL server shared catalog/TSO prototype | table id/epoch/catalog snapshot, read/write timestamp source, reduced explicit parameters | SQL no longer depends on manual table id or readTs parameters for the read/write loop |
 | 10 | ADB-Run-10 | Done | Automatic SQL-server-to-region-node orchestration | peers/group discovery, runtime config generation, connection preflight | A runtime distribution can start SQL and region nodes from one cluster config |
-| 11 | ADB-Run-11 | Not started | Installer and secure defaults | service installation templates, auth/TLS config, least-privilege startup | SQL/region smoke passes with secure defaults |
+| 11 | ADB-Run-11 | Done | Installer and secure defaults | service installation templates, auth/TLS config, least-privilege startup | SQL/region smoke passes with secure defaults |
 | 12 | ADB-Run-12 | Not started | End-to-end cluster stress gate | long-running stress scripts, fault-injection matrix, release report | Cluster read/write, recovery, and rolling-upgrade reports meet the gate |
 
 ### ADB-Run-01 Implementation Scope
@@ -493,6 +493,19 @@ The production roadmap is complete. `ADB-Run-*` phases track real process entry 
 
 - `AdbClusterOrchestrationConfigTest` covers one-config SQL/region/catalog plan generation, catalog writing, and duplicate endpoint preflight rejection.
 - `:vexra-adb:adbRuntimeDist` now includes `bin/adb-cluster-plan.bat`.
+
+### ADB-Run-11 Implementation Scope
+
+`ADB-Run-11` fixes secure defaults and installer templates at a testable boundary:
+
+- Add `AdbSecureRuntimeConfig` to validate that distributed deployment enables TLS, authentication, and least privilege together, and to generate SQL/region JVM security options.
+- Add `AdbSecureInstallPlan` to generate SQL server and region node systemd unit templates plus Windows `sc.exe` installation commands from the Run-10 orchestration plan.
+- Templates include service user, `ADB_SQL_SERVER_OPTS` / `ADB_REGION_NODE_OPTS`, TLS CA, node certificates, authentication token file, privilege config, and `NoNewPrivileges=true`.
+
+`ADB-Run-11` is complete:
+
+- `AdbSecureInstallPlanTest` covers distributed security rejection when authentication is disabled, plus SQL/region systemd templates and Windows service commands.
+- This phase does not issue certificates, implement a real user privilege system, or call the operating system service installer. Those remain deployment-system or later productization integrations.
 
 ### ADB-Prod-03 Current Progress
 
