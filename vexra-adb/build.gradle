@@ -51,9 +51,20 @@ tasks.register('adbRegionNodeStartScripts', org.gradle.jvm.application.tasks.Cre
     exitEnvironmentVar = 'ADB_REGION_NODE_EXIT_CONSOLE'
 }
 
+tasks.register('adbClusterPlanStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-cluster-plan'
+    mainClassName = 'net.xdob.vexra.adb.AdbClusterPlanMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/cluster').get().asFile
+    optsEnvironmentVar = 'ADB_CLUSTER_PLAN_OPTS'
+    exitEnvironmentVar = 'ADB_CLUSTER_PLAN_EXIT_CONSOLE'
+}
+
 tasks.register('adbRuntimeDist', Zip) {
     dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
-        tasks.named('adbRegionNodeStartScripts')
+        tasks.named('adbRegionNodeStartScripts'),
+        tasks.named('adbClusterPlanStartScripts')
     archiveClassifier = 'runtime'
 
     into('lib') {
@@ -63,6 +74,7 @@ tasks.register('adbRuntimeDist', Zip) {
     into('bin') {
         from(tasks.named('adbSqlServerStartScripts'))
         from(tasks.named('adbRegionNodeStartScripts'))
+        from(tasks.named('adbClusterPlanStartScripts'))
         fileMode = 0755
     }
 }

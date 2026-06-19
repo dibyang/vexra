@@ -90,6 +90,14 @@ New-Item -ItemType Directory -Force .\build | Out-Null
 Expand-Archive -Force .\vexra-adb\build\distributions\vexra-adb-0.1.0-SNAPSHOT-runtime.zip .\build\adb-runtime
 ```
 
+自动编排计划入口：
+
+```powershell
+.\bin\adb-cluster-plan.bat --config .\run\cluster.properties --writeCatalog true
+```
+
+`cluster.properties` 同时描述 SQL Server、region nodes、Raft peers 和共享 catalog。命令会输出 `[preflight]`、`[catalog]`、`[sql]` 和 `[region]` 四段；其中 `[sql]` 与 `[region]` 是可执行启动命令，`--writeCatalog true` 会把 catalog properties 写到 `adb.cluster.catalog.path`。
+
 启动参数：
 
 | 参数 | 必填 | 说明 | 示例 |

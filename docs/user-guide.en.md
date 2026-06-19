@@ -90,6 +90,14 @@ New-Item -ItemType Directory -Force .\build | Out-Null
 Expand-Archive -Force .\vexra-adb\build\distributions\vexra-adb-0.1.0-SNAPSHOT-runtime.zip .\build\adb-runtime
 ```
 
+Automatic orchestration plan entry:
+
+```powershell
+.\bin\adb-cluster-plan.bat --config .\run\cluster.properties --writeCatalog true
+```
+
+`cluster.properties` describes SQL Server, region nodes, Raft peers, and the shared catalog together. The command prints `[preflight]`, `[catalog]`, `[sql]`, and `[region]` sections. The `[sql]` and `[region]` sections are executable startup commands, and `--writeCatalog true` writes catalog properties to `adb.cluster.catalog.path`.
+
 Startup parameters:
 
 | Parameter | Required | Description | Example |

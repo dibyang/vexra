@@ -85,6 +85,40 @@ String url = "jdbc:adb:ldb:D:/work/java2/vexra/work/quickstart/db;DB_CLOSE_DELAY
 
 ## 3. 启动 SQL Server
 
+也可以先用一份集群配置生成 SQL Server、region node 和 catalog 计划：
+
+```powershell
+@"
+adb.cluster.runtimeDir=D:/work/java2/vexra/build/adb-runtime
+adb.cluster.group=11111111-1111-1111-1111-111111111111
+adb.cluster.nodes=n1,n2,n3
+adb.cluster.sql.port=9123
+adb.cluster.sql.baseDir=D:/work/java2/vexra/build/adb-runtime/work/sql
+adb.cluster.sql.ready=D:/work/java2/vexra/build/adb-runtime/run/sql.ready
+adb.cluster.sql.stop=D:/work/java2/vexra/build/adb-runtime/run/sql.stop
+adb.cluster.catalog.path=D:/work/java2/vexra/build/adb-runtime/run/adb-catalog.properties
+adb.cluster.node.n1.host=127.0.0.1
+adb.cluster.node.n1.port=19001
+adb.cluster.node.n1.dataDir=D:/work/java2/vexra/build/adb-runtime/work/n1
+adb.cluster.node.n1.role=DATA_NODE
+adb.cluster.node.n2.host=127.0.0.1
+adb.cluster.node.n2.port=19002
+adb.cluster.node.n2.dataDir=D:/work/java2/vexra/build/adb-runtime/work/n2
+adb.cluster.node.n2.role=DATA_NODE
+adb.cluster.node.n3.host=127.0.0.1
+adb.cluster.node.n3.port=19003
+adb.cluster.node.n3.dataDir=D:/work/java2/vexra/build/adb-runtime/work/n3
+adb.cluster.node.n3.role=DATA_NODE
+adb.catalog.tso.readTs=20000
+adb.catalog.table.TEST.id=1
+adb.catalog.table.TEST.epoch=0
+"@ | Set-Content -Encoding UTF8 .\run\cluster.properties
+
+.\bin\adb-cluster-plan.bat --config .\run\cluster.properties --writeCatalog true
+```
+
+输出中的 `[sql]` 和 `[region]` 段就是可复制执行的启动命令。下面仍保留手工命令，便于逐步理解每个进程的参数。
+
 先准备目录：
 
 ```powershell

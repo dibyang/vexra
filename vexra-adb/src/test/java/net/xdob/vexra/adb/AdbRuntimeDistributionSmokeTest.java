@@ -28,6 +28,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -69,6 +70,19 @@ class AdbRuntimeDistributionSmokeTest {
       stopProcess(handle, stop);
       DbStoreEngine.close(databasePath);
     }
+  }
+
+  /**
+   * 验证 runtime zip 包含集群编排计划脚本。
+   *
+   * @throws Exception 解包失败时抛出
+   */
+  @Test
+  void shouldIncludeClusterPlanScriptInRuntimeDistribution() throws Exception {
+    Path runtimeDir = tempDir.resolve("runtime-plan-script");
+    extract(runtimeZip(), runtimeDir);
+
+    assertTrue(Files.exists(clusterPlanScript(runtimeDir)));
   }
 
   private RuntimeProcessHandle startSqlServerScript(Path runtimeDir, int port,
@@ -159,6 +173,11 @@ class AdbRuntimeDistributionSmokeTest {
 
   private static Path sqlServerScript(Path runtimeDir) {
     String name = isWindows() ? "adb-sql-server.bat" : "adb-sql-server";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path clusterPlanScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-cluster-plan.bat" : "adb-cluster-plan";
     return runtimeDir.resolve("bin").resolve(name);
   }
 
