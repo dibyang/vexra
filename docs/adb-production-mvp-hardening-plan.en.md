@@ -289,13 +289,15 @@ Illegal transitions:
 - `AdbPersistentDurableCommitRecorder` now writes markers under a dedicated `CF.TXN` prefix and can scan marker snapshots after store reopen.
 - `AdbCommitRecoveryExecutor` now connects `ROLLBACK`, `ROLL_FORWARD`, and `RETURN_COMMITTED` decisions to `DbStore.rollbackAsync/commitAsync` and recorder state advancement, closing the post-scan recovery execution loop.
 - `AdbStartupRecoveryService` now combines marker scanning, recovery decisions, and recovery execution into a synchronous startup recovery entrypoint; `DbStoreEngine` runs local marker recovery after opening a local LDB/Rocks store for the first time.
+- `AdbRemoteCommitRecoveryExecutor` now reuses `AdbRegionCommitClient` to rollback or roll forward remote Raft regions while using the same marker state machine; this path does not introduce a new disk format.
 - `AdbRegionCommitCoordinator` now advances marker state across single-region commit, 2PC prewrite, primary/secondary commit, and rollback paths, preserving recovery evidence such as `REPLIED`, `PREWRITTEN`, and `ROLLED_BACK`.
 - `AdbDurableCommitRecoveryTest` covers marker transitions, rollback rejection after RAFT_COMMITTED, rollback before raft commit, recovery-decision mapping, and idempotency conflicts.
 - `AdbDurableCommitRecoveryTest` also covers persistent marker scanning after reopen, duplicate commit idempotency, recovery-executor rollback / roll-forward / return-committed behavior, and the startup recovery service.
 - `AdbStartupRecoveryServiceTest` covers automatic RAFT_COMMITTED marker recovery when `DbStoreEngine.getOrCreate()` opens a store for the first time.
+- `AdbRemoteCommitRecoveryExecutorTest` covers remote marker rollback, roll-forward, and return-committed behavior through the region commit client.
 - `AdbRegionCommitCoordinatorTest` covers single-region success markers, rollback markers after prewrite failure, and primary-committed/secondary-in-doubt markers on the real coordinator path.
 
-This phase has not yet turned crash-injection plus kill/restart acceptance into release gates. Remote Raft commit markers still need a dedicated remote commit-client recovery executor. The next increment should add failure-injection and process-level acceptance.
+This phase has not yet turned crash-injection plus kill/restart acceptance into release gates. The next increment should add failure-injection and process-level acceptance.
 
 ## ADB-GA-03: Lightweight Control Plane
 
