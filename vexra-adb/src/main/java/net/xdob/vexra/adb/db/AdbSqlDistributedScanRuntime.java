@@ -10,15 +10,12 @@ import net.xdob.vexra.cluster.region.KeyRange;
 import net.xdob.vexra.cluster.region.RegionMetadata;
 import net.xdob.vexra.cluster.region.RegionRouter;
 import net.xdob.vexra.cluster.sql.DistributedPlan;
-import net.xdob.vexra.ha.ReplicaRole;
 import net.xdob.vexra.ha.VirtualNodeMetadata;
-import net.xdob.vexra.ha.VirtualNodeReplica;
 import org.h2.index.Cursor;
 import org.h2.result.Row;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -192,28 +189,27 @@ public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
     byte[] tableEnd = KeyCodec.prefixEnd(tableStart);
     List<RegionMetadata> regions = new ArrayList<>();
     Long splitRowId = config.getSplitRowId();
+    AdbSqlRegionReplicaSet replicas = config.isRaftScanClient()
+        ? AdbSqlRegionReplicaSet.parse(config.getRaftPeers())
+        : AdbSqlRegionReplicaSet.localDefault();
     if (splitRowId == null) {
       regions.add(region("r1", new KeyRange(tableStart,
-          normalizeEnd(tableEnd)), "sql-node-a", 1));
+          normalizeEnd(tableEnd)), replicas.leaderId(0), 1, replicas));
     } else {
       byte[] splitKey = RowKey.of(tabId, splitRowId).toBytes();
       regions.add(region("r1", new KeyRange(tableStart, splitKey),
-          "sql-node-a", 1));
+          replicas.leaderId(0), 1, replicas));
       regions.add(region("r2", new KeyRange(splitKey,
-          normalizeEnd(tableEnd)), "sql-node-b", 1));
+          normalizeEnd(tableEnd)), replicas.leaderId(1), 1, replicas));
     }
     return new RegionRouter(regions);
   }
 
   private RegionMetadata region(String regionId, KeyRange range,
-      String leaderId, long epoch) {
+      String leaderId, long epoch, AdbSqlRegionReplicaSet replicas) {
     return new RegionMetadata(regionId, range, epoch,
         new VirtualNodeMetadata("vn-" + regionId, epoch, leaderId,
-            Arrays.asList(
-                new VirtualNodeReplica("sql-node-a", ReplicaRole.DATA_VOTER),
-                new VirtualNodeReplica("sql-node-b", ReplicaRole.DATA_VOTER),
-                new VirtualNodeReplica("sql-witness", ReplicaRole.WITNESS_VOTER)),
-            0, 0, 0));
+            replicas.replicas(), 0, 0, 0));
   }
 
   private static ScanTarget scanTarget(DbStore store,
