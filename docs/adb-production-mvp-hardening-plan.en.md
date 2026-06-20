@@ -622,8 +622,9 @@ sequenceDiagram
 
 - Added `AdbDiagnosticBundle` and `AdbDiagnosticBundleWriter` to write a stable UTF-8 diagnostic bundle and redact sensitive config keys containing `password`, `token`, `secret`, `private`, `credential`, `tls`, `cert`, or `privilege`.
 - Added the `adb-doctor` runtime command entry point `AdbDoctorMain`. The current command reads the same properties file used by `adb-cluster-plan`, runs `AdbClusterPreflightChecker`, and writes redacted config, version information, preflight results, and doctor metrics. It does not start nodes, connect to the business database, or modify data directories.
-- `adbRuntimeDist` now includes the `adb-doctor` script. `AdbDiagnosticBundleWriterTest` covers redaction, `AdbDoctorMainTest` covers bundle generation through the main method, and `AdbRuntimeDistributionSmokeTest` covers the runtime zip script.
-- Later GA-06 work still needs to feed real runtime system tables, slow/failed SQL summaries, log tails, and latest lock resolve / GC / backup / restore / upgrade results into the same bundle.
+- `adb-doctor` supports `--logs path1,path2` and `--logTailLines n` to collect key log tails. Missing log files are recorded in the bundle instead of failing the whole diagnostic run.
+- `adbRuntimeDist` now includes the `adb-doctor` script. `AdbDiagnosticBundleWriterTest` covers redaction, `AdbDiagnosticLogTailerTest` covers log tailing, `AdbDoctorMainTest` covers bundle generation through the main method, and `AdbRuntimeDistributionSmokeTest` covers the runtime zip script.
+- Later GA-06 work still needs to feed real runtime system tables, slow/failed SQL summaries, automatic log discovery, and latest lock resolve / GC / backup / restore / upgrade results into the same bundle.
 
 ## ADB-GA-07: Release Gate and Trial Production
 

@@ -5,6 +5,7 @@ import net.xdob.vexra.adb.db.AdbClusterPreflightChecker;
 import net.xdob.vexra.adb.db.AdbClusterPreflightReport;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundle;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundleWriter;
+import net.xdob.vexra.adb.db.AdbDiagnosticLogTailer;
 
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -38,7 +39,8 @@ public final class AdbDoctorMain {
    * @param args `--config path --output dir`，可选 `--bundleId id`、
    *             `--version version`、`--h2dbVersion version`、
    *             `--ldbVersion version`、`--strictFiles true|false` 和
-   *             `--checkRuntimeScripts true|false`
+   *             `--checkRuntimeScripts true|false`、`--logs path1,path2`、
+   *             `--logTailLines n`
    * @throws Exception 配置读取、预检或写入失败时抛出
    */
   public static void main(String[] args) throws Exception {
@@ -61,6 +63,7 @@ public final class AdbDoctorMain {
         AdbDiagnosticBundleWriter.redact(properties),
         operations(preflight, configPath),
         metrics(preflight),
+        logTails(values),
         lines(preflight.render()),
         Collections.singletonList("offline diagnostic bundle"));
     Path file = new AdbDiagnosticBundleWriter().write(bundle, outputDir);
@@ -100,6 +103,27 @@ public final class AdbDoctorMain {
     return metrics;
   }
 
+  private static Map<String, List<String>> logTails(Map<String, String> values)
+      throws Exception {
+    String logs = values.get("logs");
+    if (logs == null || logs.trim().isEmpty()) {
+      return Collections.emptyMap();
+    }
+    int maxLines = intValue(values.get("logTailLines"), 200);
+    return new AdbDiagnosticLogTailer().tail(paths(logs), maxLines);
+  }
+
+  private static List<Path> paths(String csv) {
+    java.util.ArrayList<Path> paths = new java.util.ArrayList<>();
+    for (String item : csv.split(",")) {
+      String text = item.trim();
+      if (!text.isEmpty()) {
+        paths.add(Paths.get(text));
+      }
+    }
+    return paths;
+  }
+
   private static List<String> lines(String text) {
     return Arrays.asList(text.split("\\R"));
   }
@@ -125,6 +149,11 @@ public final class AdbDoctorMain {
 
   private static boolean bool(String value, boolean defaultValue) {
     return value == null ? defaultValue : Boolean.parseBoolean(value);
+  }
+
+  private static int intValue(String value, int defaultValue) {
+    return value == null || value.trim().isEmpty()
+        ? defaultValue : Integer.parseInt(value.trim());
   }
 
   private static String valueOrDefault(String value, String defaultValue) {

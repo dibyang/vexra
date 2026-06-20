@@ -44,6 +44,7 @@ public final class AdbDiagnosticBundleWriter {
       writeSection(writer, "config", bundle.getRedactedConfig());
       writeSection(writer, "operations", bundle.getOperations());
       writeNumberSection(writer, "metrics", bundle.getMetrics());
+      writeLogTails(writer, bundle.getLogTails());
       writeLines(writer, "preflight", bundle.getPreflightLines());
       writeLines(writer, "notes", bundle.getNotes());
     }
@@ -135,6 +136,21 @@ public final class AdbDiagnosticBundleWriter {
     for (String line : lines) {
       writer.write(safe(line));
       writer.newLine();
+    }
+  }
+
+  private static void writeLogTails(BufferedWriter writer,
+      Map<String, java.util.List<String>> logTails) throws IOException {
+    writer.write("[logTails]");
+    writer.newLine();
+    for (Map.Entry<String, java.util.List<String>> entry
+        : logTails.entrySet()) {
+      writer.write("--- " + safe(entry.getKey()));
+      writer.newLine();
+      for (String line : entry.getValue()) {
+        writer.write(safe(line));
+        writer.newLine();
+      }
     }
   }
 

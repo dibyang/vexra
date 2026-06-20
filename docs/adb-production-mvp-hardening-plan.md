@@ -622,8 +622,9 @@ sequenceDiagram
 
 - 新增 `AdbDiagnosticBundle` 和 `AdbDiagnosticBundleWriter`，以稳定 UTF-8 文本写出诊断包，并对 `password`、`token`、`secret`、`private`、`credential`、`tls`、`cert`、`privilege` 等敏感配置 key 进行脱敏。
 - 新增 `adb-doctor` runtime 命令入口 `AdbDoctorMain`。当前入口读取 `adb-cluster-plan` 同源 properties 配置，执行 `AdbClusterPreflightChecker`，输出脱敏配置、版本信息、preflight 结果和 doctor 自身指标，不启动节点、不连接业务库、不修改数据目录。
-- `adbRuntimeDist` 已包含 `adb-doctor` 脚本；`AdbDiagnosticBundleWriterTest` 覆盖脱敏输出，`AdbDoctorMainTest` 覆盖 main 方法生成诊断包，`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中的 doctor 脚本。
-- 后续 GA-06 仍需把真实运行时 system table、慢 SQL/失败 SQL 摘要、关键日志尾部、lock resolve / GC / backup / restore / upgrade 最近结果接入同一个诊断包。
+- `adb-doctor` 支持 `--logs path1,path2` 与 `--logTailLines n` 采集关键日志尾部；日志文件缺失时写入缺失说明而不让整个诊断包失败。
+- `adbRuntimeDist` 已包含 `adb-doctor` 脚本；`AdbDiagnosticBundleWriterTest` 覆盖脱敏输出，`AdbDiagnosticLogTailerTest` 覆盖日志 tail，`AdbDoctorMainTest` 覆盖 main 方法生成诊断包，`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中的 doctor 脚本。
+- 后续 GA-06 仍需把真实运行时 system table、慢 SQL/失败 SQL 摘要、自动日志发现、lock resolve / GC / backup / restore / upgrade 最近结果接入同一个诊断包。
 
 ## ADB-GA-07：发布门禁与试生产
 

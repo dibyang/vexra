@@ -46,6 +46,8 @@ class AdbDiagnosticBundleWriterTest {
         AdbDiagnosticBundleWriter.redact(properties),
         Collections.singletonMap("preflightPassed", "true"),
         metrics,
+        Collections.singletonMap("sql.log",
+            Arrays.asList("line-2", "line-3")),
         Arrays.asList("PASS", "OK topology=2data1witness"),
         Collections.singletonList("unit test"));
 
@@ -59,6 +61,8 @@ class AdbDiagnosticBundleWriterTest {
     assertTrue(text.contains("adb.security.tls.cert=<redacted>"));
     assertTrue(text.contains(
         "adb.cluster.node.n1.privilegeConfig=<redacted>"));
+    assertTrue(text.contains("--- sql.log"));
+    assertTrue(text.contains("line-3"));
     assertFalse(text.contains("token-value"));
     assertFalse(text.contains("cert-value"));
     assertFalse(text.contains("secret-privileges.json"));

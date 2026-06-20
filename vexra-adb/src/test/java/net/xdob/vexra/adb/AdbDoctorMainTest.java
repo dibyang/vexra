@@ -29,6 +29,9 @@ class AdbDoctorMainTest {
   @Test
   void shouldGenerateRedactedBundle() throws Exception {
     Path config = writeClusterConfig();
+    Path log = tempDir.resolve("sql.log");
+    Files.write(log, java.util.Arrays.asList("line-1", "line-2", "line-3"),
+        StandardCharsets.UTF_8);
     Path output = tempDir.resolve("doctor-output");
 
     AdbDoctorMain.main(new String[] {
@@ -38,7 +41,9 @@ class AdbDoctorMainTest {
         "--version", "test-version",
         "--h2dbVersion", "2.3.0",
         "--ldbVersion", "0.6.0",
-        "--checkRuntimeScripts", "false"
+        "--checkRuntimeScripts", "false",
+        "--logs", log.toString(),
+        "--logTailLines", "2"
     });
 
     Path file = output.resolve(AdbDiagnosticBundleWriter.BUNDLE_FILE);
@@ -51,6 +56,10 @@ class AdbDoctorMainTest {
     assertTrue(text.contains("PASS"));
     assertTrue(text.contains("preflightPassed=true"));
     assertTrue(text.contains("adb.security.token=<redacted>"));
+    assertTrue(text.contains("--- " + log.toAbsolutePath()));
+    assertFalse(text.contains("line-1"));
+    assertTrue(text.contains("line-2"));
+    assertTrue(text.contains("line-3"));
     assertFalse(text.contains("token-secret"));
   }
 

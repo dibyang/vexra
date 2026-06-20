@@ -23,6 +23,7 @@ public final class AdbDiagnosticBundle {
   private final Map<String, String> redactedConfig;
   private final Map<String, String> operations;
   private final Map<String, Number> metrics;
+  private final Map<String, List<String>> logTails;
   private final List<String> preflightLines;
   private final List<String> notes;
 
@@ -37,14 +38,15 @@ public final class AdbDiagnosticBundle {
    * @param redactedConfig 已脱敏配置
    * @param operations 运行时操作快照
    * @param metrics 指标快照
+   * @param logTails 关键日志尾部，key 为日志标识或路径
    * @param preflightLines 预检文本行
    * @param notes 诊断备注
    */
   public AdbDiagnosticBundle(String bundleId, long generatedAtMillis,
       String productVersion, String h2dbVersion, String ldbVersion,
       Map<String, String> redactedConfig, Map<String, String> operations,
-      Map<String, Number> metrics, List<String> preflightLines,
-      List<String> notes) {
+      Map<String, Number> metrics, Map<String, List<String>> logTails,
+      List<String> preflightLines, List<String> notes) {
     this.bundleId = requireText(bundleId, "bundleId");
     this.generatedAtMillis = generatedAtMillis;
     this.productVersion = textOrUnknown(productVersion);
@@ -53,6 +55,7 @@ public final class AdbDiagnosticBundle {
     this.redactedConfig = immutableSortedMap(redactedConfig, "redactedConfig");
     this.operations = immutableSortedMap(operations, "operations");
     this.metrics = immutableSortedNumberMap(metrics, "metrics");
+    this.logTails = immutableSortedListMap(logTails, "logTails");
     this.preflightLines = immutableList(preflightLines, "preflightLines");
     this.notes = immutableList(notes, "notes");
   }
@@ -89,6 +92,10 @@ public final class AdbDiagnosticBundle {
     return metrics;
   }
 
+  public Map<String, List<String>> getLogTails() {
+    return logTails;
+  }
+
   public List<String> getPreflightLines() {
     return preflightLines;
   }
@@ -107,6 +114,17 @@ public final class AdbDiagnosticBundle {
       Map<String, Number> source, String fieldName) {
     Objects.requireNonNull(source, fieldName + " == null");
     return Collections.unmodifiableMap(new TreeMap<>(source));
+  }
+
+  private static Map<String, List<String>> immutableSortedListMap(
+      Map<String, List<String>> source, String fieldName) {
+    Objects.requireNonNull(source, fieldName + " == null");
+    Map<String, List<String>> copy = new TreeMap<>();
+    for (Map.Entry<String, List<String>> entry : source.entrySet()) {
+      copy.put(entry.getKey(), immutableList(entry.getValue(),
+          fieldName + "." + entry.getKey()));
+    }
+    return Collections.unmodifiableMap(copy);
   }
 
   private static List<String> immutableList(List<String> source,
