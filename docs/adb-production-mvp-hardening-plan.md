@@ -503,6 +503,8 @@ sequenceDiagram
 - 新增 `AdbBackupSafePointRegistry` 和 `AdbBackupSafePoint`，备份任务可在运行期注册需要保护的读取时间戳，并在备份完成后释放。
 - `AdbGlobalSafePointAdvancer` 已把备份 safe point 与活跃事务 startTs 一起作为 GC 推进上界；候选 safe point 达到或越过任一备份保护点时，本轮推进会被保守阻塞。
 - `AdbGlobalSafePointAdvancerTest` 已覆盖备份保护点注册、更新、释放、阻塞推进和释放后继续推进。
+- 新增 `AdbTransactionProductionGate` 与 `AdbTransactionProductionReport`，把单 region 提交、跨 region 默认拒绝、冲突 SQLState、lock resolve rollback/roll-forward/幂等、active/backup safe point 保护和 GC 保留最新版本聚合成 GA-04 结构化 release gate 输入；该门禁只校验证据完整性，真实执行器仍由 JUnit、多进程演练和 release profile 负责产出报告。
+- `AdbTransactionProductionGateTest` 覆盖完整报告通过、跨 region guard 缺失失败、lock resolve 证据不完整失败、safe point/GC 保护缺失失败。
 
 ## ADB-GA-05：安装与运维产品化
 

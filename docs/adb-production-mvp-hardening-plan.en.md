@@ -503,6 +503,8 @@ sequenceDiagram
 - Add `AdbBackupSafePointRegistry` and `AdbBackupSafePoint`, allowing backup jobs to register the read timestamp that must be protected and release it when the backup finishes.
 - `AdbGlobalSafePointAdvancer` now treats backup safe points and active transaction start timestamps as GC-advance upper bounds. When the candidate safe point reaches or crosses any backup protection point, the advance is conservatively blocked.
 - `AdbGlobalSafePointAdvancerTest` covers backup protection registration, update, release, blocked advance, and advance after release.
+- Add `AdbTransactionProductionGate` and `AdbTransactionProductionReport`, aggregating single-region commit, default cross-region rejection, conflict SQLState, lock resolve rollback/roll-forward/idempotency, active/backup safe-point protection, and GC latest-version retention into structured GA-04 release-gate input. This gate only validates evidence completeness; the real executor still comes from JUnit, multi-process drills, and release-profile report generation.
+- `AdbTransactionProductionGateTest` covers a complete report passing, missing cross-region guard failing, incomplete lock-resolve evidence failing, and missing safe-point / GC protection failing.
 
 ## ADB-GA-05: Install and Operations Productization
 
