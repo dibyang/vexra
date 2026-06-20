@@ -179,6 +179,19 @@ Validation reads config and control-plane snapshots only. It must not modify bus
 - Compatibility tests: old `jdbc:adb:*` single-node URL remains unchanged.
 - Documentation tests: production-mode quickstart config can be parsed.
 
+### Current Implementation Status
+
+`ADB-GA-01` has completed its first runtime-boundary increment:
+
+- `AdbProductionMode` defines the `single`, `mvp-cluster`, and `experimental` runtime modes.
+- `AdbProductionTopologyKind` defines the `single`, `2data1witness`, `shared-storage`, and `pure-2data` topology categories.
+- `AdbProductionCapability` separates local SQL, distributed SQL, single-region transactions, backup/restore, and rolling upgrade from experimental capabilities such as cross-region transactions, follower read, and automatic split/merge.
+- `AdbProductionGuard` rejects requests based on production mode, topology, security switches, and experimental opt-in. Its default single-node guard keeps old `jdbc:adb:*` local behavior.
+- `AdbUnsupportedProductionFeatureException` provides stable SQLState `ADB01` and error code `7101` for later SQL/transaction mapping.
+- `AdbProductionGuardTest` covers single-node compatibility, 2 data + witness production allow, missing secure-default rejection, pure 2-data rejection, default cross-region rejection, and experimental opt-in.
+
+This phase has not yet wired the guard into every real SQL/transaction entrypoint. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
+
 ## ADB-GA-02: Data Safety Closure
 
 ### Goals

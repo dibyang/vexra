@@ -179,6 +179,19 @@ sequenceDiagram
 - 兼容测试：旧 `jdbc:adb:*` 单机 URL 不受影响。
 - 文档测试：quickstart 中的生产模式配置能被 parser 读取。
 
+### 当前实现状态
+
+`ADB-GA-01` 已完成第一轮运行时边界实现：
+
+- `AdbProductionMode` 定义 `single`、`mvp-cluster` 和 `experimental` 三种生产运行模式。
+- `AdbProductionTopologyKind` 定义 `single`、`2data1witness`、`shared-storage` 和 `pure-2data` 拓扑分类。
+- `AdbProductionCapability` 将本地 SQL、分布式 SQL、单 region 事务、备份恢复、滚动升级与跨 region 事务、follower read、自动 split/merge 等实验能力分开。
+- `AdbProductionGuard` 根据生产模式、拓扑、安全开关和实验开关执行统一拒绝；默认单机 guard 保持旧 `jdbc:adb:*` 本地行为。
+- `AdbUnsupportedProductionFeatureException` 提供稳定 SQLState `ADB01` 和错误码 `7101`，便于后续 SQL/事务入口统一映射。
+- `AdbProductionGuardTest` 覆盖单机兼容、2 data + witness 生产放行、缺安全默认值拒绝、纯 2 data 拒绝、跨 region 默认拒绝和实验 opt-in。
+
+本阶段尚未把 guard 接入所有 SQL/事务真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
+
 ## ADB-GA-02：数据安全闭环
 
 ### 目标
