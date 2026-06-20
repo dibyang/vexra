@@ -612,6 +612,8 @@ sequenceDiagram
 | --- | --- |
 | `AdbReleaseEvidence` | 汇总 release id、版本、端到端报告、门禁评估、执行命令和 checksum |
 | `AdbReleaseEvidenceWriter` | 将 release evidence 写入固定文件，供 CI、人工审计和试生产准入复核 |
+| `AdbReleaseProfileRunner` | 执行端到端 release gate 评估，构造 evidence，并把结果写入归档目录 |
+| `AdbReleaseProfileResult` | 返回 release profile 是否通过、evidence 文件路径和失败原因 |
 
 `AdbReleaseEvidenceWriter` 第一版输出 `release-evidence.properties`，字段至少包含：
 
@@ -630,6 +632,15 @@ sequenceDiagram
 - 输出目录不存在时自动创建；路径已存在但不是目录时失败。
 - 同一 `releaseId` 重跑会覆盖同名 evidence 文件，避免产生冲突副本；上层 CI 可在归档前移动旧目录。
 - evidence 文件只写结构化摘要，不直接包含 token、私钥或密码；详细日志由后续 diagnostic bundle 归档。
+- `AdbReleaseProfileRunner` 在门禁失败时也必须写 evidence 文件；CI 根据 `AdbReleaseProfileResult.passed` 决定是否阻断发布。
+
+### Release Profile 流程
+
+1. 长稳/故障注入平台生成 `AdbEndToEndClusterStressReport`。
+2. 发布配置提供 `AdbLongRunAcceptanceCriteria`、release id、版本、命令和 checksum。
+3. `AdbReleaseProfileRunner` 调用 `AdbEndToEndClusterStressGate` 得到最终评估。
+4. runner 构造 `AdbReleaseEvidence` 并调用 `AdbReleaseEvidenceWriter` 写入 evidence 目录。
+5. runner 返回 `AdbReleaseProfileResult`；失败时保留 evidence 并阻断发布。
 
 ### 试生产准入
 

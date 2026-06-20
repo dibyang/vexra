@@ -612,6 +612,8 @@ sequenceDiagram
 | --- | --- |
 | `AdbReleaseEvidence` | Aggregate release id, version, end-to-end report, gate evaluation, executed commands, and checksums |
 | `AdbReleaseEvidenceWriter` | Write release evidence to a stable file for CI, manual audit, and trial-production entry review |
+| `AdbReleaseProfileRunner` | Run the end-to-end release gate, build evidence, and archive the result |
+| `AdbReleaseProfileResult` | Return whether the release profile passed, the evidence file path, and failure reasons |
 
 The first `AdbReleaseEvidenceWriter` output is `release-evidence.properties`
 with at least these fields:
@@ -631,6 +633,15 @@ Failure handling and rollback:
 - Create the output directory when it does not exist; fail when the path exists but is not a directory.
 - Re-running the same `releaseId` overwrites the same evidence file to avoid conflicting copies; CI can move the old directory before archiving.
 - Evidence files store structured summaries only and must not directly include tokens, private keys, or passwords; detailed logs belong to the later diagnostic bundle.
+- `AdbReleaseProfileRunner` must write the evidence file even when the gate fails; CI blocks release based on `AdbReleaseProfileResult.passed`.
+
+### Release Profile Flow
+
+1. The soak/failure-injection platform produces an `AdbEndToEndClusterStressReport`.
+2. Release configuration provides `AdbLongRunAcceptanceCriteria`, release id, version, commands, and checksums.
+3. `AdbReleaseProfileRunner` calls `AdbEndToEndClusterStressGate` to produce the final evaluation.
+4. The runner builds `AdbReleaseEvidence` and calls `AdbReleaseEvidenceWriter` to write the evidence directory.
+5. The runner returns `AdbReleaseProfileResult`; failures keep the evidence and block release.
 
 ### Trial-Production Entry
 
