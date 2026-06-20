@@ -17,7 +17,11 @@ import net.xdob.vexra.adb.db.AdbRecoveryDrillResult;
 import net.xdob.vexra.adb.db.AdbRecoveryDrillScenario;
 import net.xdob.vexra.adb.db.AdbReleaseProfileResult;
 import net.xdob.vexra.adb.db.AdbReleaseProfileRunner;
+import net.xdob.vexra.adb.db.AdbTrialProductionAdmissionGate;
+import net.xdob.vexra.adb.db.AdbTrialProductionAdmissionReport;
+import net.xdob.vexra.adb.db.AdbTrialProductionAdmissionWriter;
 
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -52,6 +56,10 @@ public final class AdbReleaseProfileMain {
       System.out.println("releaseProfile.passed=" + result.isPassed());
       System.out.println("releaseProfile.evidenceFile="
           + result.getEvidenceFile());
+      if (result.getTrialAdmissionFile() != null) {
+        System.out.println("releaseProfile.trialAdmissionFile="
+            + result.getTrialAdmissionFile());
+      }
       if (!result.isPassed()) {
         System.err.println("releaseProfile.failureReasons="
             + result.getFailureReasons());
@@ -82,7 +90,28 @@ public final class AdbReleaseProfileMain {
             list(values, "commands", "adb-release-profile"),
             list(values, "checksums", "none=not-provided"),
             Paths.get(require(values, "output")));
-    return new AdbReleaseProfileRunner().run(request);
+    AdbReleaseProfileResult result = new AdbReleaseProfileRunner().run(request);
+    Path admissionFile = writeTrialAdmission(values, result);
+    return new AdbReleaseProfileResult(result.getEvaluation(),
+        result.getEvidenceFile(), admissionFile);
+  }
+
+  private static Path writeTrialAdmission(Map<String, String> values,
+      AdbReleaseProfileResult result) throws Exception {
+    AdbTrialProductionAdmissionReport report =
+        new AdbTrialProductionAdmissionReport(
+            require(values, "releaseId"),
+            require(values, "version"),
+            result.isPassed(),
+            bool(values, "trialDataScaleAccepted", false),
+            bool(values, "trialRollbackPlanReady", false),
+            bool(values, "trialAlertingReady", false),
+            bool(values, "trialOnCallWindowReady", false),
+            bool(values, "trialKnownLimitationsAccepted", false),
+            value(values, "trialNotes", ""));
+    return new AdbTrialProductionAdmissionWriter().write(
+        Paths.get(require(values, "output")), report,
+        new AdbTrialProductionAdmissionGate().evaluate(report));
   }
 
   private static AdbEndToEndClusterStressReport report(

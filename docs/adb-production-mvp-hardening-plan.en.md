@@ -665,6 +665,9 @@ sequenceDiagram
 | `AdbReleaseProfileResult` | Return whether the release profile passed, the evidence file path, and failure reasons |
 | `AdbReleaseProfileMain` | Command-line entrypoint that accepts release parameters and runs `AdbReleaseProfileRunner` |
 | Gradle `adbReleaseProfile` | Build entrypoint that writes default release evidence and fails the build when the gate fails |
+| `AdbTrialProductionAdmissionReport` | Summarize trial-production admission items: data scale, rollback plan, alerting, on-call window, and known-limitation acceptance |
+| `AdbTrialProductionAdmissionGate` | Evaluate human admission items after the release gate passes |
+| `AdbTrialProductionAdmissionWriter` | Write `trial-production-admission.properties` for CI, doctor, and human approval review |
 
 The first `AdbReleaseEvidenceWriter` output is `release-evidence.properties`
 with at least these fields:
@@ -706,6 +709,21 @@ output directory, verification commands, and checksum summary with
 `-PadbReleaseId`, `-PadbReleaseOutput`, `-PadbReleaseCommands`, and
 `-PadbReleaseChecksums`.
 
+`AdbReleaseProfileMain` also writes a trial-production admission file. Trial items
+default to false and must be explicitly confirmed by CI or human approval:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbReleaseProfile `
+  -PadbReleaseId=rel-001 `
+  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001
+```
+
+Direct CLI invocation can pass `--trialDataScaleAccepted`,
+`--trialRollbackPlanReady`, `--trialAlertingReady`, `--trialOnCallWindowReady`,
+`--trialKnownLimitationsAccepted`, and `--trialNotes` to generate a passing or
+failing `trial-production-admission.properties`. If the release gate fails, the
+admission file is still written and includes `release gate did not pass`.
+
 ### Trial-Production Entry
 
 | Item | Requirement |
@@ -716,12 +734,28 @@ output directory, verification commands, and checksum summary with
 | Coverage | First trial-production window has human coverage |
 | Known limits | Users accept no large cross-region transactions and no complex online DDL |
 
+`trial-production-admission.properties` contains at least:
+
+| Field | Meaning |
+| --- | --- |
+| `releaseId` / `version` | Release or trial-production batch |
+| `admitted` | Final trial-production admission result |
+| `failureReasons` | Reasons for non-admission |
+| `releaseGatePassed` | Whether the release gate passed |
+| `dataScaleAccepted` | Whether data scale and business scope are controlled |
+| `rollbackPlanReady` | Whether rollback is ready |
+| `alertingReady` | Whether alerting is ready |
+| `onCallWindowReady` | Whether the on-call window is ready |
+| `knownLimitationsAccepted` | Whether known limitations are accepted |
+| `notes` | Human notes |
+
 ### Tests
 
 - Add a CI release profile.
 - Soak test emits a structured report and reuses `AdbEndToEndClusterStressGate`.
 - Failure injection saves logs, metrics, and recovery result; commit crash-injection must cover every injection point defined by GA-02.
 - Every release uses `AdbReleaseEvidenceWriter` to create a release evidence directory with commands, versions, reports, gate result, and checksums.
+- Every trial-production entry generates an admission file through `AdbTrialProductionAdmissionGate`; trial production is not allowed unless all human admission items are explicitly confirmed.
 
 ## Recommended Implementation Order
 

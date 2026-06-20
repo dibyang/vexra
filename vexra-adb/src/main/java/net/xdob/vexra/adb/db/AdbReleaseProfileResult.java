@@ -14,6 +14,7 @@ import java.util.Objects;
 public final class AdbReleaseProfileResult {
   private final AdbLongRunStressEvaluation evaluation;
   private final Path evidenceFile;
+  private final Path trialAdmissionFile;
 
   /**
    * 创建 release profile 执行结果。
@@ -23,10 +24,23 @@ public final class AdbReleaseProfileResult {
    */
   public AdbReleaseProfileResult(AdbLongRunStressEvaluation evaluation,
       Path evidenceFile) {
+    this(evaluation, evidenceFile, null);
+  }
+
+  /**
+   * 创建 release profile 执行结果。
+   *
+   * @param evaluation release gate 评估结果
+   * @param evidenceFile 已写入的 evidence 文件路径
+   * @param trialAdmissionFile 已写入的试生产准入文件路径；未生成时为 null
+   */
+  public AdbReleaseProfileResult(AdbLongRunStressEvaluation evaluation,
+      Path evidenceFile, Path trialAdmissionFile) {
     this.evaluation = Objects.requireNonNull(evaluation,
         "evaluation == null");
     this.evidenceFile = Objects.requireNonNull(evidenceFile,
         "evidenceFile == null");
+    this.trialAdmissionFile = trialAdmissionFile;
   }
 
   public boolean isPassed() {
@@ -39,5 +53,13 @@ public final class AdbReleaseProfileResult {
 
   public Path getEvidenceFile() {
     return evidenceFile;
+  }
+
+  public AdbLongRunStressEvaluation getEvaluation() {
+    return evaluation;
+  }
+
+  public Path getTrialAdmissionFile() {
+    return trialAdmissionFile;
   }
 }

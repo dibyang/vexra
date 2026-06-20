@@ -665,6 +665,9 @@ sequenceDiagram
 | `AdbReleaseProfileResult` | 返回 release profile 是否通过、evidence 文件路径和失败原因 |
 | `AdbReleaseProfileMain` | 命令行入口，接收 release 参数并执行 `AdbReleaseProfileRunner` |
 | Gradle `adbReleaseProfile` | 构建入口，生成默认 release evidence 并在门禁失败时失败构建 |
+| `AdbTrialProductionAdmissionReport` | 汇总试生产准入项：数据规模、回滚预案、告警、值守窗口和已知限制确认 |
+| `AdbTrialProductionAdmissionGate` | 在 release gate 通过后继续评估试生产人工准入项 |
+| `AdbTrialProductionAdmissionWriter` | 写入 `trial-production-admission.properties`，供 CI、doctor 和人工审批复核 |
 
 `AdbReleaseEvidenceWriter` 第一版输出 `release-evidence.properties`，字段至少包含：
 
@@ -703,6 +706,20 @@ Gradle 入口：
 `-PadbReleaseId`、`-PadbReleaseOutput`、`-PadbReleaseCommands` 和
 `-PadbReleaseChecksums` 覆盖批次号、输出目录、验证命令和 checksum 摘要。
 
+`AdbReleaseProfileMain` 会同时生成试生产准入文件。试生产项默认全部为 false，必须由 CI
+或人工审批显式传入：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbReleaseProfile `
+  -PadbReleaseId=rel-001 `
+  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001
+```
+
+命令行直接调用时可使用 `--trialDataScaleAccepted`、`--trialRollbackPlanReady`、
+`--trialAlertingReady`、`--trialOnCallWindowReady`、`--trialKnownLimitationsAccepted`
+和 `--trialNotes` 生成通过或失败的 `trial-production-admission.properties`。release gate
+失败时 admission 也会写出，并包含 `release gate did not pass` 原因。
+
 ### 试生产准入
 
 | 项 | 要求 |
@@ -713,12 +730,28 @@ Gradle 入口：
 | 值守 | 首批试生产需要人工值守窗口 |
 | 已知限制 | 用户明确接受不支持跨 region 大事务、复杂在线 DDL 等限制 |
 
+`trial-production-admission.properties` 字段至少包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `releaseId` / `version` | 发布或试生产批次 |
+| `admitted` | 试生产准入最终结果 |
+| `failureReasons` | 未准入原因 |
+| `releaseGatePassed` | release gate 是否通过 |
+| `dataScaleAccepted` | 数据规模和业务范围是否受控 |
+| `rollbackPlanReady` | 回滚预案是否就绪 |
+| `alertingReady` | 告警是否就绪 |
+| `onCallWindowReady` | 值守窗口是否就绪 |
+| `knownLimitationsAccepted` | 已知限制是否接受 |
+| `notes` | 人工备注 |
+
 ### 测试方案
 
 - CI 增加 release profile。
 - 长稳压测输出结构化报告，复用 `AdbEndToEndClusterStressGate`。
 - 故障注入测试必须保存日志、指标和恢复结果；commit crash-injection 必须覆盖 GA-02 定义的全部注入点。
 - 每次发布通过 `AdbReleaseEvidenceWriter` 生成 release evidence 目录，包含命令、版本、报告、门禁结果和 checksum。
+- 每次试生产前通过 `AdbTrialProductionAdmissionGate` 生成 admission 文件；所有人工准入项未显式确认时不得进入试生产。
 
 ## 实施顺序建议
 

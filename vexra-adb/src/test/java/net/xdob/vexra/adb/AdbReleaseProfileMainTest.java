@@ -37,11 +37,16 @@ class AdbReleaseProfileMainTest {
         "--checksums", "backup=1;restore=1"
     });
     Properties properties = load(result.getEvidenceFile());
+    Properties admission = load(result.getTrialAdmissionFile());
 
     assertTrue(result.isPassed());
     assertEquals("true", properties.getProperty("passed"));
     assertEquals("cmd-a;cmd-b", properties.getProperty("commands"));
     assertEquals("backup=1;restore=1", properties.getProperty("checksums"));
+    assertEquals("false", admission.getProperty("admitted"));
+    assertEquals("true", admission.getProperty("releaseGatePassed"));
+    assertTrue(admission.getProperty("failureReasons").contains(
+        "trial data scale is not accepted"));
   }
 
   /**
@@ -58,6 +63,7 @@ class AdbReleaseProfileMainTest {
         "--sqlRegionSmokeCycles", "0"
     });
     Properties properties = load(result.getEvidenceFile());
+    Properties admission = load(result.getTrialAdmissionFile());
 
     assertFalse(result.isPassed());
     assertTrue(result.getFailureReasons().contains(
@@ -65,6 +71,36 @@ class AdbReleaseProfileMainTest {
     assertEquals("false", properties.getProperty("passed"));
     assertEquals("sql/region smoke cycle is missing",
         properties.getProperty("failureReasons"));
+    assertEquals("false", admission.getProperty("admitted"));
+    assertTrue(admission.getProperty("failureReasons").contains(
+        "release gate did not pass"));
+  }
+
+  /**
+   * 验证显式确认试生产准入项后会生成通过的 admission 文件。
+   */
+  @Test
+  void shouldWritePassingTrialAdmissionWhenAllItemsAreConfirmed()
+      throws Exception {
+    Path output = tempDir.resolve("trial-pass");
+
+    AdbReleaseProfileResult result = AdbReleaseProfileMain.run(new String[]{
+        "--releaseId", "rel-main-trial-pass",
+        "--version", "0.7.0",
+        "--output", output.toString(),
+        "--trialDataScaleAccepted", "true",
+        "--trialRollbackPlanReady", "true",
+        "--trialAlertingReady", "true",
+        "--trialOnCallWindowReady", "true",
+        "--trialKnownLimitationsAccepted", "true",
+        "--trialNotes", "first guarded window"
+    });
+    Properties admission = load(result.getTrialAdmissionFile());
+
+    assertTrue(result.isPassed());
+    assertEquals("true", admission.getProperty("admitted"));
+    assertEquals("", admission.getProperty("failureReasons"));
+    assertEquals("first guarded window", admission.getProperty("notes"));
   }
 
   private static Properties load(Path file) throws Exception {
