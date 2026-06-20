@@ -134,6 +134,51 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rejectsProductionDistributedTableWithoutSecureDefaults() throws Exception {
+        String databasePath = tempDir.resolve("adb-production-reject").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                SQLException error = Assertions.assertThrows(SQLException.class,
+                        () -> statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                                + "ENGINE \"adb_table\" WITH \"adb.production.mode=mvp-cluster\", "
+                                + "\"adb.production.topology=2data1witness\", "
+                                + "\"adb.distributed.sql=true\", \"adb.distributed.split.row=3\""));
+
+                Assertions.assertTrue(error.getMessage().contains(
+                        "mvp cluster requires TLS, auth and least privilege"), error.getMessage());
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void allowsProductionDistributedTableWithWitnessAndSecureDefaults() throws Exception {
+        String databasePath = tempDir.resolve("adb-production-allow").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                        + "ENGINE \"adb_table\" WITH \"adb.production.mode=mvp-cluster\", "
+                        + "\"adb.production.topology=2data1witness\", "
+                        + "\"adb.security.tls.enabled=true\", "
+                        + "\"adb.security.auth.enabled=true\", "
+                        + "\"adb.security.leastPrivilege.enabled=true\", "
+                        + "\"adb.distributed.sql=true\", \"adb.distributed.split.row=3\"");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (4, 'd')");
+
+                Assertions.assertEquals("a,d",
+                        csv(statement, "SELECT NAME FROM TEST WHERE ID BETWEEN 1 AND 4 ORDER BY ID"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void rollsBackAndCommitsAdbRowsThroughTransactionEvents() throws Exception {
         String databasePath = tempDir.resolve("adb-txn").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
