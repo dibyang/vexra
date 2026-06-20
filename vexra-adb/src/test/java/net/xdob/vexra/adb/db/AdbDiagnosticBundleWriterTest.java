@@ -41,10 +41,15 @@ class AdbDiagnosticBundleWriterTest {
 
     Map<String, Number> metrics = new LinkedHashMap<>();
     metrics.put("adb_doctor_preflight_passed", 1);
+    metrics.put("adb_sql_slow_sql_count", 1);
+    Map<String, String> operations = new LinkedHashMap<>();
+    operations.put("preflightPassed", "true");
+    operations.put("sql.recentSlowSql.0",
+        "timestampMillis=1,sqlType=SELECT,table=T,latencyMillis=120");
     AdbDiagnosticBundle bundle = new AdbDiagnosticBundle("bundle-1", 123L,
         "0.1", "2.3.0", "0.6.0",
         AdbDiagnosticBundleWriter.redact(properties),
-        Collections.singletonMap("preflightPassed", "true"),
+        operations,
         metrics,
         Collections.singletonMap("sql.log",
             Arrays.asList("line-2", "line-3")),
@@ -57,6 +62,8 @@ class AdbDiagnosticBundleWriterTest {
 
     assertTrue(text.contains("bundleId=bundle-1"));
     assertTrue(text.contains("adb.cluster.group=group-1"));
+    assertTrue(text.contains("sql.recentSlowSql.0=timestampMillis=1"));
+    assertTrue(text.contains("adb_sql_slow_sql_count=1"));
     assertTrue(text.contains("adb.security.token=<redacted>"));
     assertTrue(text.contains("adb.security.tls.cert=<redacted>"));
     assertTrue(text.contains(
