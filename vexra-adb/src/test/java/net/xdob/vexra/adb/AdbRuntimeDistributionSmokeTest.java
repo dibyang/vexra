@@ -134,6 +134,19 @@ class AdbRuntimeDistributionSmokeTest {
     assertTrue(Files.exists(upgradePlanScript(runtimeDir)));
   }
 
+  /**
+   * 验证 runtime zip 包含 doctor 诊断脚本。
+   *
+   * @throws Exception 解包失败时抛出
+   */
+  @Test
+  void shouldIncludeDoctorScriptInRuntimeDistribution() throws Exception {
+    Path runtimeDir = tempDir.resolve("runtime-doctor-script");
+    extract(runtimeZip(), runtimeDir);
+
+    assertTrue(Files.exists(doctorScript(runtimeDir)));
+  }
+
   private RuntimeProcessHandle startSqlServerScript(Path runtimeDir, int port,
       Path serverDir, Path ready, Path stop) throws IOException {
     Path script = sqlServerScript(runtimeDir);
@@ -248,6 +261,11 @@ class AdbRuntimeDistributionSmokeTest {
 
   private static Path upgradePlanScript(Path runtimeDir) {
     String name = isWindows() ? "adb-upgrade-plan.bat" : "adb-upgrade-plan";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path doctorScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-doctor.bat" : "adb-doctor";
     return runtimeDir.resolve("bin").resolve(name);
   }
 
