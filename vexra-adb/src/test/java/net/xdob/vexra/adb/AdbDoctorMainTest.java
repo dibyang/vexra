@@ -34,6 +34,10 @@ class AdbDoctorMainTest {
     Path log = tempDir.resolve("sql.log");
     Files.write(log, java.util.Arrays.asList("line-1", "line-2", "line-3"),
         StandardCharsets.UTF_8);
+    Path autoLog = tempDir.resolve("runtime/logs/auto.log");
+    Files.createDirectories(autoLog.getParent());
+    Files.write(autoLog, java.util.Arrays.asList("auto-1", "auto-2"),
+        StandardCharsets.UTF_8);
     Path evidence = writeProperties("release-evidence.properties",
         "releaseId", "rel-001", "passed", "true",
         "checksums", "backup=1;restore=1");
@@ -51,6 +55,7 @@ class AdbDoctorMainTest {
         "--ldbVersion", "0.6.0",
         "--checkRuntimeScripts", "false",
         "--logs", log.toString(),
+        "--autoLogs", "true",
         "--logTailLines", "2",
         "--evidence", evidence.toString(),
         "--operationReports", operationReport.toString()
@@ -70,6 +75,9 @@ class AdbDoctorMainTest {
     assertFalse(text.contains("line-1"));
     assertTrue(text.contains("line-2"));
     assertTrue(text.contains("line-3"));
+    assertTrue(text.contains("--- " + autoLog.toAbsolutePath()));
+    assertTrue(text.contains("auto-1"));
+    assertTrue(text.contains("auto-2"));
     assertTrue(text.contains("releaseEvidence.0.releaseId=rel-001"));
     assertTrue(text.contains(
         "releaseEvidence.0.checksums=backup=1;restore=1"));

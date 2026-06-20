@@ -5,6 +5,7 @@ import net.xdob.vexra.adb.db.AdbClusterPreflightChecker;
 import net.xdob.vexra.adb.db.AdbClusterPreflightReport;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundle;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundleWriter;
+import net.xdob.vexra.adb.db.AdbDiagnosticLogDiscoverer;
 import net.xdob.vexra.adb.db.AdbDiagnosticLogTailer;
 import net.xdob.vexra.adb.db.AdbDiagnosticPropertiesCollector;
 
@@ -41,6 +42,7 @@ public final class AdbDoctorMain {
    *             `--version version`、`--h2dbVersion version`、
    *             `--ldbVersion version`、`--strictFiles true|false` 和
    *             `--checkRuntimeScripts true|false`、`--logs path1,path2`、
+   *             `--autoLogs true|false`、`--maxAutoLogFiles n`、
    *             `--logTailLines n`、`--evidence path1,path2`、
    *             `--operationReports path1,path2`
    * @throws Exception 配置读取、预检或写入失败时抛出
@@ -50,8 +52,10 @@ public final class AdbDoctorMain {
     Path configPath = Paths.get(require(values, "config"));
     Path outputDir = Paths.get(require(values, "output"));
     Properties properties = loadProperties(configPath);
+    AdbClusterOrchestrationConfig config =
+        AdbClusterOrchestrationConfig.fromProperties(properties);
     AdbClusterPreflightReport preflight = new AdbClusterPreflightChecker(
-        AdbClusterOrchestrationConfig.fromProperties(properties), properties,
+        config, properties,
         bool(values.get("strictFiles"), false),
         bool(values.get("checkRuntimeScripts"), true)).check();
     AdbDiagnosticBundle bundle = new AdbDiagnosticBundle(
@@ -65,7 +69,7 @@ public final class AdbDoctorMain {
         AdbDiagnosticBundleWriter.redact(properties),
         operations(preflight, configPath, values),
         metrics(preflight),
-        logTails(values),
+        logTails(values, config),
         lines(preflight.render()),
         Collections.singletonList("offline diagnostic bundle"));
     Path file = new AdbDiagnosticBundleWriter().write(bundle, outputDir);
@@ -122,14 +126,23 @@ public final class AdbDoctorMain {
     return metrics;
   }
 
-  private static Map<String, List<String>> logTails(Map<String, String> values)
-      throws Exception {
-    String logs = values.get("logs");
-    if (logs == null || logs.trim().isEmpty()) {
+  private static Map<String, List<String>> logTails(Map<String, String> values,
+      AdbClusterOrchestrationConfig config) throws Exception {
+    java.util.LinkedHashSet<Path> logFiles = new java.util.LinkedHashSet<>();
+    String explicitLogs = values.get("logs");
+    if (explicitLogs != null && !explicitLogs.trim().isEmpty()) {
+      logFiles.addAll(paths(explicitLogs));
+    }
+    if (bool(values.get("autoLogs"), false)) {
+      int maxFiles = intValue(values.get("maxAutoLogFiles"), 20);
+      logFiles.addAll(new AdbDiagnosticLogDiscoverer(maxFiles).discover(config));
+    }
+    if (logFiles.isEmpty()) {
       return Collections.emptyMap();
     }
     int maxLines = intValue(values.get("logTailLines"), 200);
-    return new AdbDiagnosticLogTailer().tail(paths(logs), maxLines);
+    return new AdbDiagnosticLogTailer().tail(
+        new java.util.ArrayList<>(logFiles), maxLines);
   }
 
   private static List<Path> paths(String csv) {
