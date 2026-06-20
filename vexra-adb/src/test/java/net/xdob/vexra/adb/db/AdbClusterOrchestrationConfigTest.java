@@ -67,6 +67,36 @@ class AdbClusterOrchestrationConfigTest {
     assertTrue(error.getMessage().contains("duplicate endpoint"));
   }
 
+  /**
+   * 验证生产预检要求 2 data + 1 witness 与安全开关。
+   */
+  @Test
+  void shouldPassProductionPreflightForTwoDataOneWitness() throws Exception {
+    Path config = writeProductionConfig(true, true);
+    Properties properties = load(config);
+    AdbClusterPreflightReport report = new AdbClusterPreflightChecker(
+        AdbClusterOrchestrationConfig.fromProperties(properties), properties,
+        false, false).check();
+
+    assertTrue(report.isPassed(), report.render());
+    assertTrue(report.render().contains("topology=2data1witness"));
+  }
+
+  /**
+   * 验证生产预检会拒绝未开启 TLS/auth 的配置。
+   */
+  @Test
+  void shouldRejectPreflightWithoutSecurityDefaults() throws Exception {
+    Path config = writeProductionConfig(false, false);
+    Properties properties = load(config);
+    AdbClusterPreflightReport report = new AdbClusterPreflightChecker(
+        AdbClusterOrchestrationConfig.fromProperties(properties), properties,
+        false, false).check();
+
+    assertTrue(report.render().contains("FAIL tls.enabled=true"));
+    assertTrue(report.render().contains("FAIL auth.enabled=true"));
+  }
+
   private Path writeConfig(String n1Port, String n2Port, String n3Port)
       throws Exception {
     Path config = tempDir.resolve("cluster.properties");
@@ -97,6 +127,26 @@ class AdbClusterOrchestrationConfigTest {
         "adb.catalog.table.TEST.id=1",
         "adb.catalog.table.TEST.epoch=0"), StandardCharsets.UTF_8);
     return config;
+  }
+
+  private Path writeProductionConfig(boolean tls, boolean auth)
+      throws Exception {
+    Path config = writeConfig("19001", "19002", "19003");
+    Files.write(config, Arrays.asList(
+        "adb.security.tls.enabled=" + tls,
+        "adb.security.auth.enabled=" + auth,
+        "adb.cluster.node.n3.role=WITNESS_NODE"),
+        StandardCharsets.UTF_8, java.nio.file.StandardOpenOption.APPEND);
+    return config;
+  }
+
+  private static Properties load(Path path) throws Exception {
+    Properties properties = new Properties();
+    try (java.io.Reader reader = Files.newBufferedReader(path,
+        StandardCharsets.UTF_8)) {
+      properties.load(reader);
+    }
+    return properties;
   }
 
   private static String path(Path path) {

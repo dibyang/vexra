@@ -61,6 +61,16 @@ tasks.register('adbClusterPlanStartScripts', org.gradle.jvm.application.tasks.Cr
     exitEnvironmentVar = 'ADB_CLUSTER_PLAN_EXIT_CONSOLE'
 }
 
+tasks.register('adbClusterPreflightStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-cluster-preflight'
+    mainClassName = 'net.xdob.vexra.adb.AdbClusterPreflightMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/preflight').get().asFile
+    optsEnvironmentVar = 'ADB_CLUSTER_PREFLIGHT_OPTS'
+    exitEnvironmentVar = 'ADB_CLUSTER_PREFLIGHT_EXIT_CONSOLE'
+}
+
 tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
     dependsOn tasks.named('jar')
     applicationName = 'adb-release-profile'
@@ -91,6 +101,7 @@ tasks.register('adbRuntimeDist', Zip) {
     dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
         tasks.named('adbRegionNodeStartScripts'),
         tasks.named('adbClusterPlanStartScripts'),
+        tasks.named('adbClusterPreflightStartScripts'),
         tasks.named('adbReleaseProfileStartScripts')
     archiveClassifier = 'runtime'
 
@@ -102,6 +113,7 @@ tasks.register('adbRuntimeDist', Zip) {
         from(tasks.named('adbSqlServerStartScripts'))
         from(tasks.named('adbRegionNodeStartScripts'))
         from(tasks.named('adbClusterPlanStartScripts'))
+        from(tasks.named('adbClusterPreflightStartScripts'))
         from(tasks.named('adbReleaseProfileStartScripts'))
         fileMode = 0755
     }

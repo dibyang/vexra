@@ -555,6 +555,13 @@ sequenceDiagram
 - 备份恢复测试：写入样本数据、备份、恢复、checksum 一致。
 - 滚动升级计划测试：任一 data node 升级时仍满足 data+witness 多数派。
 
+### 当前实现增量
+
+- 新增 `AdbClusterPreflightChecker` 与 `AdbClusterPreflightReport`，复用 `adb-cluster-plan` 的同一份 properties 配置执行生产部署前预检。
+- 新增命令行入口 `AdbClusterPreflightMain`，runtime 发行包会生成 `adb-cluster-preflight` / `adb-cluster-preflight.bat`；预检失败时以非 0 退出码结束，便于 CI 或启动脚本阻断上线。
+- 当前预检覆盖 TLS/auth 安全开关、`2 data + 1 witness` 拓扑、runtime `bin` 脚本、节点数据目录、TLS/权限配置路径和 catalog 输出路径；`--strictFiles true` 可要求 TLS/权限文件真实存在。
+- `AdbClusterOrchestrationConfigTest` 覆盖生产预检通过与缺安全默认值失败；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中预检脚本存在并可执行。
+
 ## ADB-GA-06：可观测性与诊断
 
 ### 目标

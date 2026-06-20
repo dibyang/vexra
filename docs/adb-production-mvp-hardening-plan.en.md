@@ -555,6 +555,13 @@ sequenceDiagram
 - Backup/restore test: write sample data, backup, restore, checksum matches.
 - Rolling-upgrade plan test: any single data-node upgrade still keeps data+witness quorum.
 
+### Current Implementation Increment
+
+- Add `AdbClusterPreflightChecker` and `AdbClusterPreflightReport`, reusing the same properties configuration consumed by `adb-cluster-plan` for production preflight checks.
+- Add command-line entrypoint `AdbClusterPreflightMain`; the runtime distribution now generates `adb-cluster-preflight` / `adb-cluster-preflight.bat`. A failed preflight exits with a non-zero code so CI or startup scripts can block rollout.
+- The current preflight covers TLS/auth security switches, `2 data + 1 witness` topology, runtime `bin` scripts, node data directories, TLS/privilege config paths, and catalog output path. `--strictFiles true` can require TLS/privilege files to exist.
+- `AdbClusterOrchestrationConfigTest` covers passing production preflight and missing secure-default failure; `AdbRuntimeDistributionSmokeTest` covers the preflight script being present and executable in the runtime zip.
+
 ## ADB-GA-06: Observability and Diagnostics
 
 ### Goals
