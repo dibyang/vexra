@@ -12,6 +12,7 @@ import org.h2.value.ValueVarchar;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -81,6 +82,54 @@ class AdbRuntimeSessionContextTest {
   }
 
   /**
+   * 验证 route watch 发现 epoch 变化后，session 可以自动刷新路由。
+   */
+  @Test
+  void shouldRefreshRouteSnapshotWhenWatchReportsChange() {
+    RecordingStore store = new RecordingStore();
+    TxnManager manager = new TxnManager(store);
+    InMemoryAdbControlPlaneClient controlPlane =
+        new InMemoryAdbControlPlaneClient(
+            Collections.singletonList(region("r1", "node-a")), 10);
+    AdbRuntimeSessionContext context = new AdbRuntimeSessionContext(manager,
+        controlPlane, new RecordingCommitClient());
+
+    assertFalse(context.refreshRouteSnapshotIfChanged());
+    controlPlane.publishRegions(Collections.singletonList(
+        region("r2", "node-b")));
+
+    assertTrue(context.refreshRouteSnapshotIfChanged());
+    assertEquals(2, context.getSnapshot().getRouteEpoch());
+    assertEquals("r2", context.getSnapshot().getRegions().get(0)
+        .getRegionId());
+  }
+
+  /**
+   * 验证控制面 route TTL 过期后，runtime 安装的 region commit 会拒绝写入。
+   */
+  @Test
+  void shouldRejectWriteWhenControlPlaneRouteTtlExpires() {
+    RecordingStore store = new RecordingStore();
+    TxnManager manager = new TxnManager(store);
+    InMemoryAdbControlPlaneClient controlPlane =
+        new InMemoryAdbControlPlaneClient(
+            Collections.singletonList(region("r1", "node-a")), 10);
+    RecordingCommitClient commitClient = new RecordingCommitClient();
+    ManualClock clock = new ManualClock(1000);
+    new AdbRuntimeSessionContext(manager, controlPlane, commitClient,
+        100, clock);
+
+    clock.now = 1101;
+    Transaction2 txn = manager.beginTransaction();
+    txn.recordWrite(rowKey(3), rowValue("value"));
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> manager.commit(txn));
+    assertTrue(error.getMessage().contains("route snapshot expired"));
+    assertNull(commitClient.request);
+  }
+
+  /**
    * 验证 detach 会恢复 TxnManager 默认单机路径。
    */
   @Test
@@ -138,6 +187,20 @@ class AdbRuntimeSessionContextTest {
     public CompletableFuture<Void> commitAsync(AdbRegionCommitRequest request) {
       this.request = request;
       return CompletableFuture.completedFuture(null);
+    }
+  }
+
+  private static final class ManualClock
+      implements java.util.function.LongSupplier {
+    private long now;
+
+    private ManualClock(long now) {
+      this.now = now;
+    }
+
+    @Override
+    public long getAsLong() {
+      return now;
     }
   }
 

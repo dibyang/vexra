@@ -20,4 +20,20 @@ public interface AdbControlPlaneClient {
    * @return 全局单调时间戳
    */
   long nextTimestamp();
+
+  /**
+   * 观察 route epoch 是否已经超过调用方持有的快照。
+   *
+   * <p>默认实现读取一次完整快照，真实控制面可以覆盖为轻量 watch 或长轮询。
+   * 该方法不改变控制面状态，只返回一次观察结果。</p>
+   *
+   * @param lastSeenEpoch 调用方已看到的 route epoch
+   * @return route watch 观察结果
+   */
+  default AdbRouteWatch watchRoutes(long lastSeenEpoch) {
+    AdbControlPlaneSnapshot snapshot = getSnapshot();
+    return new AdbRouteWatch(lastSeenEpoch, snapshot.getRouteEpoch(),
+        snapshot.getRouteEpoch() > lastSeenEpoch,
+        System.currentTimeMillis());
+  }
 }
