@@ -40,6 +40,8 @@ import java.util.stream.Stream;
 public class RaftRClient implements RClient{
 
   public static final int DEFAULT_PORT = 7800;
+  static final int DEFAULT_RETRY_MAX_COUNT = 30;
+  static final long DEFAULT_RETRY_SLEEP_MILLIS = 500L;
   private final RaftClient client;
 
   public RaftRClient(Properties props) {
@@ -67,8 +69,9 @@ public class RaftRClient implements RClient{
     RaftClient.Builder builder =
         RaftClient.newBuilder().setProperties(raftProperties);
     builder.setRaftGroup(raftGroup);
-    RetryPolicy retryPolicy = RetryPolicies.retryUpToMaximumCountWithFixedSleep(8,
-        TimeDuration.valueOf(500, TimeUnit.MILLISECONDS));
+    RetryPolicy retryPolicy = RetryPolicies.retryUpToMaximumCountWithFixedSleep(
+        retryMaxCount(props),
+        TimeDuration.valueOf(retrySleepMillis(props), TimeUnit.MILLISECONDS));
     builder.setRetryPolicy(retryPolicy);
     builder.setParameters(new Parameters());
     client = builder.build();
@@ -102,6 +105,60 @@ public class RaftRClient implements RClient{
           return builder.build();
         }).filter(e->!e.isVirtual())
         .collect(Collectors.toList());
+  }
+
+  /**
+   * 读取 Raft 写入重试次数。
+   *
+   * <p>远端 SQL 写入在多进程启动和 leader 切换窗口内可能先命中 follower。生产门禁要求
+   * 该窗口不能直接放大成 PREWRITE 失败，因此这里给 ADB runtime 一个比底层默认更明确的
+   * retry 预算，并允许测试或部署通过属性收窄/放大。</p>
+   *
+   * @param props RaftRClient 配置
+   * @return 最大重试次数
+   */
+  static int retryMaxCount(Properties props) {
+    return positiveInt(props, "HA2.RETRY.MAX_COUNT",
+        DEFAULT_RETRY_MAX_COUNT);
+  }
+
+  /**
+   * 读取 Raft 写入重试间隔。
+   *
+   * @param props RaftRClient 配置
+   * @return 每次重试 sleep 毫秒数
+   */
+  static long retrySleepMillis(Properties props) {
+    return positiveLong(props, "HA2.RETRY.SLEEP_MILLIS",
+        DEFAULT_RETRY_SLEEP_MILLIS);
+  }
+
+  private static int positiveInt(Properties props, String key,
+      int defaultValue) {
+    String value = props.getProperty(key);
+    if (value == null || value.trim().isEmpty()) {
+      return defaultValue;
+    }
+    try {
+      int parsed = Integer.parseInt(value.trim());
+      return parsed > 0 ? parsed : defaultValue;
+    } catch (NumberFormatException e) {
+      return defaultValue;
+    }
+  }
+
+  private static long positiveLong(Properties props, String key,
+      long defaultValue) {
+    String value = props.getProperty(key);
+    if (value == null || value.trim().isEmpty()) {
+      return defaultValue;
+    }
+    try {
+      long parsed = Long.parseLong(value.trim());
+      return parsed > 0 ? parsed : defaultValue;
+    } catch (NumberFormatException e) {
+      return defaultValue;
+    }
   }
 
   @Override

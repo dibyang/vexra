@@ -4,6 +4,7 @@ import net.xdob.vexra.protocol.RaftPeer;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
@@ -36,5 +37,46 @@ class RaftRClientTest {
 
     assertEquals("127.0.0.1:7800", peers.get(0).getAddress());
     assertEquals("127.0.0.2:7800", peers.get(1).getAddress());
+  }
+
+  /**
+   * 验证默认 retry 预算覆盖多进程启动和选主窗口。
+   */
+  @Test
+  void shouldUseProductionRetryDefaults() {
+    Properties props = new Properties();
+
+    assertEquals(RaftRClient.DEFAULT_RETRY_MAX_COUNT,
+        RaftRClient.retryMaxCount(props));
+    assertEquals(RaftRClient.DEFAULT_RETRY_SLEEP_MILLIS,
+        RaftRClient.retrySleepMillis(props));
+  }
+
+  /**
+   * 验证显式 retry 配置会覆盖默认值。
+   */
+  @Test
+  void shouldParseExplicitRetryBudget() {
+    Properties props = new Properties();
+    props.setProperty("HA2.RETRY.MAX_COUNT", "45");
+    props.setProperty("HA2.RETRY.SLEEP_MILLIS", "250");
+
+    assertEquals(45, RaftRClient.retryMaxCount(props));
+    assertEquals(250L, RaftRClient.retrySleepMillis(props));
+  }
+
+  /**
+   * 验证非法 retry 配置回退到默认值，避免启动参数错误导致无重试。
+   */
+  @Test
+  void shouldFallbackWhenRetryBudgetIsInvalid() {
+    Properties props = new Properties();
+    props.setProperty("HA2.RETRY.MAX_COUNT", "0");
+    props.setProperty("HA2.RETRY.SLEEP_MILLIS", "bad");
+
+    assertEquals(RaftRClient.DEFAULT_RETRY_MAX_COUNT,
+        RaftRClient.retryMaxCount(props));
+    assertEquals(RaftRClient.DEFAULT_RETRY_SLEEP_MILLIS,
+        RaftRClient.retrySleepMillis(props));
   }
 }

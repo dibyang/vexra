@@ -323,6 +323,7 @@ stateDiagram-v2
 - `AdbRecoveryDrillGate` 已定义 kill/restart 进程级恢复演练的结构化 release gate：leader、follower、witness 和全集群重启场景必须全部执行、恢复成功且 checksum 一致。
 - `AdbEndToEndClusterStressGate` 已要求端到端报告携带通过的恢复演练评估结果，避免只有布尔值而缺少每类 kill/restart 证据。
 - `AdbRecoveryDrillGateTest` 覆盖完整演练通过、缺失场景、未执行、未恢复、checksum 不一致和端到端 release gate 透传失败原因。
+- `RaftRClient` 已将远端 SQL 写入使用的 Raft retry 预算改为可配置默认值，默认覆盖更长的 leader 发现和 NotLeader 重试窗口，降低多进程 smoke 在启动/选主窗口内误报 PREWRITE 失败的概率。
 
 本阶段尚未把结构化 crash gate / recovery gate 接到真实多进程 release profile 和证据目录。下一轮需要补 release profile 脚本与 evidence 归档。
 

@@ -323,6 +323,7 @@ Illegal transitions:
 - `AdbRecoveryDrillGate` now defines a structured release gate for process-level kill/restart recovery drills: leader, follower, witness, and full-cluster restart scenarios must all be executed, recovered, and checksum-consistent.
 - `AdbEndToEndClusterStressGate` now requires the end-to-end report to carry a passing recovery-drill evaluation, preventing a single boolean from replacing per-scenario kill/restart evidence.
 - `AdbRecoveryDrillGateTest` covers full drill pass, missing scenario, not attempted, not recovered, checksum mismatch, and end-to-end release-gate propagation.
+- `RaftRClient` now makes the Raft retry budget used by remote SQL writes configurable by default, covering a longer leader-discovery and NotLeader retry window and reducing false PREWRITE failures during multi-process smoke startup/election windows.
 
 This phase has not yet connected the structured crash gate / recovery gate to the real multi-process release profile and evidence directory. The next increment should add the release-profile script and evidence archiving.
 
