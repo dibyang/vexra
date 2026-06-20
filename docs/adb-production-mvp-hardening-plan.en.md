@@ -277,6 +277,18 @@ Illegal transitions:
 - Concurrency tests: duplicate client request id, repeated commit, rollback/commit race.
 - Suggested command: `.\gradlew.bat :vexra-adb:test --tests *DataSafety*`.
 
+### Current Implementation Status
+
+`ADB-GA-02` has completed its first commit-marker and recovery-decision model:
+
+- `AdbDurableCommitState` defines `PREWRITTEN`, `RAFT_COMMITTED`, `STORE_COMMITTED`, `REPLIED`, and `ROLLED_BACK`.
+- `AdbDurableCommitMarker` records txnId, clientRequestId, startTs, commitTs, regionId, state, and last error, and only allows data-safe state transitions.
+- `AdbCommitRecoveryScanner` maps markers to `ROLLBACK`, `ROLL_FORWARD`, `RETURN_COMMITTED`, or `DISCARD` recovery actions.
+- `AdbCommitIdempotencyStore` provides an in-memory idempotency model, proving that duplicate commits with the same client idempotency key do not create a new commitTs.
+- `AdbDurableCommitRecoveryTest` covers marker transitions, rollback rejection after RAFT_COMMITTED, rollback before raft commit, recovery-decision mapping, and idempotency conflicts.
+
+This phase has not yet persisted markers into real LDB/Rocks storage and has not yet wired them into the real `TxnManager` or `AdbRegionCommitCoordinator` commit paths. The next increment needs to attach the marker store around durable commit and add crash-injection / reopen acceptance.
+
 ## ADB-GA-03: Lightweight Control Plane
 
 ### Goals

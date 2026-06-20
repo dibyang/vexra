@@ -277,6 +277,18 @@ stateDiagram-v2
 - 并发测试：重复 client request id、重复 commit、rollback/commit 竞争。
 - 回归命令建议：`.\gradlew.bat :vexra-adb:test --tests *DataSafety*`。
 
+### 当前实现状态
+
+`ADB-GA-02` 已完成第一轮 commit marker 和恢复决策模型：
+
+- `AdbDurableCommitState` 定义 `PREWRITTEN`、`RAFT_COMMITTED`、`STORE_COMMITTED`、`REPLIED` 和 `ROLLED_BACK`。
+- `AdbDurableCommitMarker` 记录 txnId、clientRequestId、startTs、commitTs、regionId、状态和最近错误，并限制状态只能按数据安全顺序推进。
+- `AdbCommitRecoveryScanner` 将 marker 映射为 `ROLLBACK`、`ROLL_FORWARD`、`RETURN_COMMITTED` 或 `DISCARD` 恢复动作。
+- `AdbCommitIdempotencyStore` 提供内存幂等记录模型，证明同一客户端幂等键重复提交不会生成新的 commitTs。
+- `AdbDurableCommitRecoveryTest` 覆盖 marker 状态推进、RAFT_COMMITTED 后禁止回滚、prewrite 后可回滚、恢复决策映射和幂等键冲突。
+
+本阶段尚未把 marker 持久化到真实 LDB/Rocks，也尚未接入 `TxnManager` 和 `AdbRegionCommitCoordinator` 的真实 commit 路径。下一轮需要把 marker store 挂到 durable commit 前后，并补充 crash-injection / reopen 验收。
+
 ## ADB-GA-03：轻量控制面
 
 ### 目标
