@@ -103,8 +103,9 @@ public final class AdbPrewriteApplicator {
   private static void applyLock(AdbWriteBatch batch, long txnId,
       AdbTxnLock lock) throws SQLException {
     if (lock.getTxnId() != txnId) {
-      throw new SQLException("ADB prewrite lock txn mismatch, txnId=" + txnId
-          + ", lockTxnId=" + lock.getTxnId());
+      throw new AdbTransactionConflictException(
+          "ADB prewrite lock txn mismatch, txnId=" + txnId
+              + ", lockTxnId=" + lock.getTxnId());
     }
     TxnLockKey lockKey = TxnLockKey.of(txnId, CF.DEFAULT.getCfId(),
         lock.getKey());
@@ -123,8 +124,9 @@ public final class AdbPrewriteApplicator {
         RowValue value = RowValue.decodeValue(scan.value());
         if (!versionKey.isCommited() && value != null
             && value.txnId != txnId) {
-          throw new SQLException("ADB prewrite lock conflict, txnId=" + txnId
-              + ", ownerTxnId=" + value.txnId);
+          throw new AdbTransactionConflictException(
+              "ADB prewrite lock conflict, txnId=" + txnId
+                  + ", ownerTxnId=" + value.txnId);
         }
         scan.advance();
       }
@@ -143,8 +145,9 @@ public final class AdbPrewriteApplicator {
     }
     RowValue value = RowValue.decodeValue(existing);
     if (value != null && value.txnId != txnId) {
-      throw new SQLException("ADB prewrite conflict on intent key, txnId="
-          + txnId + ", ownerTxnId=" + value.txnId);
+      throw new AdbTransactionConflictException(
+          "ADB prewrite conflict on intent key, txnId=" + txnId
+              + ", ownerTxnId=" + value.txnId);
     }
   }
 
@@ -152,8 +155,9 @@ public final class AdbPrewriteApplicator {
       DataKey key, long startTs) throws SQLException {
     RowValue latest = new DefaultVersionResolver(store).getLatestCommitted(key);
     if (latest != null && latest.commitTs > startTs) {
-      throw new SQLException("ADB prewrite write conflict, key=" + key
-          + ", startTs=" + startTs + ", latestCommitTs=" + latest.commitTs);
+      throw new AdbTransactionConflictException(
+          "ADB prewrite write conflict, key=" + key + ", startTs=" + startTs
+              + ", latestCommitTs=" + latest.commitTs);
     }
   }
 }

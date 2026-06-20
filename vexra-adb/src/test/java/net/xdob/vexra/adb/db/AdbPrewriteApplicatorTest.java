@@ -153,6 +153,10 @@ class AdbPrewriteApplicatorTest {
                   rowValue(13, "contender", false)))));
 
       assertFalse(error.getMessage().trim().isEmpty());
+      assertEquals(AdbTransactionConflictException.SQL_STATE,
+          error.getSQLState());
+      assertEquals(AdbTransactionConflictException.ERROR_CODE,
+          error.getErrorCode());
     }
   }
 

@@ -173,7 +173,7 @@ public final class AdbRegionCommitCoordinator {
       executeTwoPhaseCommit(txn, commitTs, participants);
       return CompletableFuture.completedFuture(null);
     } catch (Throwable e) {
-      return failed(unwrap(e));
+      return failed(AdbTransactionExceptionMapper.map(unwrap(e)));
     }
   }
 
@@ -276,7 +276,7 @@ public final class AdbRegionCommitCoordinator {
       if (!primaryCommitted) {
         rollbackPrewritten(prewritten, cause);
       }
-      throw new RegionCommitException(cause);
+      throw new RegionCommitException(AdbTransactionExceptionMapper.map(cause));
     }
   }
 
@@ -287,10 +287,16 @@ public final class AdbRegionCommitCoordinator {
         "commitAsync returned null").thenApply(ignored -> {
       try {
         markCommitted(writeSet);
-        return null;
+        return (Void) null;
       } catch (SQLException e) {
         throw new CompletionException(e);
       }
+    }).exceptionally(error -> {
+      Throwable mapped = AdbTransactionExceptionMapper.map(error);
+      if (mapped instanceof RuntimeException) {
+        throw (RuntimeException) mapped;
+      }
+      throw new CompletionException(mapped);
     });
   }
 

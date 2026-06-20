@@ -507,6 +507,34 @@ class AdbRegionCommitCoordinatorTest {
     assertEquals(1, client.commits.size());
   }
 
+  /**
+   * 验证 region commit client 暴露的事务冲突会保留稳定 SQLState。
+   */
+  @Test
+  void shouldMapRegionConflictToStableSqlState() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    client.failure = new SQLException("ADB prewrite write conflict, key=k1");
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Collections.singletonList(region("r1",
+            new KeyRange(new byte[0], new byte[0]), "node-a", 1, 1))),
+        client));
+
+    Transaction2 txn = txnWithWrites(rowKey(1));
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> manager.commit(txn));
+
+    assertEquals(AdbTransactionConflictException.SQL_STATE,
+        error.getSQLState());
+    assertEquals(AdbTransactionConflictException.ERROR_CODE,
+        error.getErrorCode());
+    assertTrue(error.getMessage().contains("ADB transaction conflict"));
+    assertEquals(TxnState.PENDING, txn.getState());
+    assertEquals(1, client.commits.size());
+  }
+
   private static Transaction2 txnWithWrites(DataKey... keys) {
     Transaction2 txn = new Transaction2(10, 9);
     txn.setState(TxnState.PENDING);

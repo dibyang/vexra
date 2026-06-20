@@ -483,6 +483,9 @@ sequenceDiagram
 - 新增 `AdbCrossRegionTxnGuard`，把参与 region 列表交给 `AdbProductionGuard.validateTransactionRegions`；MVP 生产模式默认只放行单 region 事务，跨 region 事务需要 experimental 模式显式开启。
 - `AdbRegionCommitCoordinator` 支持显式接入事务 region guard，并在任何 prewrite/commit RPC 前完成校验；旧构造器默认 no-op，避免影响已有测试和非生产原型路径。
 - `AdbRuntimeSessionContext` 新增带 `AdbProductionGuard` 的构造入口，SQL runtime 可以在安装 route snapshot 时同步启用 GA-04 事务边界。
+- 新增 `AdbTransactionConflictException`，为可重试的事务写冲突、锁冲突和提交幂等冲突提供稳定 SQLState `ADB02` 与错误码 `7201`。
+- `AdbPrewriteApplicator` 已在 foreign intent、intent key、write conflict 和 lock txn mismatch 场景直接抛出稳定事务冲突异常；`AdbRegionCommitCoordinator` 已在异步提交失败路径上保留或映射该 SQLState，避免 JDBC 调用方只能依赖错误消息判断重试。
+- `AdbPrewriteApplicatorTest` 和 `AdbRegionCommitCoordinatorTest` 已覆盖 prewrite 冲突与 region commit client 冲突的 SQLState / error code。
 
 ## ADB-GA-05：安装与运维产品化
 

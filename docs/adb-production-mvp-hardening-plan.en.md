@@ -483,6 +483,9 @@ sequenceDiagram
 - Add `AdbCrossRegionTxnGuard`, which passes participant regions to `AdbProductionGuard.validateTransactionRegions`; MVP production mode allows single-region transactions by default and requires explicit experimental mode for cross-region work.
 - `AdbRegionCommitCoordinator` can now explicitly install the transaction-region guard and validates before any prewrite/commit RPC. Existing constructors keep a no-op guard for compatibility with prototype and non-production paths.
 - `AdbRuntimeSessionContext` adds a constructor that accepts `AdbProductionGuard`, so the SQL runtime can enable GA-04 transaction boundaries while installing a route snapshot.
+- Add `AdbTransactionConflictException`, which gives retryable write conflicts, lock conflicts, and commit-idempotency conflicts a stable SQLState `ADB02` and error code `7201`.
+- `AdbPrewriteApplicator` now throws the stable transaction-conflict exception for foreign intent, intent-key, write-conflict, and lock transaction mismatch cases. `AdbRegionCommitCoordinator` preserves or maps that SQLState on asynchronous commit failures so JDBC callers do not need to classify retryable conflicts by message text only.
+- `AdbPrewriteApplicatorTest` and `AdbRegionCommitCoordinatorTest` cover the SQLState / error code for prewrite conflicts and region commit client conflict failures.
 
 ## ADB-GA-05: Install and Operations Productization
 
