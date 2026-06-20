@@ -147,6 +147,7 @@ class AdbRuntimeSessionContextTest {
     assertNull(context.getSnapshot());
     assertNull(manager.getTimestampProvider());
     assertNull(manager.getRegionCommitCoordinator());
+    assertSame(AdbCrossRegionTxnGuard.noop(), manager.getTxnRegionGuard());
     assertSame(AdbRegionReadRouter.NOOP, manager.getRegionReadRouter());
   }
 

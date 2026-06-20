@@ -87,6 +87,7 @@ public final class AdbRuntimeSessionContext {
         "txnRegionGuard == null");
     this.txnManager.setTimestampProvider(
         new AdbControlPlaneTimestampProvider(controlPlaneClient));
+    this.txnManager.setTxnRegionGuard(txnRegionGuard);
     refreshRouteSnapshot();
   }
 
@@ -152,6 +153,7 @@ public final class AdbRuntimeSessionContext {
   public void detach() {
     txnManager.setRegionReadRouter(null);
     txnManager.setRegionCommitCoordinator(null);
+    txnManager.setTxnRegionGuard(null);
     txnManager.setTimestampProvider(null);
     snapshot = null;
     lastControlPlaneRefreshMillis = 0;

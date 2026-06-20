@@ -4,6 +4,7 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
+import net.xdob.vexra.adb.db.AdbCrossRegionTxnGuard;
 import net.xdob.vexra.adb.db.AdbProductionCapability;
 import net.xdob.vexra.adb.db.AdbProductionGuard;
 import net.xdob.vexra.adb.db.AdbProductionRequestContext;
@@ -109,6 +110,10 @@ public final class AdbTableProvider implements TableEngineProvider {
         DbStoreType storeType = AdbUrlStoreTypeRegistry.getStoreType(databasePath);
         net.xdob.vexra.adb.DbStore dbStore = DbStoreEngine.getOrCreate(storeType, databasePath, new java.util.Properties());
         TxnManager txnManager = new TxnManager(dbStore);
+        if (productionParamsPresent) {
+            txnManager.setTxnRegionGuard(
+                AdbCrossRegionTxnGuard.fromProductionGuard(productionGuard));
+        }
         txnManager.setSqlDiagnosticRecorder(AdbSqlDiagnosticsRegistry
             .getOrCreate(AdbSqlDiagnosticsRegistry.scope(databasePath)));
         if (scanConfig.isEnabled()) {

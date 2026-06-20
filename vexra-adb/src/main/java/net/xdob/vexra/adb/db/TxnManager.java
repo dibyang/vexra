@@ -26,6 +26,8 @@ public class TxnManager {
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
+  private volatile AdbCrossRegionTxnGuard txnRegionGuard =
+      AdbCrossRegionTxnGuard.noop();
   private volatile AdbTimestampProvider timestampProvider;
   private volatile AdbSqlDistributedScanRuntime sqlDistributedScanRuntime;
   private volatile AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime;
@@ -94,6 +96,24 @@ public class TxnManager {
   public void setRegionCommitCoordinator(
       AdbRegionCommitCoordinator regionCommitCoordinator) {
     this.regionCommitCoordinator = regionCommitCoordinator;
+  }
+
+  public AdbCrossRegionTxnGuard getTxnRegionGuard() {
+    return txnRegionGuard;
+  }
+
+  /**
+   * 设置事务提交前的生产范围 guard。
+   *
+   * <p>默认 no-op 以保持旧单机路径兼容。显式生产配置或 runtime session 可以安装该 guard，
+   * 让没有 region coordinator 的本地 commit 也先通过生产能力边界；已安装 region coordinator
+   * 时，真实 region 列表仍由 coordinator 在 RPC 前校验。</p>
+   *
+   * @param txnRegionGuard 事务 region guard；null 表示恢复 no-op
+   */
+  public void setTxnRegionGuard(AdbCrossRegionTxnGuard txnRegionGuard) {
+    this.txnRegionGuard = txnRegionGuard == null
+        ? AdbCrossRegionTxnGuard.noop() : txnRegionGuard;
   }
 
   /**
@@ -502,6 +522,7 @@ public class TxnManager {
 
       validate(txn);
       writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
+      validateLocalProductionCommit(writeKeys);
       regionWriteGate.beforeCommit(txn, writeKeys);
       commitTs = nextCommitTs();
       txn.setState(TxnState.COMMITTING);
@@ -577,6 +598,15 @@ public class TxnManager {
     } catch (SQLException e) {
       throw DbException.convert(e);
     }
+  }
+
+  private void validateLocalProductionCommit(Collection<DataKey> writeKeys)
+      throws SQLException {
+    if (writeKeys.isEmpty() || regionCommitCoordinator != null) {
+      return;
+    }
+    txnRegionGuard.beforeCommit("local-commit", -1,
+        Collections.singletonList("local"));
   }
 
   private java.util.concurrent.CompletableFuture<Void> commitAsync(

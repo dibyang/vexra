@@ -193,8 +193,10 @@ Validation reads config and control-plane snapshots only. It must not modify bus
 - `AdbTableProviderIntegrationTest` covers rejecting an explicit `mvp-cluster` distributed table when TLS/auth/least-privilege defaults are missing, and allowing a distributed table when `2data1witness` plus secure defaults are present.
 - `AdbSqlServerConfig` now reads `--adb.production.mode`, `--adb.production.topology`, `--adb.install.topology`, `--adb.production.allowExperimental`, and `--adb.security.*` command-line parameters. `AdbSqlServerMain.newServer` validates `LOCAL_SQL` before constructing the h2db TCP Server, so invalid production configuration cannot cross the Server startup boundary.
 - `AdbSqlServerMainTest` covers SQL Server production-parameter parsing, startup rejection when secure defaults are missing, and Server construction when `2data1witness` plus secure defaults are present.
+- `TxnManager` now supports an optional `AdbCrossRegionTxnGuard`. After explicit production configuration installs it, local commits validate single-region transaction capability before durable commit. `AdbTableProvider` installs this guard into the table `TxnManager` when production parameters are present.
+- `AdbTxnManagerProductionGuardTest` covers rejecting local commit under invalid production configuration without advancing commit timestamp, and allowing local single-region commit under secure `2data1witness` configuration. `AdbRuntimeSessionContextTest` covers detach restoring the commit guard to no-op.
 
-This phase still needs to wire the guard into the JDBC URL conversion, transaction commit, backup/restore, rolling-upgrade, and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
+This phase still needs to wire the guard into JDBC URL conversion, backup/restore, rolling-upgrade, and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
 
 ## ADB-GA-02: Data Safety Closure
 
