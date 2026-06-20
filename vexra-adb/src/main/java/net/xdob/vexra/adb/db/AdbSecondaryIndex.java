@@ -244,40 +244,50 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
   }
 
   private synchronized Cursor find(SessionLocal session, SearchRow first, boolean bigger, SearchRow last) {
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     TxnMap2 map = getTxnMap(session);
-    TabId tabId = map.getTabId(table.getId());
+    try {
+      TabId tabId = map.getTabId(table.getId());
 
-    IndexPrefix prefix = IndexPrefix.of(tabId, this.getId());
-    IndexPrefix2 minKey = null;
-    IndexPrefix2 maxKey = null;
+      IndexPrefix prefix = IndexPrefix.of(tabId, this.getId());
+      IndexPrefix2 minKey = null;
+      IndexPrefix2 maxKey = null;
 
-    if (first != null) {
-      byte[] firstEncoded = SearchRowCodec.encode(convertToKey(first), indexColumns, false);
-      IndexPrefix2 firstKey = IndexPrefix2.of(tabId, getId(), firstEncoded);
+      if (first != null) {
+        byte[] firstEncoded = SearchRowCodec.encode(convertToKey(first), indexColumns, false);
+        IndexPrefix2 firstKey = IndexPrefix2.of(tabId, getId(), firstEncoded);
 
-      if (bigger) {
-        minKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(firstKey.toBytes()));
-      } else {
-        minKey = firstKey;
-      }
-    }
-
-    if (last != null) {
-      byte[] lastEncoded = SearchRowCodec.encode(convertToKey(last), indexColumns, false);
-      IndexPrefix2 lastKey = IndexPrefix2.of(tabId, getId(), lastEncoded);
-
-      if (first != null && rowsAreEqual(first, last)) {
-        maxKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(lastKey.toBytes()));
-        if (!bigger) {
-          minKey = lastKey;
+        if (bigger) {
+          minKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(firstKey.toBytes()));
+        } else {
+          minKey = firstKey;
         }
-      } else {
-        maxKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(lastKey.toBytes()));
       }
-    }
 
-    IndexScanCursor iterator = map.indexScanIterator(prefix, minKey, maxKey);
-    return new RocksStoreCursor(session, iterator, adbTable);
+      if (last != null) {
+        byte[] lastEncoded = SearchRowCodec.encode(convertToKey(last), indexColumns, false);
+        IndexPrefix2 lastKey = IndexPrefix2.of(tabId, getId(), lastEncoded);
+
+        if (first != null && rowsAreEqual(first, last)) {
+          maxKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(lastKey.toBytes()));
+          if (!bigger) {
+            minKey = lastKey;
+          }
+        } else {
+          maxKey = IndexPrefix2.fromBytes(KeyCodec.prefixEnd(lastKey.toBytes()));
+        }
+      }
+
+      IndexScanCursor iterator = map.indexScanIterator(prefix, minKey, maxKey);
+      return new RocksStoreCursor(session, iterator, adbTable);
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      adbTable.recordSqlDiagnostic("SELECT", "SECONDARY_FIND", startMillis,
+          failure);
+    }
   }
 
 

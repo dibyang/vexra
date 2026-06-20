@@ -200,13 +200,46 @@ public class AdbTable extends TableBase {
     return txnManager.getSqlDistributedWriteRuntime();
   }
 
+  /**
+   * 记录一条真实 ADB table engine 操作的 SQL 诊断摘要。
+   *
+   * <p>当前 h2db 插件点位于 table/index 层，无法直接拿到原始 SQL 文本；这里用稳定的
+   * ADB_TABLE_* 摘要保留 SQL 类型、表名、耗时和异常，先满足生产排障需要，后续若 h2db
+   * 暴露 statement listener 可再替换为原始 SQL 文本。</p>
+   *
+   * @param sqlType SQL 类型
+   * @param operation ADB 表操作名
+   * @param startMillis 操作开始时间
+   * @param failure 失败异常；成功时为 null
+   */
+  void recordSqlDiagnostic(String sqlType, String operation, long startMillis,
+      Throwable failure) {
+    long now = System.currentTimeMillis();
+    long latencyMillis = Math.max(0L, now - startMillis);
+    String summary = "ADB_TABLE_" + operation + " " + getName();
+    AdbSqlDiagnosticEvent event = failure == null
+        ? AdbSqlDiagnosticEvent.success(now, sqlType, getName(), summary,
+            latencyMillis)
+        : AdbSqlDiagnosticEvent.failure(now, sqlType, getName(), summary,
+            latencyMillis, failure);
+    txnManager.recordSqlDiagnostic(event);
+  }
+
   @Override
   public long getRowCount(SessionLocal session){
-    TxnMap2 map = getTxnMap(session);
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     try {
+      TxnMap2 map = getTxnMap(session);
       return map.getRowCount(getId());
     } catch (SQLException e) {
-      throw convertException(e);
+      failure = convertException(e);
+      throw failure;
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      recordSqlDiagnostic("SELECT", "ROW_COUNT", startMillis, failure);
     }
   }
 
@@ -396,7 +429,16 @@ public class AdbTable extends TableBase {
 
   @Override
   public Row getRow(SessionLocal session, long key) {
-    return primaryIndex.getRow(session, key);
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
+    try {
+      return primaryIndex.getRow(session, key);
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      recordSqlDiagnostic("SELECT", "GET_ROW", startMillis, failure);
+    }
   }
 
 
@@ -548,6 +590,8 @@ public class AdbTable extends TableBase {
 
   @Override
   public void removeRow(SessionLocal session, Row row) {
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
     try {
       for (int i = indexes.size() - 1; i >= 0; i--) {
@@ -558,39 +602,58 @@ public class AdbTable extends TableBase {
         session.commit(false);
       }
     } catch (Throwable e) {
-      throw DbException.convert(e);
+      failure = DbException.convert(e);
+      throw failure;
+    } finally {
+      recordSqlDiagnostic("DELETE", "REMOVE_ROW", startMillis, failure);
     }
     analyzeIfRequired(session);
   }
 
   @Override
   public long truncate(SessionLocal session) {
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
-    long result = getRowCountApproximation(session);
-    TxnMap2 map = getTxnMap(session);
-    map.truncate(getId());
-    if (changesUntilAnalyze != null) {
-      changesUntilAnalyze.set(nextAnalyze);
+    try {
+      long result = getRowCountApproximation(session);
+      TxnMap2 map = getTxnMap(session);
+      map.truncate(getId());
+      if (changesUntilAnalyze != null) {
+        changesUntilAnalyze.set(nextAnalyze);
+      }
+      return result;
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      recordSqlDiagnostic("TRUNCATE", "TRUNCATE", startMillis, failure);
     }
-    return result;
   }
 
   @Override
   public void addRow(SessionLocal session, Row row) {
 
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
     try {
       for (Index index : indexes) {
         index.add(session, row);
       }
     } catch (Throwable e) {
-      throw DbException.convert(e);
+      failure = DbException.convert(e);
+      throw failure;
+    } finally {
+      recordSqlDiagnostic("INSERT", "ADD_ROW", startMillis, failure);
     }
     analyzeIfRequired(session);
   }
 
   @Override
   public void updateRow(SessionLocal session, Row oldRow, Row newRow) {
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     newRow.setKey(oldRow.getKey());
     syncLastModificationIdWithDatabase();
     Transaction t = session.getTransaction();
@@ -608,7 +671,10 @@ public class AdbTable extends TableBase {
       } catch (Throwable nested) {
         e.addSuppressed(nested);
       }
-      throw DbException.convert(e);
+      failure = DbException.convert(e);
+      throw failure;
+    } finally {
+      recordSqlDiagnostic("UPDATE", "UPDATE_ROW", startMillis, failure);
     }
     analyzeIfRequired(session);
   }

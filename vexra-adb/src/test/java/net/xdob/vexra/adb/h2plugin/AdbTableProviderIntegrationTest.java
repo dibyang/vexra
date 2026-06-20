@@ -4,8 +4,11 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Map;
 import java.util.Properties;
 import java.sql.Statement;
+import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
+import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import net.xdob.vexra.adb.db.DbStoreType;
 import org.junit.jupiter.api.Assertions;
@@ -27,6 +30,35 @@ class AdbTableProviderIntegrationTest {
             }
         } finally {
             DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void recordsSqlDiagnosticsThroughJdbcTableEnginePath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        String databasePath = tempDir.resolve("adb-sql-diagnostics").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b')");
+                Assertions.assertEquals("b", singleString(statement, "SELECT NAME FROM TEST WHERE ID = 2"));
+                Assertions.assertEquals(2L, countRows(statement));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Map<String, Number> metrics = snapshot.toMetrics("adb_sql");
+
+            Assertions.assertTrue(snapshot.getTotalSqlCount() >= 3,
+                    "expected table engine operations to be recorded");
+            Assertions.assertTrue(snapshot.getMaxLatencyMillis() >= 0);
+            Assertions.assertTrue(metrics.containsKey("adb_sql_total_sql_count"));
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
         }
     }
 

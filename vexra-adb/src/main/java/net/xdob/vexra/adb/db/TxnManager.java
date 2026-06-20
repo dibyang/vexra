@@ -29,6 +29,7 @@ public class TxnManager {
   private volatile AdbTimestampProvider timestampProvider;
   private volatile AdbSqlDistributedScanRuntime sqlDistributedScanRuntime;
   private volatile AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime;
+  private volatile AdbSqlDiagnosticRecorder sqlDiagnosticRecorder;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -131,6 +132,47 @@ public class TxnManager {
    */
   public AdbSqlDistributedWriteRuntime getSqlDistributedWriteRuntime() {
     return sqlDistributedWriteRuntime;
+  }
+
+  /**
+   * 设置 SQL 诊断记录器。
+   *
+   * <p>recorder 只接收真实 ADB table engine 入口上报的轻量摘要，不参与事务提交、
+   * 回滚或锁控制；传入 null 表示关闭当前 manager 的 SQL 诊断。</p>
+   *
+   * @param sqlDiagnosticRecorder SQL 诊断记录器
+   */
+  public void setSqlDiagnosticRecorder(
+      AdbSqlDiagnosticRecorder sqlDiagnosticRecorder) {
+    this.sqlDiagnosticRecorder = sqlDiagnosticRecorder;
+  }
+
+  /**
+   * 返回当前 SQL 诊断记录器。
+   *
+   * @return SQL 诊断记录器；未启用时返回 null
+   */
+  public AdbSqlDiagnosticRecorder getSqlDiagnosticRecorder() {
+    return sqlDiagnosticRecorder;
+  }
+
+  /**
+   * 记录一条 SQL 诊断事件。
+   *
+   * <p>该方法对业务路径是 best-effort：未启用 recorder 时直接返回，已启用时只做内存计数，
+   * 不允许诊断链路改变 SQL 执行结果。</p>
+   *
+   * @param event SQL 诊断事件
+   */
+  public void recordSqlDiagnostic(AdbSqlDiagnosticEvent event) {
+    AdbSqlDiagnosticRecorder recorder = sqlDiagnosticRecorder;
+    if (recorder != null && event != null) {
+      try {
+        recorder.record(event);
+      } catch (RuntimeException ignored) {
+        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果。
+      }
+    }
   }
 
   public AdbTimestampProvider getTimestampProvider() {

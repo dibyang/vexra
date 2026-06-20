@@ -625,10 +625,11 @@ sequenceDiagram
 - `adb-doctor` 支持 `--logs path1,path2`、`--autoLogs true`、`--maxAutoLogFiles n` 与 `--logTailLines n` 采集关键日志尾部；自动发现会基于 runtime logs、SQL baseDir 和节点 dataDir 做浅层扫描，日志文件缺失时写入缺失说明而不让整个诊断包失败。
 - `adb-doctor` 支持 `--evidence path1,path2` 与 `--operationReports path1,path2` 显式接入 release evidence、backup/restore 报告、滚动升级报告或其他 properties 运维结果；敏感 key 会被脱敏，缺失文件会记录为 `missing`。
 - 新增 `AdbRuntimeDiagnosticCollector`，可把当前进程内 `AdbRuntimeOperationsBridge` 的 operations system row 和 metrics 转成诊断包字段，供嵌入式 runtime 或后续 live doctor 入口复用。
-- 新增 `AdbSqlDiagnosticEvent`、`AdbSqlDiagnosticRecorder` 和 `AdbSqlDiagnosticSnapshot`，提供可嵌入的 SQL 诊断 API，记录累计 SQL 数、慢 SQL 数、失败 SQL 数、最大耗时、最近慢 SQL 和最近失败 SQL，并可转换为诊断包 operations / metrics 字段。
+- 新增 `AdbSqlDiagnosticEvent`、`AdbSqlDiagnosticRecorder`、`AdbSqlDiagnosticSnapshot` 和 `AdbSqlDiagnosticsRegistry`，提供可嵌入的 SQL 诊断 API，记录累计 SQL 数、慢 SQL 数、失败 SQL 数、最大耗时、最近慢 SQL 和最近失败 SQL，并可转换为诊断包 operations / metrics 字段。
+- SQL 诊断记录器已接入 `AdbTableProvider` 创建的 `TxnManager`，并在 `AdbTable`、`AdbPrimaryIndex`、`AdbSecondaryIndex` 的真实 table/index 操作入口记录 `ADB_TABLE_*` 摘要。当前插件层拿不到 h2db 原始 SQL 文本，因此先记录 SQL 类型、表名、操作名、耗时和异常；后续 h2db 若开放 statement listener/JDBC hook，再补充原始 SQL 文本。
 - 新增 `AdbBackgroundWorkerDiagnosticCollector`，可无副作用读取 `AdbLockResolveWorker` 和 `AdbCommittedVersionGcWorker` 的最近成功结果或失败，输出 lock resolve / GC 的 operations / metrics 字段。
-- `adbRuntimeDist` 已包含 `adb-doctor` 脚本；`AdbDiagnosticBundleWriterTest` 覆盖脱敏输出、SQL 摘要和后台 worker 摘要写出，`AdbDiagnosticLogTailerTest` 覆盖日志 tail，`AdbDiagnosticLogDiscovererTest` 覆盖自动日志发现，`AdbDiagnosticPropertiesCollectorTest` 覆盖 evidence/report 采集，`AdbRuntimeDiagnosticCollectorTest` 覆盖 runtime system row/metrics 采集，`AdbSqlDiagnosticRecorderTest` 覆盖慢 SQL/失败 SQL 摘要，`AdbBackgroundWorkerDiagnosticCollectorTest` 覆盖 lock resolve / GC worker 最近结果采集，`AdbDoctorMainTest` 覆盖 main 方法生成诊断包，`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中的 doctor 脚本。
-- 后续 GA-06 仍需把 SQL 诊断记录器接入 h2db 插件监听或 JDBC/Server hook，并设计 `adb-doctor` 的 live runtime 连接参数。
+- `adbRuntimeDist` 已包含 `adb-doctor` 脚本；`AdbDiagnosticBundleWriterTest` 覆盖脱敏输出、SQL 摘要和后台 worker 摘要写出，`AdbDiagnosticLogTailerTest` 覆盖日志 tail，`AdbDiagnosticLogDiscovererTest` 覆盖自动日志发现，`AdbDiagnosticPropertiesCollectorTest` 覆盖 evidence/report 采集，`AdbRuntimeDiagnosticCollectorTest` 覆盖 runtime system row/metrics 采集，`AdbSqlDiagnosticRecorderTest` 覆盖慢 SQL/失败 SQL 摘要，`AdbTableProviderIntegrationTest` 覆盖 JDBC table engine 路径自动产生 SQL 诊断事件，`AdbBackgroundWorkerDiagnosticCollectorTest` 覆盖 lock resolve / GC worker 最近结果采集，`AdbDoctorMainTest` 覆盖 main 方法生成诊断包，`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中的 doctor 脚本。
+- 后续 GA-06 仍需设计 `adb-doctor` 的 live runtime 连接参数，并在 h2db 暴露更高层 statement/JDBC hook 后补充原始 SQL 文本采集。
 
 ## ADB-GA-07：发布门禁与试生产
 

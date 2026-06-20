@@ -246,6 +246,8 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
 
 
   private Cursor find(SessionLocal session, Long first, Long last) {
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
     TxnMap2 map = getTxnMap(session);
     try {
       AdbSqlDistributedScanRuntime runtime =
@@ -267,7 +269,14 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       RowPrefix rowPrefix = RowPrefix.of(map.getTabId(table.getId()));
       return new RocksStoreCursor(map.entryIterator(rowPrefix, first, last));
     } catch (SQLException e) {
-      throw rocksTable.convertException(e);
+      failure = rocksTable.convertException(e);
+      throw failure;
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      rocksTable.recordSqlDiagnostic("SELECT", "PRIMARY_FIND", startMillis,
+          failure);
     }
   }
 

@@ -63,7 +63,20 @@ public final class AdbSqlDiagnosticEvent {
   public static AdbSqlDiagnosticEvent failure(long timestampMillis,
       String sqlType, String tableName, String sql, long latencyMillis,
       SQLException error) {
-    String errorClass = error == null ? "SQLException"
+    return failure(timestampMillis, sqlType, tableName, sql, latencyMillis,
+        (Throwable) error);
+  }
+
+  /**
+   * 创建失败事件。
+   *
+   * <p>H2 table engine 的真实执行入口通常抛出 {@code DbException} 或其他运行时异常，
+   * 因此这里接受 {@link Throwable}，保证诊断接入点不会为了适配 recorder 改变原异常传播。</p>
+   */
+  public static AdbSqlDiagnosticEvent failure(long timestampMillis,
+      String sqlType, String tableName, String sql, long latencyMillis,
+      Throwable error) {
+    String errorClass = error == null ? "Throwable"
         : error.getClass().getSimpleName();
     String errorMessage = error == null ? "" : error.getMessage();
     return new AdbSqlDiagnosticEvent(timestampMillis, sqlType, tableName, sql,
