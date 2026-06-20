@@ -71,6 +71,26 @@ tasks.register('adbClusterPreflightStartScripts', org.gradle.jvm.application.tas
     exitEnvironmentVar = 'ADB_CLUSTER_PREFLIGHT_EXIT_CONSOLE'
 }
 
+tasks.register('adbBackupStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-backup'
+    mainClassName = 'net.xdob.vexra.adb.AdbBackupMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/backup').get().asFile
+    optsEnvironmentVar = 'ADB_BACKUP_OPTS'
+    exitEnvironmentVar = 'ADB_BACKUP_EXIT_CONSOLE'
+}
+
+tasks.register('adbRestoreStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-restore'
+    mainClassName = 'net.xdob.vexra.adb.AdbRestoreMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/restore').get().asFile
+    optsEnvironmentVar = 'ADB_RESTORE_OPTS'
+    exitEnvironmentVar = 'ADB_RESTORE_EXIT_CONSOLE'
+}
+
 tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
     dependsOn tasks.named('jar')
     applicationName = 'adb-release-profile'
@@ -102,6 +122,8 @@ tasks.register('adbRuntimeDist', Zip) {
         tasks.named('adbRegionNodeStartScripts'),
         tasks.named('adbClusterPlanStartScripts'),
         tasks.named('adbClusterPreflightStartScripts'),
+        tasks.named('adbBackupStartScripts'),
+        tasks.named('adbRestoreStartScripts'),
         tasks.named('adbReleaseProfileStartScripts')
     archiveClassifier = 'runtime'
 
@@ -114,6 +136,8 @@ tasks.register('adbRuntimeDist', Zip) {
         from(tasks.named('adbRegionNodeStartScripts'))
         from(tasks.named('adbClusterPlanStartScripts'))
         from(tasks.named('adbClusterPreflightStartScripts'))
+        from(tasks.named('adbBackupStartScripts'))
+        from(tasks.named('adbRestoreStartScripts'))
         from(tasks.named('adbReleaseProfileStartScripts'))
         fileMode = 0755
     }

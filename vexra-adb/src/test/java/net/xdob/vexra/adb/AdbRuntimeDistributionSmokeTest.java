@@ -105,6 +105,21 @@ class AdbRuntimeDistributionSmokeTest {
     assertTrue(result.output.contains("OK topology=2data1witness"));
   }
 
+  /**
+   * 验证 runtime zip 包含本地备份和恢复脚本。
+   *
+   * @throws Exception 解包失败时抛出
+   */
+  @Test
+  void shouldIncludeBackupAndRestoreScriptsInRuntimeDistribution()
+      throws Exception {
+    Path runtimeDir = tempDir.resolve("runtime-backup-scripts");
+    extract(runtimeZip(), runtimeDir);
+
+    assertTrue(Files.exists(backupScript(runtimeDir)));
+    assertTrue(Files.exists(restoreScript(runtimeDir)));
+  }
+
   private RuntimeProcessHandle startSqlServerScript(Path runtimeDir, int port,
       Path serverDir, Path ready, Path stop) throws IOException {
     Path script = sqlServerScript(runtimeDir);
@@ -204,6 +219,16 @@ class AdbRuntimeDistributionSmokeTest {
   private static Path clusterPreflightScript(Path runtimeDir) {
     String name = isWindows() ? "adb-cluster-preflight.bat"
         : "adb-cluster-preflight";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path backupScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-backup.bat" : "adb-backup";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path restoreScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-restore.bat" : "adb-restore";
     return runtimeDir.resolve("bin").resolve(name);
   }
 

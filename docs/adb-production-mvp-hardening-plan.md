@@ -561,6 +561,9 @@ sequenceDiagram
 - 新增命令行入口 `AdbClusterPreflightMain`，runtime 发行包会生成 `adb-cluster-preflight` / `adb-cluster-preflight.bat`；预检失败时以非 0 退出码结束，便于 CI 或启动脚本阻断上线。
 - 当前预检覆盖 TLS/auth 安全开关、`2 data + 1 witness` 拓扑、runtime `bin` 脚本、节点数据目录、TLS/权限配置路径和 catalog 输出路径；`--strictFiles true` 可要求 TLS/权限文件真实存在。
 - `AdbClusterOrchestrationConfigTest` 覆盖生产预检通过与缺安全默认值失败；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中预检脚本存在并可执行。
+- 新增 `adb-backup` / `adb-restore` runtime 命令入口，复用 `DbStore.checkpoint(String)` 与 `DbStore.restore(String)` 执行本地 LDB/Rocks FULL backup/restore。
+- 当前备份恢复命令仅覆盖本地全量模式，参数为 `--storeDir`、`--location`、可选 `--store`、`--planId` 和 `--checkpointTs`；不声明增量备份、PITR、对象存储上传或多 region 调度。
+- `AdbStoreBackupRestoreMainTest` 覆盖命令入口执行备份、写入新数据、恢复后读回 checkpoint 数据；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含备份与恢复脚本。
 
 ## ADB-GA-06：可观测性与诊断
 
