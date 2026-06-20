@@ -287,12 +287,13 @@ stateDiagram-v2
 - `AdbCommitIdempotencyStore` 提供内存幂等记录模型，证明同一客户端幂等键重复提交不会生成新的 commitTs，并支持同一事务按 region 分别记录恢复状态。
 - `AdbDurableCommitRecorder` 定义真实提交路径上的状态记录接口；默认 no-op 保持旧单机路径兼容，`AdbInMemoryDurableCommitRecorder` 用于测试和后续持久化实现的语义样板。
 - `AdbPersistentDurableCommitRecorder` 已把 marker 写入 `CF.TXN` 专用前缀，并支持 store reopen 后扫描 marker 快照。
+- `AdbCommitRecoveryExecutor` 已把 `ROLLBACK`、`ROLL_FORWARD`、`RETURN_COMMITTED` 决策接到 `DbStore.rollbackAsync/commitAsync` 和 recorder 状态推进，形成扫描后恢复执行闭环。
 - `AdbRegionCommitCoordinator` 已在单 region commit、2PC prewrite、primary/secondary commit、rollback 路径上推进 marker 状态，能区分 `REPLIED`、`PREWRITTEN` 和 `ROLLED_BACK` 等恢复证据。
 - `AdbDurableCommitRecoveryTest` 覆盖 marker 状态推进、RAFT_COMMITTED 后禁止回滚、prewrite 后可回滚、恢复决策映射和幂等键冲突。
-- `AdbDurableCommitRecoveryTest` 已补充持久化 marker reopen 扫描和重复提交幂等验证。
+- `AdbDurableCommitRecoveryTest` 已补充持久化 marker reopen 扫描、重复提交幂等、恢复执行器 rollback/roll-forward/return committed 验证。
 - `AdbRegionCommitCoordinatorTest` 覆盖真实 coordinator 路径上的单 region 成功 marker、prewrite 失败回滚 marker、primary 已提交后 secondary 待恢复 marker。
 
-本阶段尚未完成进程重启后的自动恢复执行，也尚未把 crash-injection 和 kill/restart 验收串成发布门禁。下一轮需要把扫描结果接到恢复执行器，并补充故障注入和进程级验收。
+本阶段尚未把恢复执行器挂入真实启动流程，也尚未把 crash-injection 和 kill/restart 验收串成发布门禁。下一轮需要补启动恢复入口、故障注入和进程级验收。
 
 ## ADB-GA-03：轻量控制面
 

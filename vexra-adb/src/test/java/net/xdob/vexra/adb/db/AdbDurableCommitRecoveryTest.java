@@ -1,5 +1,6 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.ldb.LdbStore;
@@ -7,11 +8,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
+import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -169,10 +174,89 @@ class AdbDurableCommitRecoveryTest {
     }
   }
 
+  /**
+   * 验证恢复执行器能根据 marker 决策执行 rollback、roll-forward 和 return committed。
+   */
+  @Test
+  void shouldExecuteRecoveryDecisionsAgainstStore() throws Exception {
+    RecordingStore store = new RecordingStore();
+    AdbCommitIdempotencyStore markerStore = new AdbCommitIdempotencyStore();
+    AdbInMemoryDurableCommitRecorder recorder =
+        new AdbInMemoryDurableCommitRecorder(markerStore);
+    AdbDurableCommitMarker prewritten = marker(201,
+        AdbDurableCommitState.PREWRITTEN);
+    AdbDurableCommitMarker raftCommitted = marker(202,
+        AdbDurableCommitState.RAFT_COMMITTED);
+    AdbDurableCommitMarker storeCommitted = marker(203,
+        AdbDurableCommitState.STORE_COMMITTED);
+    markerStore.update(prewritten);
+    markerStore.update(raftCommitted);
+    markerStore.update(storeCommitted);
+
+    List<AdbCommitRecoveryDecision> decisions =
+        new AdbCommitRecoveryScanner().scan(markerStore.snapshot());
+    AdbCommitRecoveryResult result = new AdbCommitRecoveryExecutor(store,
+        recorder).recover(decisions);
+
+    assertEquals(3, result.getScanned());
+    assertEquals(1, result.getRolledBack());
+    assertEquals(1, result.getRolledForward());
+    assertEquals(1, result.getReturnedCommitted());
+    assertEquals(Collections.singletonList(201L), store.rollbacks);
+    assertEquals(Collections.singletonList(202L), store.commits);
+    assertEquals(AdbDurableCommitState.ROLLED_BACK,
+        marker(markerStore.snapshot(), "r1", 201).getState());
+    assertEquals(AdbDurableCommitState.REPLIED,
+        marker(markerStore.snapshot(), "r1", 202).getState());
+    assertEquals(AdbDurableCommitState.REPLIED,
+        marker(markerStore.snapshot(), "r1", 203).getState());
+  }
+
+  /**
+   * 验证 reopen 后扫描到的 RAFT_COMMITTED marker 可以被执行器前滚并更新为 REPLIED。
+   */
+  @Test
+  void shouldRecoverPersistentMarkerAfterReopen() throws Exception {
+    File dbDir = new File(tempDir, "persistent-recovery");
+    try (LdbStore store = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(store);
+      AdbDurableCommitMarker marker = recorder.prewritten(request("r1"));
+      recorder.raftCommitted(marker);
+    }
+
+    try (LdbStore reopened = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(reopened);
+      List<AdbCommitRecoveryDecision> decisions =
+          new AdbCommitRecoveryScanner().scan(recorder.snapshot());
+      AdbCommitRecoveryResult result = new AdbCommitRecoveryExecutor(reopened,
+          recorder).recover(decisions);
+
+      assertEquals(1, result.getRolledForward());
+      Collection<AdbDurableCommitMarker> markers = recorder.snapshot();
+      assertEquals(AdbDurableCommitState.REPLIED,
+          marker(markers, "r1", 100).getState());
+    }
+  }
+
   private static AdbDurableCommitMarker marker(long txnId,
       AdbDurableCommitState state) {
     return new AdbDurableCommitMarker(txnId, "client-" + txnId,
         100, 200, "r1", state, "");
+  }
+
+  private static AdbDurableCommitMarker marker(
+      Collection<AdbDurableCommitMarker> markers, String regionId,
+      long txnId) {
+    for (AdbDurableCommitMarker marker : markers) {
+      if (marker.getTxnId() == txnId
+          && marker.getRegionId().equals(regionId)) {
+        return marker;
+      }
+    }
+    throw new AssertionError("missing marker, txnId=" + txnId
+        + ", regionId=" + regionId);
   }
 
   private static AdbRegionCommitRequest request(String regionId) {
@@ -180,5 +264,117 @@ class AdbDurableCommitRecoveryTest {
         10, 20, regionId, RowKey.of(TabId.of(1, 0L), 1), 3000,
         true, Collections.singletonList(RowKey.of(TabId.of(1, 0L), 1)),
         Collections.emptyList());
+  }
+
+  private static final class RecordingStore implements DbStore {
+    private final List<Long> commits = new ArrayList<>();
+    private final List<Long> rollbacks = new ArrayList<>();
+
+    @Override
+    public byte[] get(byte[] key) {
+      return null;
+    }
+
+    @Override
+    public void put(byte[] key, byte[] value) {
+    }
+
+    @Override
+    public long addLong(byte[] key, long operand) {
+      return 0;
+    }
+
+    @Override
+    public Optional<Long> getLong(byte[] key) {
+      return Optional.empty();
+    }
+
+    @Override
+    public void putLong(byte[] key, long value) {
+    }
+
+    @Override
+    public void delete(byte[] key) {
+    }
+
+    @Override
+    public void deleteRange(byte[] startKey, byte[] endKey) {
+    }
+
+    @Override
+    public byte[] get(byte cfId, byte[] key) {
+      return null;
+    }
+
+    @Override
+    public void put(byte cfId, byte[] key, byte[] value) {
+    }
+
+    @Override
+    public long addLong(byte cfId, byte[] key, long delta) {
+      return 0;
+    }
+
+    @Override
+    public Optional<Long> getLong(byte cfId, byte[] key) {
+      return Optional.empty();
+    }
+
+    @Override
+    public void putLong(byte cfId, byte[] key, long value) {
+    }
+
+    @Override
+    public void delete(byte cfId, byte[] key) {
+    }
+
+    @Override
+    public void deleteRange(byte cfId, byte[] startKey, byte[] endKey) {
+    }
+
+    @Override
+    public void checkpoint(String targetDir) {
+    }
+
+    @Override
+    public void restore(String sourceDir) {
+    }
+
+    @Override
+    public void writeBatch(WriteBatchConsumer consumer) {
+    }
+
+    @Override
+    public void rollback(long txnId) {
+      rollbacks.add(txnId);
+    }
+
+    @Override
+    public CompletableFuture<Void> commitAsync(long txnId, long commitTs,
+        List<Meta> metas) {
+      commits.add(txnId);
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public CompletableFuture<Void> rollbackAsync(long txnId) {
+      rollbacks.add(txnId);
+      return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public VersionScanSource openVersionScanSource(ScanDirection direction) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public VersionScanSource openVersionScanSource(byte cfId,
+        ScanDirection direction) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void close() throws IOException {
+    }
   }
 }
