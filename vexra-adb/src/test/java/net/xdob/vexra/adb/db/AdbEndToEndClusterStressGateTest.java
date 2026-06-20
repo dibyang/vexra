@@ -13,7 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ADB 端到端集群压测门禁测试。
  *
  * <p>测试覆盖 `ADB-Run-12` 的核心验收：完整报告通过，缺失集群读写、恢复或滚动升级
- * 证据时失败；同时确保 GA-02 commit 崩溃注入证据会被纳入 release gate。</p>
+ * 证据时失败；同时确保 GA-02 commit 崩溃注入和 kill/restart 恢复演练证据会被纳入
+ * release gate。</p>
  */
 class AdbEndToEndClusterStressGateTest {
 
@@ -105,28 +106,73 @@ class AdbEndToEndClusterStressGateTest {
                     null, "recovered"))));
     AdbLongRunStressEvaluation evaluation =
         new AdbEndToEndClusterStressGate().evaluate(report(true, true, true,
-            3, longRunReport(0, 50, allRecoveredFaults()), failedCrashGate),
-            criteria());
+            3, longRunReport(0, 50, allRecoveredFaults()), failedCrashGate,
+            passedRecoveryDrillEvaluation()), criteria());
 
     assertFalse(evaluation.isPassed());
     assertTrue(evaluation.getFailureReasons().contains(
         "missing commit crash scenario: AFTER_PREWRITE_BEFORE_RAFT"));
   }
 
+  /**
+   * 验证缺失结构化恢复演练门禁证据时不能通过端到端门禁。
+   */
+  @Test
+  void shouldFailWhenRecoveryDrillGateIsMissing() {
+    AdbLongRunStressEvaluation evaluation =
+        new AdbEndToEndClusterStressGate().evaluate(
+            commitOnlyReport(true, true, true, 3,
+                longRunReport(0, 50, allRecoveredFaults())),
+            criteria());
+
+    assertFalse(evaluation.isPassed());
+    assertTrue(evaluation.getFailureReasons().contains(
+        "recovery drill gate is missing"));
+  }
+
+  /**
+   * 验证结构化恢复演练门禁失败原因会透传到端到端门禁。
+   */
+  @Test
+  void shouldFailWhenRecoveryDrillGateFails() {
+    AdbLongRunStressEvaluation failedRecoveryGate =
+        new AdbRecoveryDrillGate().evaluate(new AdbRecoveryDrillReport(
+            "missing", Arrays.asList(new AdbRecoveryDrillResult(
+            AdbRecoveryDrillScenario.KILL_LEADER, true, true, true,
+            "passed"))));
+    AdbLongRunStressEvaluation evaluation =
+        new AdbEndToEndClusterStressGate().evaluate(report(true, true, true,
+            3, longRunReport(0, 50, allRecoveredFaults()),
+            passedCommitCrashEvaluation(), failedRecoveryGate), criteria());
+
+    assertFalse(evaluation.isPassed());
+    assertTrue(evaluation.getFailureReasons().contains(
+        "missing recovery drill scenario: KILL_FOLLOWER"));
+  }
+
   private static AdbEndToEndClusterStressReport report(boolean readWrite,
       boolean recovery, boolean rollingUpgrade, int smokeCycles,
       AdbLongRunStressReport longRunReport) {
     return report(readWrite, recovery, rollingUpgrade, smokeCycles,
-        longRunReport, new AdbCommitCrashInjectionGate().evaluate(
-            AdbCommitCrashInjectionGateTest.completeReport()));
+        longRunReport, passedCommitCrashEvaluation(),
+        passedRecoveryDrillEvaluation());
   }
 
   private static AdbEndToEndClusterStressReport report(boolean readWrite,
       boolean recovery, boolean rollingUpgrade, int smokeCycles,
       AdbLongRunStressReport longRunReport,
-      AdbLongRunStressEvaluation commitCrashEvaluation) {
+      AdbLongRunStressEvaluation commitCrashEvaluation,
+      AdbLongRunStressEvaluation recoveryDrillEvaluation) {
     return new AdbEndToEndClusterStressReport("run12-cluster", longRunReport,
-        commitCrashEvaluation, readWrite, recovery, rollingUpgrade,
+        commitCrashEvaluation, recoveryDrillEvaluation, readWrite, recovery,
+        rollingUpgrade, smokeCycles);
+  }
+
+  private static AdbEndToEndClusterStressReport commitOnlyReport(
+      boolean readWrite, boolean recovery, boolean rollingUpgrade,
+      int smokeCycles, AdbLongRunStressReport longRunReport) {
+    return new AdbEndToEndClusterStressReport("run12-cluster", longRunReport,
+        passedCommitCrashEvaluation(), readWrite, recovery, rollingUpgrade,
         smokeCycles);
   }
 
@@ -135,6 +181,16 @@ class AdbEndToEndClusterStressGateTest {
       AdbLongRunStressReport longRunReport) {
     return new AdbEndToEndClusterStressReport("run12-cluster", longRunReport,
         readWrite, recovery, rollingUpgrade, smokeCycles);
+  }
+
+  private static AdbLongRunStressEvaluation passedCommitCrashEvaluation() {
+    return new AdbCommitCrashInjectionGate().evaluate(
+        AdbCommitCrashInjectionGateTest.completeReport());
+  }
+
+  private static AdbLongRunStressEvaluation passedRecoveryDrillEvaluation() {
+    return new AdbRecoveryDrillGate().evaluate(
+        AdbRecoveryDrillGateTest.completeReport());
   }
 
   private static AdbLongRunStressReport longRunReport(long failedOperations,

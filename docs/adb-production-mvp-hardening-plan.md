@@ -221,6 +221,7 @@ sequenceDiagram
 | `AdbCommitIdempotencyStore` | 基于 txnId/client request id 去重 |
 | `AdbCrashInjectionHook` | 测试专用，在 prewrite、raft commit、store commit、reply 前注入失败 |
 | `AdbCommitCrashInjectionGate` | 汇总每个 commit 崩溃注入点的恢复证据，并作为 release gate 的数据安全输入 |
+| `AdbRecoveryDrillGate` | 汇总 kill/restart 进程级恢复演练证据，并作为 release gate 的故障恢复输入 |
 | `AdbDataSafetyVerifier` | 验证提交记录、可见版本、lock record、region commit index 一致 |
 
 ### 数据结构
@@ -243,6 +244,16 @@ sequenceDiagram
 | `recovered` | kill/reopen 或客户端重试后是否恢复到期望状态 |
 | `finalState` | 恢复后的 durable marker 状态，可为空但通过场景必须匹配期望 |
 | `notes` | 失败原因、日志路径或人工诊断摘要 |
+
+`AdbRecoveryDrillGate` 的报告结构必须至少记录以下字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `scenario` | 恢复演练场景，覆盖 kill leader、kill follower、kill witness、全集群重启 |
+| `attempted` | 是否真实执行过该演练 |
+| `recovered` | 演练后读写、路由和 Raft 多数派是否恢复 |
+| `checksumMatched` | 演练前后数据 checksum 是否一致 |
+| `notes` | 日志路径、命令、失败原因或人工诊断摘要 |
 
 ### 状态机
 
@@ -309,8 +320,11 @@ stateDiagram-v2
 - `AdbCommitCrashInjectionGate` 已定义 commit crash-injection 的结构化 release gate：每个必需注入点必须出现、恢复成功，并落到与数据安全语义一致的最终 marker 状态。
 - `AdbEndToEndClusterStressGate` 已要求端到端报告携带通过的 commit crash-injection 评估结果，避免只有普通长稳/恢复演练而缺少 commit 崩溃点证据。
 - `AdbCommitCrashInjectionGateTest` 覆盖完整注入矩阵通过、缺失注入点失败、恢复失败、最终状态不匹配和端到端 release gate 透传失败原因。
+- `AdbRecoveryDrillGate` 已定义 kill/restart 进程级恢复演练的结构化 release gate：leader、follower、witness 和全集群重启场景必须全部执行、恢复成功且 checksum 一致。
+- `AdbEndToEndClusterStressGate` 已要求端到端报告携带通过的恢复演练评估结果，避免只有布尔值而缺少每类 kill/restart 证据。
+- `AdbRecoveryDrillGateTest` 覆盖完整演练通过、缺失场景、未执行、未恢复、checksum 不一致和端到端 release gate 透传失败原因。
 
-本阶段尚未把 kill/restart 进程级验收接入真实多进程 release profile。下一轮需要把结构化 crash gate 接到进程级故障注入脚本和证据目录。
+本阶段尚未把结构化 crash gate / recovery gate 接到真实多进程 release profile 和证据目录。下一轮需要补 release profile 脚本与 evidence 归档。
 
 ## ADB-GA-03：轻量控制面
 
@@ -584,7 +598,7 @@ sequenceDiagram
 | 兼容测试 | 旧 `jdbc:adb:*` 单机路径通过 |
 | 集群 smoke | 2 data + 1 witness 启动、写入、查询、停止通过 |
 | 数据安全 | commit crash-injection 全部通过，且端到端报告必须包含 `AdbCommitCrashInjectionGate` 通过结果 |
-| 故障恢复 | kill leader、kill follower、kill witness、重启全集群通过 |
+| 故障恢复 | kill leader、kill follower、kill witness、重启全集群通过，且端到端报告必须包含 `AdbRecoveryDrillGate` 通过结果 |
 | 备份恢复 | 全量备份恢复 checksum 一致 |
 | 滚动升级 | 逐节点升级和回滚演练通过 |
 | 长稳压测 | 至少 6 小时内部门禁；试生产前提升到 24 小时 |

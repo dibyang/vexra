@@ -244,7 +244,7 @@ SELECT NAME FROM TEST;
 .\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbEndToEndClusterStressGateTest
 ```
 
-门禁要求长稳压测报告、故障注入矩阵、commit crash-injection gate、SQL/region 读写 smoke、恢复演练和滚动升级演练全部满足验收。真实长时间压测平台可以按 `AdbEndToEndClusterStressReport` 的结构接入。
+门禁要求长稳压测报告、故障注入矩阵、commit crash-injection gate、recovery drill gate、SQL/region 读写 smoke、恢复演练和滚动升级演练全部满足验收。真实长时间压测平台可以按 `AdbEndToEndClusterStressReport` 的结构接入。
 
 ## 9. 故障排查
 

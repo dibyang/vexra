@@ -244,7 +244,7 @@ End-to-end cluster stress gate model:
 .\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbEndToEndClusterStressGateTest
 ```
 
-The gate requires the long-running stress report, fault-injection matrix, commit crash-injection gate, SQL/region read/write smoke, recovery drill, and rolling-upgrade drill to all pass. A real long-duration stress platform can feed data into the `AdbEndToEndClusterStressReport` shape.
+The gate requires the long-running stress report, fault-injection matrix, commit crash-injection gate, recovery drill gate, SQL/region read/write smoke, recovery drill, and rolling-upgrade drill to all pass. A real long-duration stress platform can feed data into the `AdbEndToEndClusterStressReport` shape.
 
 ## 9. Troubleshooting
 

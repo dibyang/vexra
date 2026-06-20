@@ -221,6 +221,7 @@ If the first release allows only single-region transactions, step 3 allows exact
 | `AdbCommitIdempotencyStore` | Deduplicate by txnId/client request id |
 | `AdbCrashInjectionHook` | Test-only injection at prewrite, raft commit, store commit, and before reply |
 | `AdbCommitCrashInjectionGate` | Aggregate recovery evidence for each commit crash-injection point and feed the release-gate data-safety check |
+| `AdbRecoveryDrillGate` | Aggregate process-level kill/restart recovery evidence and feed the release-gate recovery check |
 | `AdbDataSafetyVerifier` | Validate commit marker, visible version, lock record, and region commit index consistency |
 
 ### Data Structures
@@ -243,6 +244,16 @@ If the first release allows only single-region transactions, step 3 allows exact
 | `recovered` | Whether kill/reopen or client retry reached the expected recovery outcome |
 | `finalState` | Durable marker state after recovery; nullable, but passing scenarios must match the expected state |
 | `notes` | Failure reason, log path, or manual diagnostic summary |
+
+`AdbRecoveryDrillGate` reports must record at least these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `scenario` | Recovery drill scenario: kill leader, kill follower, kill witness, or full-cluster restart |
+| `attempted` | Whether the drill was actually executed |
+| `recovered` | Whether reads, writes, routing, and Raft quorum recovered after the drill |
+| `checksumMatched` | Whether data checksums match before and after the drill |
+| `notes` | Log path, command, failure reason, or manual diagnostic summary |
 
 ### State Machine
 
@@ -309,8 +320,11 @@ Illegal transitions:
 - `AdbCommitCrashInjectionGate` now defines a structured release gate for commit crash-injection: every required injection point must appear, recover successfully, and end in the durable marker state required by the data-safety semantics.
 - `AdbEndToEndClusterStressGate` now requires the end-to-end report to carry a passing commit crash-injection evaluation, preventing ordinary soak/recovery evidence from replacing commit-specific crash evidence.
 - `AdbCommitCrashInjectionGateTest` covers full matrix pass, missing injection point failure, recovery failure, final-state mismatch, and end-to-end release-gate propagation.
+- `AdbRecoveryDrillGate` now defines a structured release gate for process-level kill/restart recovery drills: leader, follower, witness, and full-cluster restart scenarios must all be executed, recovered, and checksum-consistent.
+- `AdbEndToEndClusterStressGate` now requires the end-to-end report to carry a passing recovery-drill evaluation, preventing a single boolean from replacing per-scenario kill/restart evidence.
+- `AdbRecoveryDrillGateTest` covers full drill pass, missing scenario, not attempted, not recovered, checksum mismatch, and end-to-end release-gate propagation.
 
-This phase has not yet connected kill/restart process-level acceptance to the real multi-process release profile. The next increment should wire the structured crash gate into process-level failure-injection scripts and the release evidence directory.
+This phase has not yet connected the structured crash gate / recovery gate to the real multi-process release profile and evidence directory. The next increment should add the release-profile script and evidence archiving.
 
 ## ADB-GA-03: Lightweight Control Plane
 
@@ -584,7 +598,7 @@ sequenceDiagram
 | Compatibility tests | Old `jdbc:adb:*` single-node path passes |
 | Cluster smoke | 2 data + 1 witness start, write, query, and stop pass |
 | Data safety | Commit crash-injection passes, and the end-to-end report includes a passing `AdbCommitCrashInjectionGate` result |
-| Failure recovery | kill leader, kill follower, kill witness, full-cluster restart pass |
+| Failure recovery | kill leader, kill follower, kill witness, full-cluster restart pass, and the end-to-end report includes a passing `AdbRecoveryDrillGate` result |
 | Backup/restore | Full backup/restore checksum matches |
 | Rolling upgrade | Per-node upgrade and rollback drill passes |
 | Soak test | At least 6 hours for internal gate; increase to 24 hours before trial production |
