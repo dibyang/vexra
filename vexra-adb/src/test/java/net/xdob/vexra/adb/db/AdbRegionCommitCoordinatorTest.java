@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -93,6 +94,30 @@ class AdbRegionCommitCoordinatorTest {
     assertEquals(request.getWriteKeys().get(0), request.getMutations()
         .get(0).getKey());
     assertEquals(TxnState.COMMITTED, txn.getState());
+  }
+
+  /**
+   * 验证单 region commit 成功后会把 durable commit marker 推进到 REPLIED。
+   */
+  @Test
+  void shouldRecordSingleRegionDurableCommitLifecycle() throws Exception {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    AdbCommitIdempotencyStore markerStore = new AdbCommitIdempotencyStore();
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Collections.singletonList(region("r1",
+            new KeyRange(new byte[0], new byte[0]), "node-a", 3, 3))),
+        client, Function.identity(), false,
+        new AdbInMemoryDurableCommitRecorder(markerStore)));
+
+    Transaction2 txn = txnWithWrites(rowKey(1));
+    manager.commit(txn);
+
+    List<AdbDurableCommitMarker> markers = markers(markerStore);
+    assertEquals(1, markers.size());
+    assertEquals("r1", markers.get(0).getRegionId());
+    assertEquals(AdbDurableCommitState.REPLIED, markers.get(0).getState());
   }
 
   /**
@@ -187,6 +212,38 @@ class AdbRegionCommitCoordinatorTest {
   }
 
   /**
+   * 验证 prewrite 失败时，已经 prewrite 成功的 participant 会留下可恢复的回滚 marker。
+   */
+  @Test
+  void shouldRecordRollbackMarkerWhenPrewriteFails() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    client.failPrewriteRegionId = "r2";
+    AdbCommitIdempotencyStore markerStore = new AdbCommitIdempotencyStore();
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client, Function.identity(), false,
+        new AdbInMemoryDurableCommitRecorder(markerStore)));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    assertThrows(SQLException.class, () -> manager.commit(txn));
+
+    List<AdbDurableCommitMarker> markers = markers(markerStore);
+    assertEquals(1, markers.size());
+    assertEquals("r1", markers.get(0).getRegionId());
+    assertEquals(AdbDurableCommitState.ROLLED_BACK,
+        markers.get(0).getState());
+    assertTrue(markers.get(0).getLastError().contains("prewrite failed"));
+  }
+
+  /**
    * 验证 primary 已提交后 secondary commit 失败会暴露给上层，不能伪装成已回滚。
    */
   @Test
@@ -214,6 +271,38 @@ class AdbRegionCommitCoordinatorTest {
     assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.commits));
     assertEquals(0, client.rollbacks.size());
     assertEquals(TxnState.PENDING, txn.getState());
+  }
+
+  /**
+   * 验证 primary 已提交后 secondary 失败时，marker 能区分已提交 primary 与待恢复 secondary。
+   */
+  @Test
+  void shouldKeepRecoveryMarkersWhenSecondaryCommitFails() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    client.failCommitRegionId = "r2";
+    AdbCommitIdempotencyStore markerStore = new AdbCommitIdempotencyStore();
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client, Function.identity(), false,
+        new AdbInMemoryDurableCommitRecorder(markerStore)));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    assertThrows(SQLException.class, () -> manager.commit(txn));
+
+    List<AdbDurableCommitMarker> markers = markers(markerStore);
+    assertEquals(2, markers.size());
+    assertEquals(AdbDurableCommitState.REPLIED,
+        marker(markers, "r1").getState());
+    assertEquals(AdbDurableCommitState.PREWRITTEN,
+        marker(markers, "r2").getState());
   }
 
   /**
@@ -333,6 +422,21 @@ class AdbRegionCommitCoordinatorTest {
     RowValue rowValue = new RowValue();
     rowValue.payload = RowCodec.encode(ValueVarchar.get(value));
     return rowValue;
+  }
+
+  private static List<AdbDurableCommitMarker> markers(
+      AdbCommitIdempotencyStore store) {
+    return new ArrayList<>(store.snapshot());
+  }
+
+  private static AdbDurableCommitMarker marker(
+      List<AdbDurableCommitMarker> markers, String regionId) {
+    for (AdbDurableCommitMarker marker : markers) {
+      if (marker.getRegionId().equals(regionId)) {
+        return marker;
+      }
+    }
+    throw new AssertionError("missing marker for regionId=" + regionId);
   }
 
   private static RegionMetadata region(String regionId, KeyRange range,

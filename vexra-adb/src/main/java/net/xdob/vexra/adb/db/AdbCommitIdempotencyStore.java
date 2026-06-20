@@ -27,7 +27,7 @@ public final class AdbCommitIdempotencyStore {
   public synchronized AdbDurableCommitMarker recordOrGet(
       AdbDurableCommitMarker marker) throws SQLException {
     Objects.requireNonNull(marker, "marker == null");
-    String key = marker.idempotencyKey();
+    String key = storageKey(marker);
     AdbDurableCommitMarker existing = markers.get(key);
     if (existing == null) {
       markers.put(key, marker);
@@ -49,7 +49,7 @@ public final class AdbCommitIdempotencyStore {
    */
   public synchronized void update(AdbDurableCommitMarker marker) {
     Objects.requireNonNull(marker, "marker == null");
-    markers.put(marker.idempotencyKey(), marker);
+    markers.put(storageKey(marker), marker);
   }
 
   /**
@@ -60,5 +60,9 @@ public final class AdbCommitIdempotencyStore {
   public synchronized Collection<AdbDurableCommitMarker> snapshot() {
     return Collections.unmodifiableList(
         new java.util.ArrayList<>(markers.values()));
+  }
+
+  private static String storageKey(AdbDurableCommitMarker marker) {
+    return marker.idempotencyKey() + "|region:" + marker.getRegionId();
   }
 }

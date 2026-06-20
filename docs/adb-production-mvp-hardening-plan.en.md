@@ -279,15 +279,18 @@ Illegal transitions:
 
 ### Current Implementation Status
 
-`ADB-GA-02` has completed its first commit-marker and recovery-decision model:
+`ADB-GA-02` has completed its second durable-commit recording increment:
 
 - `AdbDurableCommitState` defines `PREWRITTEN`, `RAFT_COMMITTED`, `STORE_COMMITTED`, `REPLIED`, and `ROLLED_BACK`.
 - `AdbDurableCommitMarker` records txnId, clientRequestId, startTs, commitTs, regionId, state, and last error, and only allows data-safe state transitions.
 - `AdbCommitRecoveryScanner` maps markers to `ROLLBACK`, `ROLL_FORWARD`, `RETURN_COMMITTED`, or `DISCARD` recovery actions.
-- `AdbCommitIdempotencyStore` provides an in-memory idempotency model, proving that duplicate commits with the same client idempotency key do not create a new commitTs.
+- `AdbCommitIdempotencyStore` provides an in-memory idempotency model, proving that duplicate commits with the same client idempotency key do not create a new commitTs, while allowing one transaction to track recovery state per region.
+- `AdbDurableCommitRecorder` defines the status recording hook for the real commit path; the default no-op keeps the old single-node path compatible, and `AdbInMemoryDurableCommitRecorder` is the semantic template for tests and later persistent implementations.
+- `AdbRegionCommitCoordinator` now advances marker state across single-region commit, 2PC prewrite, primary/secondary commit, and rollback paths, preserving recovery evidence such as `REPLIED`, `PREWRITTEN`, and `ROLLED_BACK`.
 - `AdbDurableCommitRecoveryTest` covers marker transitions, rollback rejection after RAFT_COMMITTED, rollback before raft commit, recovery-decision mapping, and idempotency conflicts.
+- `AdbRegionCommitCoordinatorTest` covers single-region success markers, rollback markers after prewrite failure, and primary-committed/secondary-in-doubt markers on the real coordinator path.
 
-This phase has not yet persisted markers into real LDB/Rocks storage and has not yet wired them into the real `TxnManager` or `AdbRegionCommitCoordinator` commit paths. The next increment needs to attach the marker store around durable commit and add crash-injection / reopen acceptance.
+This phase has not yet persisted markers into real LDB/Rocks storage and has not yet implemented automatic scan-and-recover after process restart. The next increment needs a persistent marker store, reopen recovery, crash-injection, and kill/restart acceptance.
 
 ## ADB-GA-03: Lightweight Control Plane
 
