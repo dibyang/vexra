@@ -1,6 +1,9 @@
 package net.xdob.vexra.adb;
 
 import net.xdob.vexra.adb.DbStore;
+import net.xdob.vexra.adb.db.AdbProductionCapability;
+import net.xdob.vexra.adb.db.AdbProductionGuard;
+import net.xdob.vexra.adb.db.AdbProductionRequestContext;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import net.xdob.vexra.adb.db.DbStoreType;
 import net.xdob.vexra.cluster.ops.BackupRestoreMode;
@@ -63,13 +66,19 @@ public final class AdbStoreBackupRestoreMain {
     private final DbStoreType storeType;
     private final String storeDir;
     private final BackupRestorePlan plan;
+    private final boolean productionGuardEnabled;
+    private final AdbProductionGuard productionGuard;
 
     private BackupRestoreCommand(String operation, DbStoreType storeType,
-        String storeDir, BackupRestorePlan plan) {
+        String storeDir, BackupRestorePlan plan,
+        boolean productionGuardEnabled,
+        AdbProductionGuard productionGuard) {
       this.operation = operation;
       this.storeType = storeType;
       this.storeDir = storeDir;
       this.plan = plan;
+      this.productionGuardEnabled = productionGuardEnabled;
+      this.productionGuard = productionGuard;
     }
 
     private static BackupRestoreCommand parse(String operation, String[] args) {
@@ -89,11 +98,13 @@ public final class AdbStoreBackupRestoreMain {
           BackupRestoreMode.FULL, Collections.singletonList("local"),
           location, checkpointTs);
       return new BackupRestoreCommand(normalizedOperation, storeType, storeDir,
-          plan);
+          plan, AdbProductionCommandOptions.hasProductionProperties(values),
+          AdbProductionCommandOptions.productionGuard(values));
     }
 
     private void execute() throws Exception {
       validateBeforeOpen();
+      requireProductionCapability();
       DbStore store = DbStoreEngine.getOrCreate(storeType, storeDir,
           new Properties());
       try {
@@ -105,6 +116,14 @@ public final class AdbStoreBackupRestoreMain {
       } finally {
         DbStoreEngine.close(storeDir);
       }
+    }
+
+    private void requireProductionCapability() throws java.sql.SQLException {
+      if (!productionGuardEnabled) {
+        return;
+      }
+      productionGuard.requireCapability(AdbProductionCapability.BACKUP_RESTORE,
+          AdbProductionRequestContext.local(operation + " store"));
     }
 
     private void validateBeforeOpen() {

@@ -2,11 +2,15 @@ package net.xdob.vexra.adb;
 
 import net.xdob.vexra.cluster.ops.RollingUpgradePlan;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import net.xdob.vexra.adb.db.AdbProductionCapability;
+import net.xdob.vexra.adb.db.AdbProductionGuard;
+import net.xdob.vexra.adb.db.AdbProductionRequestContext;
 
 /**
  * ADB 滚动升级计划命令行入口。
@@ -27,16 +31,21 @@ public final class AdbUpgradePlanMain {
    * @param args `--targetVersion v --nodes n1,n2,w1`，可选
    *             `--upgraded n1`
    */
-  public static void main(String[] args) {
+  public static void main(String[] args) throws SQLException {
     UpgradePlanCommand command = UpgradePlanCommand.parse(args);
     System.out.print(command.render());
   }
 
   private static final class UpgradePlanCommand {
     private final RollingUpgradePlan plan;
+    private final boolean productionGuardEnabled;
+    private final AdbProductionGuard productionGuard;
 
-    private UpgradePlanCommand(RollingUpgradePlan plan) {
+    private UpgradePlanCommand(RollingUpgradePlan plan,
+        boolean productionGuardEnabled, AdbProductionGuard productionGuard) {
       this.plan = plan;
+      this.productionGuardEnabled = productionGuardEnabled;
+      this.productionGuard = productionGuard;
     }
 
     private static UpgradePlanCommand parse(String[] args) {
@@ -46,10 +55,13 @@ public final class AdbUpgradePlanMain {
       List<String> upgraded = values.containsKey("upgraded")
           ? splitCsv(values.get("upgraded")) : null;
       return new UpgradePlanCommand(new RollingUpgradePlan(targetVersion,
-          nodes, upgraded));
+          nodes, upgraded),
+          AdbProductionCommandOptions.hasProductionProperties(values),
+          AdbProductionCommandOptions.productionGuard(values));
     }
 
-    private String render() {
+    private String render() throws SQLException {
+      requireProductionCapability();
       StringBuilder builder = new StringBuilder();
       builder.append("PASS\n");
       builder.append("targetVersion=").append(plan.getTargetVersion())
@@ -73,6 +85,14 @@ public final class AdbUpgradePlanMain {
         step++;
       }
       return builder.toString();
+    }
+
+    private void requireProductionCapability() throws SQLException {
+      if (!productionGuardEnabled) {
+        return;
+      }
+      productionGuard.requireCapability(AdbProductionCapability.ROLLING_UPGRADE,
+          AdbProductionRequestContext.local("rolling upgrade plan"));
     }
 
     private static Map<String, String> parseArgs(String[] args) {

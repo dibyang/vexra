@@ -195,8 +195,10 @@ sequenceDiagram
 - `AdbSqlServerMainTest` 覆盖 SQL Server 生产参数解析、缺安全默认值拒绝启动，以及 `2data1witness` 加安全默认值时允许构造 Server。
 - `TxnManager` 已支持可选 `AdbCrossRegionTxnGuard`，显式生产配置安装后，本地 commit 会在 durable commit 前校验单 region 事务能力；`AdbTableProvider` 会在生产参数存在时把 guard 安装到当前表的 `TxnManager`。
 - `AdbTxnManagerProductionGuardTest` 覆盖坏生产配置拒绝本地 commit 且不推进 commit timestamp，以及安全 `2data1witness` 配置允许本地单 region commit；`AdbRuntimeSessionContextTest` 覆盖 detach 会恢复 commit guard 为 no-op。
+- `AdbStoreBackupRestoreMain` 和 `AdbUpgradePlanMain` 已在显式生产参数存在时分别校验 `BACKUP_RESTORE` 与 `ROLLING_UPGRADE`，坏的生产配置会在打开 store 或输出 runbook 前失败。
+- `AdbStoreBackupRestoreMainTest` 与 `AdbUpgradePlanMainTest` 覆盖缺安全默认值拒绝运维入口，以及安全 `2data1witness` 配置下本地 FULL 备份恢复和滚动升级 runbook 继续可用。
 
-本阶段仍需把 guard 继续接入 JDBC URL 转换、备份恢复和滚动升级等真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
+本阶段仍需把 guard 继续接入 JDBC URL 转换等真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
 
 ## ADB-GA-02：数据安全闭环
 
@@ -568,11 +570,11 @@ sequenceDiagram
 - 当前预检覆盖 TLS/auth 安全开关、`2 data + 1 witness` 拓扑、runtime `bin` 脚本、节点数据目录、TLS/权限配置路径和 catalog 输出路径；`--strictFiles true` 可要求 TLS/权限文件真实存在。
 - `AdbClusterOrchestrationConfigTest` 覆盖生产预检通过与缺安全默认值失败；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 中预检脚本存在并可执行。
 - 新增 `adb-backup` / `adb-restore` runtime 命令入口，复用 `DbStore.checkpoint(String)` 与 `DbStore.restore(String)` 执行本地 LDB/Rocks FULL backup/restore。
-- 当前备份恢复命令仅覆盖本地全量模式，参数为 `--storeDir`、`--location`、可选 `--store`、`--planId` 和 `--checkpointTs`；不声明增量备份、PITR、对象存储上传或多 region 调度。
-- `AdbStoreBackupRestoreMainTest` 覆盖命令入口执行备份、写入新数据、恢复后读回 checkpoint 数据；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含备份与恢复脚本。
+- 当前备份恢复命令仅覆盖本地全量模式，参数为 `--storeDir`、`--location`、可选 `--store`、`--planId`、`--checkpointTs` 和显式生产 guard 参数；不声明增量备份、PITR、对象存储上传或多 region 调度。
+- `AdbStoreBackupRestoreMainTest` 覆盖命令入口执行备份、写入新数据、恢复后读回 checkpoint 数据、生产 guard 拒绝和安全生产 guard 放行；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含备份与恢复脚本。
 - 新增 `adb-upgrade-plan` runtime 命令入口，基于 `RollingUpgradePlan` 输出目标版本、已升级节点、下一节点、剩余升级步骤和每步回滚提示。
-- 当前滚动升级命令只生成无副作用 runbook，不连接集群、不停止进程、不修改节点状态；真实执行仍需运维系统或人工按预检、备份、逐节点升级、健康验证顺序执行。
-- `AdbUpgradePlanMainTest` 覆盖下一节点和剩余步骤输出；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含滚动升级计划脚本。
+- 当前滚动升级命令会在可选生产 guard 校验后生成无副作用 runbook，不连接集群、不停止进程、不修改节点状态；真实执行仍需运维系统或人工按预检、备份、逐节点升级、健康验证顺序执行。
+- `AdbUpgradePlanMainTest` 覆盖下一节点和剩余步骤输出、生产 guard 拒绝和安全生产 guard 放行；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含滚动升级计划脚本。
 
 ## ADB-GA-06：可观测性与诊断
 

@@ -195,8 +195,10 @@ Validation reads config and control-plane snapshots only. It must not modify bus
 - `AdbSqlServerMainTest` covers SQL Server production-parameter parsing, startup rejection when secure defaults are missing, and Server construction when `2data1witness` plus secure defaults are present.
 - `TxnManager` now supports an optional `AdbCrossRegionTxnGuard`. After explicit production configuration installs it, local commits validate single-region transaction capability before durable commit. `AdbTableProvider` installs this guard into the table `TxnManager` when production parameters are present.
 - `AdbTxnManagerProductionGuardTest` covers rejecting local commit under invalid production configuration without advancing commit timestamp, and allowing local single-region commit under secure `2data1witness` configuration. `AdbRuntimeSessionContextTest` covers detach restoring the commit guard to no-op.
+- `AdbStoreBackupRestoreMain` and `AdbUpgradePlanMain` now validate `BACKUP_RESTORE` and `ROLLING_UPGRADE` respectively when explicit production parameters are present. Invalid production configuration fails before opening a store or rendering an upgrade runbook.
+- `AdbStoreBackupRestoreMainTest` and `AdbUpgradePlanMainTest` cover rejecting operations entries when secure defaults are missing, and keeping local FULL backup/restore plus rolling-upgrade runbook generation available under secure `2data1witness` configuration.
 
-This phase still needs to wire the guard into JDBC URL conversion, backup/restore, rolling-upgrade, and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
+This phase still needs to wire the guard into JDBC URL conversion and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
 
 ## ADB-GA-02: Data Safety Closure
 
@@ -568,11 +570,11 @@ sequenceDiagram
 - The current preflight covers TLS/auth security switches, `2 data + 1 witness` topology, runtime `bin` scripts, node data directories, TLS/privilege config paths, and catalog output path. `--strictFiles true` can require TLS/privilege files to exist.
 - `AdbClusterOrchestrationConfigTest` covers passing production preflight and missing secure-default failure; `AdbRuntimeDistributionSmokeTest` covers the preflight script being present and executable in the runtime zip.
 - Add `adb-backup` / `adb-restore` runtime command entrypoints, reusing `DbStore.checkpoint(String)` and `DbStore.restore(String)` for local LDB/Rocks FULL backup/restore.
-- The current backup/restore commands only cover local full mode. Parameters are `--storeDir`, `--location`, optional `--store`, `--planId`, and `--checkpointTs`; they do not claim incremental backup, PITR, object-storage upload, or multi-region scheduling.
-- `AdbStoreBackupRestoreMainTest` covers command-entry backup, a later write, restore, and reading checkpoint data back. `AdbRuntimeDistributionSmokeTest` covers the backup and restore scripts being included in the runtime zip.
+- The current backup/restore commands only cover local full mode. Parameters are `--storeDir`, `--location`, optional `--store`, `--planId`, `--checkpointTs`, and explicit production guard parameters; they do not claim incremental backup, PITR, object-storage upload, or multi-region scheduling.
+- `AdbStoreBackupRestoreMainTest` covers command-entry backup, a later write, restore, reading checkpoint data back, production-guard rejection, and secure production-guard allow. `AdbRuntimeDistributionSmokeTest` covers the backup and restore scripts being included in the runtime zip.
 - Add the `adb-upgrade-plan` runtime command entrypoint. It uses `RollingUpgradePlan` to output the target version, upgraded nodes, next node, remaining upgrade steps, and rollback hint for each step.
-- The current rolling-upgrade command only generates a side-effect-free runbook. It does not connect to the cluster, stop processes, or mutate node state; real execution still belongs to the operations system or a human runbook following preflight, backup, per-node upgrade, and health verification.
-- `AdbUpgradePlanMainTest` covers next-node and remaining-step output. `AdbRuntimeDistributionSmokeTest` covers the rolling-upgrade plan script being included in the runtime zip.
+- The current rolling-upgrade command only generates a side-effect-free runbook after optional production-guard validation. It does not connect to the cluster, stop processes, or mutate node state; real execution still belongs to the operations system or a human runbook following preflight, backup, per-node upgrade, and health verification.
+- `AdbUpgradePlanMainTest` covers next-node and remaining-step output, production-guard rejection, and secure production-guard allow. `AdbRuntimeDistributionSmokeTest` covers the rolling-upgrade plan script being included in the runtime zip.
 
 ## ADB-GA-06: Observability and Diagnostics
 
