@@ -606,6 +606,32 @@ sequenceDiagram
 | Security scan | TLS/auth/least-privilege config check passes |
 | Documentation | quickstart, user guide, runbook, and known limitations are updated |
 
+### Release Evidence Archive
+
+| Interface/Class | Responsibility |
+| --- | --- |
+| `AdbReleaseEvidence` | Aggregate release id, version, end-to-end report, gate evaluation, executed commands, and checksums |
+| `AdbReleaseEvidenceWriter` | Write release evidence to a stable file for CI, manual audit, and trial-production entry review |
+
+The first `AdbReleaseEvidenceWriter` output is `release-evidence.properties`
+with at least these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `releaseId` | Release or trial-production batch id |
+| `version` | Version under release |
+| `clusterName` | Cluster name from the end-to-end report |
+| `passed` | Final `AdbEndToEndClusterStressGate` result |
+| `failureReasons` | Failure reasons joined with `;` |
+| `commands` | Key verification commands joined with `;` |
+| `checksums` | Backup, restore, or data checksum summary |
+
+Failure handling and rollback:
+
+- Create the output directory when it does not exist; fail when the path exists but is not a directory.
+- Re-running the same `releaseId` overwrites the same evidence file to avoid conflicting copies; CI can move the old directory before archiving.
+- Evidence files store structured summaries only and must not directly include tokens, private keys, or passwords; detailed logs belong to the later diagnostic bundle.
+
 ### Trial-Production Entry
 
 | Item | Requirement |
@@ -621,7 +647,7 @@ sequenceDiagram
 - Add a CI release profile.
 - Soak test emits a structured report and reuses `AdbEndToEndClusterStressGate`.
 - Failure injection saves logs, metrics, and recovery result; commit crash-injection must cover every injection point defined by GA-02.
-- Every release creates a release evidence directory with commands, versions, reports, and checksums.
+- Every release uses `AdbReleaseEvidenceWriter` to create a release evidence directory with commands, versions, reports, gate result, and checksums.
 
 ## Recommended Implementation Order
 

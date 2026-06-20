@@ -606,6 +606,31 @@ sequenceDiagram
 | 安全扫描 | TLS/auth/最小权限配置检查通过 |
 | 文档 | quickstart、user guide、runbook、已知限制同步 |
 
+### Release Evidence 归档
+
+| 接口/类 | 职责 |
+| --- | --- |
+| `AdbReleaseEvidence` | 汇总 release id、版本、端到端报告、门禁评估、执行命令和 checksum |
+| `AdbReleaseEvidenceWriter` | 将 release evidence 写入固定文件，供 CI、人工审计和试生产准入复核 |
+
+`AdbReleaseEvidenceWriter` 第一版输出 `release-evidence.properties`，字段至少包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `releaseId` | 发布或试生产批次 ID |
+| `version` | 本次发布版本 |
+| `clusterName` | 端到端报告中的集群名 |
+| `passed` | `AdbEndToEndClusterStressGate` 最终结果 |
+| `failureReasons` | 失败原因，多个原因用 `;` 拼接 |
+| `commands` | 关键验证命令，多个命令用 `;` 拼接 |
+| `checksums` | 备份、恢复或数据校验 checksum 摘要 |
+
+异常处理和回滚：
+
+- 输出目录不存在时自动创建；路径已存在但不是目录时失败。
+- 同一 `releaseId` 重跑会覆盖同名 evidence 文件，避免产生冲突副本；上层 CI 可在归档前移动旧目录。
+- evidence 文件只写结构化摘要，不直接包含 token、私钥或密码；详细日志由后续 diagnostic bundle 归档。
+
 ### 试生产准入
 
 | 项 | 要求 |
@@ -621,7 +646,7 @@ sequenceDiagram
 - CI 增加 release profile。
 - 长稳压测输出结构化报告，复用 `AdbEndToEndClusterStressGate`。
 - 故障注入测试必须保存日志、指标和恢复结果；commit crash-injection 必须覆盖 GA-02 定义的全部注入点。
-- 每次发布生成 release evidence 目录，包含命令、版本、报告和 checksum。
+- 每次发布通过 `AdbReleaseEvidenceWriter` 生成 release evidence 目录，包含命令、版本、报告、门禁结果和 checksum。
 
 ## 实施顺序建议
 
