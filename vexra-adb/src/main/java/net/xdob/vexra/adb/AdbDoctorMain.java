@@ -6,6 +6,7 @@ import net.xdob.vexra.adb.db.AdbClusterPreflightReport;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundle;
 import net.xdob.vexra.adb.db.AdbDiagnosticBundleWriter;
 import net.xdob.vexra.adb.db.AdbDiagnosticLogTailer;
+import net.xdob.vexra.adb.db.AdbDiagnosticPropertiesCollector;
 
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -40,7 +41,8 @@ public final class AdbDoctorMain {
    *             `--version version`、`--h2dbVersion version`、
    *             `--ldbVersion version`、`--strictFiles true|false` 和
    *             `--checkRuntimeScripts true|false`、`--logs path1,path2`、
-   *             `--logTailLines n`
+   *             `--logTailLines n`、`--evidence path1,path2`、
+   *             `--operationReports path1,path2`
    * @throws Exception 配置读取、预检或写入失败时抛出
    */
   public static void main(String[] args) throws Exception {
@@ -61,7 +63,7 @@ public final class AdbDoctorMain {
         valueOrDefault(values.get("h2dbVersion"), "unknown"),
         valueOrDefault(values.get("ldbVersion"), "unknown"),
         AdbDiagnosticBundleWriter.redact(properties),
-        operations(preflight, configPath),
+        operations(preflight, configPath, values),
         metrics(preflight),
         logTails(values),
         lines(preflight.render()),
@@ -80,7 +82,8 @@ public final class AdbDoctorMain {
   }
 
   private static Map<String, String> operations(
-      AdbClusterPreflightReport preflight, Path configPath) {
+      AdbClusterPreflightReport preflight, Path configPath,
+      Map<String, String> values) throws Exception {
     Map<String, String> operations = new LinkedHashMap<>();
     operations.put("configPath", configPath.toAbsolutePath().toString());
     operations.put("preflightPassed", String.valueOf(preflight.isPassed()));
@@ -88,7 +91,23 @@ public final class AdbDoctorMain {
         String.valueOf(preflight.getFailedChecks().size()));
     operations.put("preflightPassedChecks",
         String.valueOf(preflight.getPassedChecks().size()));
+    AdbDiagnosticPropertiesCollector collector =
+        new AdbDiagnosticPropertiesCollector();
+    collectProperties(values, operations, collector, "evidence",
+        "releaseEvidence");
+    collectProperties(values, operations, collector, "operationReports",
+        "operationReport");
     return operations;
+  }
+
+  private static void collectProperties(Map<String, String> args,
+      Map<String, String> target, AdbDiagnosticPropertiesCollector collector,
+      String argumentName, String prefix) throws Exception {
+    String csv = args.get(argumentName);
+    if (csv == null || csv.trim().isEmpty()) {
+      return;
+    }
+    target.putAll(collector.collect(paths(csv), prefix));
   }
 
   private static Map<String, Number> metrics(

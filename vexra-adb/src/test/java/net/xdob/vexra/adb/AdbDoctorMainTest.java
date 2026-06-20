@@ -4,9 +4,11 @@ import net.xdob.vexra.adb.db.AdbDiagnosticBundleWriter;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,6 +34,12 @@ class AdbDoctorMainTest {
     Path log = tempDir.resolve("sql.log");
     Files.write(log, java.util.Arrays.asList("line-1", "line-2", "line-3"),
         StandardCharsets.UTF_8);
+    Path evidence = writeProperties("release-evidence.properties",
+        "releaseId", "rel-001", "passed", "true",
+        "checksums", "backup=1;restore=1");
+    Path operationReport = writeProperties("operation.properties",
+        "operation", "upgrade", "status", "complete",
+        "operator.token", "hidden-token");
     Path output = tempDir.resolve("doctor-output");
 
     AdbDoctorMain.main(new String[] {
@@ -43,7 +51,9 @@ class AdbDoctorMainTest {
         "--ldbVersion", "0.6.0",
         "--checkRuntimeScripts", "false",
         "--logs", log.toString(),
-        "--logTailLines", "2"
+        "--logTailLines", "2",
+        "--evidence", evidence.toString(),
+        "--operationReports", operationReport.toString()
     });
 
     Path file = output.resolve(AdbDiagnosticBundleWriter.BUNDLE_FILE);
@@ -60,7 +70,14 @@ class AdbDoctorMainTest {
     assertFalse(text.contains("line-1"));
     assertTrue(text.contains("line-2"));
     assertTrue(text.contains("line-3"));
+    assertTrue(text.contains("releaseEvidence.0.releaseId=rel-001"));
+    assertTrue(text.contains(
+        "releaseEvidence.0.checksums=backup=1;restore=1"));
+    assertTrue(text.contains("operationReport.0.operation=upgrade"));
+    assertTrue(text.contains("operationReport.0.status=complete"));
+    assertTrue(text.contains("operationReport.0.operator_token=<redacted>"));
     assertFalse(text.contains("token-secret"));
+    assertFalse(text.contains("hidden-token"));
   }
 
   private Path writeClusterConfig() throws Exception {
@@ -96,5 +113,17 @@ class AdbDoctorMainTest {
 
   private static String path(Path path) {
     return path.toAbsolutePath().toString().replace('\\', '/');
+  }
+
+  private Path writeProperties(String name, String... pairs) throws Exception {
+    Properties properties = new Properties();
+    for (int i = 0; i < pairs.length; i += 2) {
+      properties.setProperty(pairs[i], pairs[i + 1]);
+    }
+    Path file = tempDir.resolve(name);
+    try (OutputStream output = Files.newOutputStream(file)) {
+      properties.store(output, "test");
+    }
+    return file;
   }
 }
