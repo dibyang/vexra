@@ -687,6 +687,8 @@ sequenceDiagram
 | `AdbTrialProductionAdmissionReport` | 汇总试生产准入项：数据规模、回滚预案、告警、值守窗口和已知限制确认 |
 | `AdbTrialProductionAdmissionGate` | 在 release gate 通过后继续评估试生产人工准入项 |
 | `AdbTrialProductionAdmissionWriter` | 写入 `trial-production-admission.properties`，供 CI、doctor 和人工审批复核 |
+| `AdbReleaseReadinessReport` | 汇总 GA-01 到 GA-06 阶段门禁、端到端 release profile、试生产准入、evidence 归档和文档同步 |
+| `AdbReleaseReadinessGate` | 形成最终发布就绪判断，任一阶段证据缺失都不得进入生产候选 |
 
 `AdbReleaseEvidenceWriter` 第一版输出 `release-evidence.properties`，字段至少包含：
 
@@ -773,6 +775,11 @@ Gradle 入口：
 | `knownLimitationsAccepted` | 已知限制是否接受 |
 | `notes` | 人工备注 |
 
+### 当前实现增量
+
+- 新增 `AdbReleaseReadinessReport` 和 `AdbReleaseReadinessGate`，把生产范围冻结、`jdbc:adb:*` 兼容验证、数据安全、控制面、事务、安装运维、可观测性、端到端 release profile、试生产准入、release evidence 归档和生产文档同步汇总为 GA-07 最终发布就绪门禁。该门禁只校验已生成证据，不重复执行底层测试、部署或诊断命令。
+- `AdbReleaseReadinessGateTest` 覆盖完整通过、范围/兼容缺失、阶段门禁缺失，以及端到端 profile、试生产准入、evidence 归档、文档同步缺失时的拒绝路径。
+
 ### 测试方案
 
 - CI 增加 release profile。
@@ -780,6 +787,7 @@ Gradle 入口：
 - 故障注入测试必须保存日志、指标和恢复结果；commit crash-injection 必须覆盖 GA-02 定义的全部注入点。
 - 每次发布通过 `AdbReleaseEvidenceWriter` 生成 release evidence 目录，包含命令、版本、报告、门禁结果和 checksum。
 - 每次试生产前通过 `AdbTrialProductionAdmissionGate` 生成 admission 文件；所有人工准入项未显式确认时不得进入试生产。
+- 每次生产候选必须通过 `AdbReleaseReadinessGate` 汇总 GA-01 到 GA-07 证据，避免单个 release profile 通过但阶段证据或文档缺失。
 
 ## 实施顺序建议
 

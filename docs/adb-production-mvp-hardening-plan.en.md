@@ -687,6 +687,8 @@ sequenceDiagram
 | `AdbTrialProductionAdmissionReport` | Summarize trial-production admission items: data scale, rollback plan, alerting, on-call window, and known-limitation acceptance |
 | `AdbTrialProductionAdmissionGate` | Evaluate human admission items after the release gate passes |
 | `AdbTrialProductionAdmissionWriter` | Write `trial-production-admission.properties` for CI, doctor, and human approval review |
+| `AdbReleaseReadinessReport` | Aggregate GA-01 through GA-06 phase gates, the end-to-end release profile, trial-production admission, evidence archival, and documentation synchronization |
+| `AdbReleaseReadinessGate` | Produce the final release-readiness decision; any missing phase evidence blocks the production candidate |
 
 The first `AdbReleaseEvidenceWriter` output is `release-evidence.properties`
 with at least these fields:
@@ -777,6 +779,11 @@ admission file is still written and includes `release gate did not pass`.
 | `knownLimitationsAccepted` | Whether known limitations are accepted |
 | `notes` | Human notes |
 
+### Current Implementation Increment
+
+- Added `AdbReleaseReadinessReport` and `AdbReleaseReadinessGate`, aggregating production-scope freeze, `jdbc:adb:*` compatibility validation, data safety, control plane, transactions, operations, observability, the end-to-end release profile, trial-production admission, release-evidence archival, and production documentation synchronization into the final GA-07 release-readiness gate. This gate only validates existing evidence; it does not re-run low-level tests, deployment commands, or diagnostic commands.
+- `AdbReleaseReadinessGateTest` covers the full pass case plus rejection when scope/compatibility, phase gates, or end-to-end profile, trial admission, evidence archival, and documentation synchronization are missing.
+
 ### Tests
 
 - Add a CI release profile.
@@ -784,6 +791,7 @@ admission file is still written and includes `release gate did not pass`.
 - Failure injection saves logs, metrics, and recovery result; commit crash-injection must cover every injection point defined by GA-02.
 - Every release uses `AdbReleaseEvidenceWriter` to create a release evidence directory with commands, versions, reports, gate result, and checksums.
 - Every trial-production entry generates an admission file through `AdbTrialProductionAdmissionGate`; trial production is not allowed unless all human admission items are explicitly confirmed.
+- Every production candidate must pass `AdbReleaseReadinessGate` to aggregate GA-01 through GA-07 evidence, preventing a single passing release profile from hiding missing phase evidence or documentation.
 
 ## Recommended Implementation Order
 
