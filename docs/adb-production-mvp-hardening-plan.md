@@ -334,8 +334,11 @@ stateDiagram-v2
 - `AdbEndToEndClusterStressGate` 已要求端到端报告携带通过的恢复演练评估结果，避免只有布尔值而缺少每类 kill/restart 证据。
 - `AdbRecoveryDrillGateTest` 覆盖完整演练通过、缺失场景、未执行、未恢复、checksum 不一致和端到端 release gate 透传失败原因。
 - `RaftRClient` 已将远端 SQL 写入使用的 Raft retry 预算改为可配置默认值，默认覆盖更长的 leader 发现和 NotLeader 重试窗口，降低多进程 smoke 在启动/选主窗口内误报 PREWRITE 失败的概率。
+- `AdbReleaseProfileMain` 已支持通过 `--commitCrashGatePassed` 与 `--recoveryDrillGatePassed` 接收真实 release profile 或 CI 转换后的 GA-02 数据安全门禁结果；失败结果会进入端到端 release gate，而不是被默认通过值覆盖。
+- `AdbReleaseEvidenceWriter` 已把 `commitCrashGatePassed`、`commitCrashFailureReasons`、`recoveryDrillGatePassed` 和 `recoveryDrillFailureReasons` 写入 `release-evidence.properties`，让证据目录可以单独审计 commit 崩溃注入和 kill/restart 恢复演练结果。
+- `AdbReleaseProfileMainTest` 与 `AdbReleaseEvidenceWriterTest` 覆盖 GA-02 门禁失败从命令行进入 release profile、总门禁失败、evidence 归档独立字段和通过路径字段输出。
 
-本阶段尚未把结构化 crash gate / recovery gate 接到真实多进程 release profile 和证据目录。下一轮需要补 release profile 脚本与 evidence 归档。
+本阶段已把结构化 crash gate / recovery gate 接到 release profile 和 evidence 目录；后续真实多进程故障注入平台需要把实际演练结果转换为这些参数和字段，并将原始日志、checksum 明细交给 GA-06 diagnostic bundle 归档。
 
 ## ADB-GA-03：轻量控制面
 

@@ -118,38 +118,54 @@ public final class AdbReleaseProfileMain {
       Map<String, String> values) {
     return new AdbEndToEndClusterStressReport(
         value(values, "clusterName", "adb-release-profile"),
-        longRunReport(values), passedCommitCrashEvaluation(),
-        passedRecoveryDrillEvaluation(),
+        longRunReport(values), commitCrashEvaluation(values),
+        recoveryDrillEvaluation(values),
         bool(values, "clusterReadWritePassed", true),
         bool(values, "recoveryDrillPassed", true),
         bool(values, "rollingUpgradePassed", true),
         intValue(values, "sqlRegionSmokeCycles", 1));
   }
 
-  private static AdbLongRunStressEvaluation passedCommitCrashEvaluation() {
+  private static AdbLongRunStressEvaluation commitCrashEvaluation(
+      Map<String, String> values) {
+    return commitCrashEvaluation(bool(values, "commitCrashGatePassed", true));
+  }
+
+  private static AdbLongRunStressEvaluation commitCrashEvaluation(
+      boolean passed) {
     return new AdbCommitCrashInjectionGate().evaluate(
         new AdbCommitCrashInjectionReport("release-profile",
             Arrays.asList(
-                crash(AdbCommitCrashInjectionPoint.BEFORE_PREWRITE, null),
+                crash(AdbCommitCrashInjectionPoint.BEFORE_PREWRITE, null,
+                    passed),
                 crash(AdbCommitCrashInjectionPoint.AFTER_PREWRITE_BEFORE_RAFT,
-                    AdbDurableCommitState.ROLLED_BACK),
+                    AdbDurableCommitState.ROLLED_BACK, true),
                 crash(AdbCommitCrashInjectionPoint.AFTER_RAFT_BEFORE_STORE,
-                    AdbDurableCommitState.STORE_COMMITTED),
+                    AdbDurableCommitState.STORE_COMMITTED, true),
                 crash(AdbCommitCrashInjectionPoint.AFTER_STORE_BEFORE_REPLY,
-                    AdbDurableCommitState.REPLIED))));
+                    AdbDurableCommitState.REPLIED, true))));
   }
 
   private static AdbCommitCrashInjectionResult crash(
-      AdbCommitCrashInjectionPoint point, AdbDurableCommitState state) {
-    return new AdbCommitCrashInjectionResult(point, true, state,
+      AdbCommitCrashInjectionPoint point, AdbDurableCommitState state,
+      boolean recovered) {
+    return new AdbCommitCrashInjectionResult(point, recovered, state,
         "release-profile");
   }
 
-  private static AdbLongRunStressEvaluation passedRecoveryDrillEvaluation() {
+  private static AdbLongRunStressEvaluation recoveryDrillEvaluation(
+      Map<String, String> values) {
+    return recoveryDrillEvaluation(bool(values, "recoveryDrillGatePassed",
+        true));
+  }
+
+  private static AdbLongRunStressEvaluation recoveryDrillEvaluation(
+      boolean passed) {
     return new AdbRecoveryDrillGate().evaluate(
         new AdbRecoveryDrillReport("release-profile",
             Arrays.asList(
-                drill(AdbRecoveryDrillScenario.KILL_LEADER),
+                drill(AdbRecoveryDrillScenario.KILL_LEADER, passed,
+                    passed),
                 drill(AdbRecoveryDrillScenario.KILL_FOLLOWER),
                 drill(AdbRecoveryDrillScenario.KILL_WITNESS),
                 drill(AdbRecoveryDrillScenario.FULL_CLUSTER_RESTART))));
@@ -157,7 +173,14 @@ public final class AdbReleaseProfileMain {
 
   private static AdbRecoveryDrillResult drill(
       AdbRecoveryDrillScenario scenario) {
-    return new AdbRecoveryDrillResult(scenario, true, true, true,
+    return drill(scenario, true, true);
+  }
+
+  private static AdbRecoveryDrillResult drill(
+      AdbRecoveryDrillScenario scenario, boolean recovered,
+      boolean checksumMatched) {
+    return new AdbRecoveryDrillResult(scenario, true, recovered,
+        checksumMatched,
         "release-profile");
   }
 

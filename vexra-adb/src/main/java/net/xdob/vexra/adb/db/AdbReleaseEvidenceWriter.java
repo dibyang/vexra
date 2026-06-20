@@ -58,6 +58,20 @@ public final class AdbReleaseEvidenceWriter {
         evidence.getEvaluation().getFailureReasons()));
     properties.setProperty("commands", join(evidence.getCommands()));
     properties.setProperty("checksums", join(evidence.getChecksums()));
+    properties.setProperty("clusterReadWritePassed", String.valueOf(
+        report.isClusterReadWritePassed()));
+    properties.setProperty("recoveryDrillPassed", String.valueOf(
+        report.isRecoveryDrillPassed()));
+    properties.setProperty("rollingUpgradePassed", String.valueOf(
+        report.isRollingUpgradePassed()));
+    properties.setProperty("commitCrashGatePassed", String.valueOf(
+        report.getCommitCrashEvaluation().isPassed()));
+    properties.setProperty("commitCrashFailureReasons", join(
+        report.getCommitCrashEvaluation().getFailureReasons()));
+    properties.setProperty("recoveryDrillGatePassed", String.valueOf(
+        report.getRecoveryDrillEvaluation().isPassed()));
+    properties.setProperty("recoveryDrillFailureReasons", join(
+        report.getRecoveryDrillEvaluation().getFailureReasons()));
     properties.setProperty("workloadName", longRun.getWorkloadName());
     properties.setProperty("durationMillis", String.valueOf(
         longRun.getDurationMillis()));

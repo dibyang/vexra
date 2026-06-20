@@ -334,8 +334,11 @@ Illegal transitions:
 - `AdbEndToEndClusterStressGate` now requires the end-to-end report to carry a passing recovery-drill evaluation, preventing a single boolean from replacing per-scenario kill/restart evidence.
 - `AdbRecoveryDrillGateTest` covers full drill pass, missing scenario, not attempted, not recovered, checksum mismatch, and end-to-end release-gate propagation.
 - `RaftRClient` now makes the Raft retry budget used by remote SQL writes configurable by default, covering a longer leader-discovery and NotLeader retry window and reducing false PREWRITE failures during multi-process smoke startup/election windows.
+- `AdbReleaseProfileMain` now accepts GA-02 data-safety gate results from a real release profile or CI conversion through `--commitCrashGatePassed` and `--recoveryDrillGatePassed`. Failed results enter the end-to-end release gate instead of being hidden by synthetic passing defaults.
+- `AdbReleaseEvidenceWriter` now writes `commitCrashGatePassed`, `commitCrashFailureReasons`, `recoveryDrillGatePassed`, and `recoveryDrillFailureReasons` into `release-evidence.properties`, so the evidence directory can audit commit crash-injection and kill/restart recovery-drill results separately.
+- `AdbReleaseProfileMainTest` and `AdbReleaseEvidenceWriterTest` cover GA-02 gate failures entering the release profile from command-line arguments, failing the overall gate, archiving independent evidence fields, and preserving the passing-path fields.
 
-This phase has not yet connected the structured crash gate / recovery gate to the real multi-process release profile and evidence directory. The next increment should add the release-profile script and evidence archiving.
+This phase has connected the structured crash gate / recovery gate to the release profile and evidence directory. The later real multi-process fault-injection platform must convert actual drill results into these parameters and fields, then hand raw logs and checksum details to the GA-06 diagnostic bundle for archiving.
 
 ## ADB-GA-03: Lightweight Control Plane
 

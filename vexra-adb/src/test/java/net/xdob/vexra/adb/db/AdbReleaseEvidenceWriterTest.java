@@ -48,6 +48,12 @@ class AdbReleaseEvidenceWriterTest {
         properties.getProperty("commands"));
     assertEquals("backup=abc123;restore=abc123",
         properties.getProperty("checksums"));
+    assertEquals("true", properties.getProperty("clusterReadWritePassed"));
+    assertEquals("true", properties.getProperty("commitCrashGatePassed"));
+    assertEquals("", properties.getProperty("commitCrashFailureReasons"));
+    assertEquals("true", properties.getProperty("recoveryDrillGatePassed"));
+    assertEquals("", properties.getProperty("recoveryDrillFailureReasons"));
+    assertEquals("true", properties.getProperty("rollingUpgradePassed"));
     assertEquals("ga-e2e", properties.getProperty("workloadName"));
     assertEquals("3", properties.getProperty("sqlRegionSmokeCycles"));
   }

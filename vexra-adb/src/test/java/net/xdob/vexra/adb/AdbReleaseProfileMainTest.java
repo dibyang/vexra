@@ -77,6 +77,31 @@ class AdbReleaseProfileMainTest {
   }
 
   /**
+   * 验证命令行传入的 GA-02 crash/recovery gate 失败会进入 release evidence。
+   */
+  @Test
+  void shouldArchiveDataSafetyGateFailuresFromArgs() throws Exception {
+    Path output = tempDir.resolve("ga02-fail");
+
+    AdbReleaseProfileResult result = AdbReleaseProfileMain.run(new String[]{
+        "--releaseId", "rel-main-ga02-fail",
+        "--version", "0.7.0",
+        "--output", output.toString(),
+        "--commitCrashGatePassed", "false",
+        "--recoveryDrillGatePassed", "false"
+    });
+    Properties properties = load(result.getEvidenceFile());
+
+    assertFalse(result.isPassed());
+    assertEquals("false", properties.getProperty("commitCrashGatePassed"));
+    assertTrue(properties.getProperty("commitCrashFailureReasons").contains(
+        "commit crash not recovered: BEFORE_PREWRITE"));
+    assertEquals("false", properties.getProperty("recoveryDrillGatePassed"));
+    assertTrue(properties.getProperty("recoveryDrillFailureReasons").contains(
+        "recovery drill not recovered: KILL_LEADER"));
+  }
+
+  /**
    * 验证显式确认试生产准入项后会生成通过的 admission 文件。
    */
   @Test
