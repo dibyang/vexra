@@ -13,6 +13,7 @@ import java.io.File;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -264,6 +265,88 @@ class AdbPersistentControlPlaneStoreTest {
       assertEquals(0, service.evaluateTimeouts(2000));
       assertEquals(AdbControlPlaneNodeStatus.RECOVERING,
           controlPlane.getNode("node-a").get().getStatus());
+    }
+  }
+
+  /**
+   * 验证 system table provider 可以输出控制面节点行。
+   *
+   * @throws Exception store 创建、心跳写入或行输出失败时抛出
+   */
+  @Test
+  void shouldExposeNodesAsSystemTableRows() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "sys-nodes")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      controlPlane.heartbeat(new AdbNodeHeartbeat("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          11, 10, 123456, "rack-a"));
+
+      List<Map<String, String>> rows =
+          new AdbSystemTableProvider(controlPlane).nodes();
+
+      assertEquals(1, rows.size());
+      assertEquals("node-a", rows.get(0).get("node_id"));
+      assertEquals("DATA_NODE", rows.get(0).get("role"));
+      assertEquals("UP", rows.get(0).get("status"));
+      assertEquals("rack-a", rows.get(0).get("failure_domain"));
+      assertEquals("11", rows.get(0).get("commit_index"));
+    }
+  }
+
+  /**
+   * 验证 system table provider 可以输出 region 行和 route epoch。
+   *
+   * @throws Exception store 创建、region 发布或行输出失败时抛出
+   */
+  @Test
+  void shouldExposeRegionsAsSystemTableRows() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "sys-regions")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      long routeEpoch = controlPlane.publishRegions(Collections.singletonList(
+          region("r1", bytes("a"), bytes("m"), "node-a")));
+
+      List<Map<String, String>> rows =
+          new AdbSystemTableProvider(controlPlane).regions();
+
+      assertEquals(1, rows.size());
+      assertEquals("r1", rows.get(0).get("region_id"));
+      assertEquals(Long.toString(routeEpoch), rows.get(0)
+          .get("route_epoch"));
+      assertEquals("node-a", rows.get(0).get("leader_id"));
+      assertEquals("ACTIVE", rows.get(0).get("state"));
+      assertTrue(rows.get(0).get("replicas").contains(
+          "node-w:WITNESS_VOTER"));
+    }
+  }
+
+  /**
+   * 验证 system table provider 可以输出 TSO 初始化状态和最新时间戳。
+   *
+   * @throws Exception store 创建、TSO 分配或行输出失败时抛出
+   */
+  @Test
+  void shouldExposeTsoAsSystemTableRows() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "sys-tso")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 100);
+      AdbSystemTableProvider provider = new AdbSystemTableProvider(
+          controlPlane);
+
+      List<Map<String, String>> before = provider.tso();
+      assertEquals("false", before.get(0).get("initialized"));
+      assertEquals("", before.get(0).get("last_issued_ts"));
+
+      assertEquals(101, controlPlane.nextTimestamp());
+      List<Map<String, String>> after = provider.tso();
+
+      assertEquals("true", after.get(0).get("initialized"));
+      assertEquals("101", after.get(0).get("last_issued_ts"));
+      assertEquals("global", after.get(0).get("scope"));
     }
   }
 

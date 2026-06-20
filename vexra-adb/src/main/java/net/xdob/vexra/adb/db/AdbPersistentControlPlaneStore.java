@@ -123,6 +123,42 @@ public final class AdbPersistentControlPlaneStore
   }
 
   /**
+   * 读取当前 route epoch。
+   *
+   * @return 当前持久化 route epoch，未初始化时返回 0
+   * @throws SQLException 底层读取失败时抛出
+   */
+  public synchronized long getRouteEpoch() throws SQLException {
+    return readRouteEpoch();
+  }
+
+  /**
+   * 读取当前持久化 region 元数据列表。
+   *
+   * @return region 元数据列表；尚未初始化时返回空列表
+   * @throws SQLException 底层读取或解码失败时抛出
+   */
+  public synchronized List<RegionMetadata> listRegions()
+      throws SQLException {
+    byte[] value = store.get(CF.META.getCfId(), REGIONS_KEY);
+    if (value == null) {
+      return Collections.emptyList();
+    }
+    return Collections.unmodifiableList(decodeRegions(value));
+  }
+
+  /**
+   * 读取当前已经分配过的最大 TSO。
+   *
+   * @return 当前 TSO；未初始化时返回空
+   * @throws SQLException 底层读取失败时抛出
+   */
+  public synchronized Optional<Long> getLastIssuedTimestamp()
+      throws SQLException {
+    return store.getLong(CF.META.getCfId(), TSO_KEY);
+  }
+
+  /**
    * 发布新的 region 快照并推进 route epoch。
    *
    * @param newRegions 新 region 元数据集合
