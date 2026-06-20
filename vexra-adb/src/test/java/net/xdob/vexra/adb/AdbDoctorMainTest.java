@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -58,7 +59,12 @@ class AdbDoctorMainTest {
         "--autoLogs", "true",
         "--logTailLines", "2",
         "--evidence", evidence.toString(),
-        "--operationReports", operationReport.toString()
+        "--operationReports", operationReport.toString(),
+        "--liveRuntime", "true",
+        "--runtimeHost", "127.0.0.1",
+        "--runtimePort", "18080",
+        "--runtimeTimeoutMillis", "1500",
+        "--runtimeTls", "false"
     });
 
     Path file = output.resolve(AdbDiagnosticBundleWriter.BUNDLE_FILE);
@@ -84,8 +90,34 @@ class AdbDoctorMainTest {
     assertTrue(text.contains("operationReport.0.operation=upgrade"));
     assertTrue(text.contains("operationReport.0.status=complete"));
     assertTrue(text.contains("operationReport.0.operator_token=<redacted>"));
+    assertTrue(text.contains("liveRuntime.enabled=true"));
+    assertTrue(text.contains("liveRuntime.endpoint=127.0.0.1:18080"));
+    assertTrue(text.contains(
+        "liveRuntime.status=endpoint_not_implemented"));
+    assertTrue(text.contains("adb_doctor_live_runtime_enabled=1"));
+    assertTrue(text.contains(
+        "live runtime diagnostic endpoint is not implemented yet"));
     assertFalse(text.contains("token-secret"));
     assertFalse(text.contains("hidden-token"));
+  }
+
+  /**
+   * 验证启用 live runtime 时必须提供可校验的连接参数。
+   *
+   * @throws Exception 配置写入失败时抛出
+   */
+  @Test
+  void shouldRejectLiveRuntimeWithoutEndpoint() throws Exception {
+    Path config = writeClusterConfig();
+    Path output = tempDir.resolve("doctor-invalid-live-output");
+
+    assertThrows(IllegalArgumentException.class, () -> AdbDoctorMain.main(
+        new String[] {
+            "--config", config.toString(),
+            "--output", output.toString(),
+            "--checkRuntimeScripts", "false",
+            "--liveRuntime", "true"
+        }));
   }
 
   private Path writeClusterConfig() throws Exception {

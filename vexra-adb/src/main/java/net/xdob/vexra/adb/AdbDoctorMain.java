@@ -8,6 +8,8 @@ import net.xdob.vexra.adb.db.AdbDiagnosticBundleWriter;
 import net.xdob.vexra.adb.db.AdbDiagnosticLogDiscoverer;
 import net.xdob.vexra.adb.db.AdbDiagnosticLogTailer;
 import net.xdob.vexra.adb.db.AdbDiagnosticPropertiesCollector;
+import net.xdob.vexra.adb.db.AdbLiveRuntimeDiagnosticCollector;
+import net.xdob.vexra.adb.db.AdbLiveRuntimeDiagnosticConfig;
 
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
@@ -18,6 +20,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -44,7 +47,10 @@ public final class AdbDoctorMain {
    *             `--checkRuntimeScripts true|false`、`--logs path1,path2`、
    *             `--autoLogs true|false`、`--maxAutoLogFiles n`、
    *             `--logTailLines n`、`--evidence path1,path2`、
-   *             `--operationReports path1,path2`
+   *             `--operationReports path1,path2`、
+   *             `--liveRuntime true|false`、`--runtimeHost host`、
+   *             `--runtimePort port`、`--runtimeTimeoutMillis n` 和
+   *             `--runtimeTls true|false`
    * @throws Exception 配置读取、预检或写入失败时抛出
    */
   public static void main(String[] args) throws Exception {
@@ -58,6 +64,17 @@ public final class AdbDoctorMain {
         config, properties,
         bool(values.get("strictFiles"), false),
         bool(values.get("checkRuntimeScripts"), true)).check();
+    AdbLiveRuntimeDiagnosticCollector.Snapshot liveRuntime =
+        liveRuntime(values);
+    Map<String, String> operations = operations(preflight, configPath, values);
+    operations.putAll(liveRuntime.getOperations());
+    Map<String, Number> metrics = metrics(preflight);
+    metrics.putAll(liveRuntime.getMetrics());
+    List<String> notes = new ArrayList<>();
+    notes.add("offline diagnostic bundle");
+    if (!liveRuntime.getNote().isEmpty()) {
+      notes.add(liveRuntime.getNote());
+    }
     AdbDiagnosticBundle bundle = new AdbDiagnosticBundle(
         valueOrDefault(values.get("bundleId"),
             "adb-doctor-" + System.currentTimeMillis()),
@@ -67,11 +84,11 @@ public final class AdbDoctorMain {
         valueOrDefault(values.get("h2dbVersion"), "unknown"),
         valueOrDefault(values.get("ldbVersion"), "unknown"),
         AdbDiagnosticBundleWriter.redact(properties),
-        operations(preflight, configPath, values),
-        metrics(preflight),
+        operations,
+        metrics,
         logTails(values, config),
         lines(preflight.render()),
-        Collections.singletonList("offline diagnostic bundle"));
+        notes);
     Path file = new AdbDiagnosticBundleWriter().write(bundle, outputDir);
     System.out.println("BUNDLE " + file.toAbsolutePath());
   }
@@ -124,6 +141,21 @@ public final class AdbDoctorMain {
     metrics.put("adb_doctor_preflight_passed_checks",
         preflight.getPassedChecks().size());
     return metrics;
+  }
+
+  private static AdbLiveRuntimeDiagnosticCollector.Snapshot liveRuntime(
+      Map<String, String> values) {
+    AdbLiveRuntimeDiagnosticConfig config;
+    if (bool(values.get("liveRuntime"), false)) {
+      config = new AdbLiveRuntimeDiagnosticConfig(true,
+          values.get("runtimeHost"),
+          intValue(values.get("runtimePort"), 0),
+          intValue(values.get("runtimeTimeoutMillis"), 3_000),
+          bool(values.get("runtimeTls"), false));
+    } else {
+      config = AdbLiveRuntimeDiagnosticConfig.disabled();
+    }
+    return new AdbLiveRuntimeDiagnosticCollector().collect(config);
   }
 
   private static Map<String, List<String>> logTails(Map<String, String> values,
