@@ -34,6 +34,8 @@ public final class AdbRegionCommitCoordinator {
   private final boolean prewriteSingleRegion;
   private final AdbDurableCommitRecorder commitRecorder;
   private final AdbRegionWriteGuard writeGuard;
+  private final AdbCrossRegionTxnGuard txnRegionGuard;
+  private final long routeEpoch;
 
   /**
    * 创建 ADB region commit 协调器。
@@ -113,6 +115,28 @@ public final class AdbRegionCommitCoordinator {
       boolean prewriteSingleRegion,
       AdbDurableCommitRecorder commitRecorder,
       AdbRegionWriteGuard writeGuard) {
+    this(router, client, keyMapper, prewriteSingleRegion, commitRecorder,
+        writeGuard, AdbCrossRegionTxnGuard.noop(), -1);
+  }
+
+  /**
+   * 创建带 durable commit、写入保护和事务 region guard 的协调器。
+   *
+   * @param router region 路由快照
+   * @param client region commit client
+   * @param keyMapper 写入 key 映射器
+   * @param prewriteSingleRegion 是否强制单 region 也执行 PREWRITE
+   * @param commitRecorder durable commit 状态记录器
+   * @param writeGuard commit 前写入保护钩子
+   * @param txnRegionGuard 事务 region 生产边界 guard
+   * @param routeEpoch 当前路由快照 epoch，未知时传 -1
+   */
+  public AdbRegionCommitCoordinator(RegionRouter router,
+      AdbRegionCommitClient client, Function<DataKey, DataKey> keyMapper,
+      boolean prewriteSingleRegion,
+      AdbDurableCommitRecorder commitRecorder,
+      AdbRegionWriteGuard writeGuard,
+      AdbCrossRegionTxnGuard txnRegionGuard, long routeEpoch) {
     this.router = Objects.requireNonNull(router, "router == null");
     this.client = Objects.requireNonNull(client, "client == null");
     this.keyMapper = Objects.requireNonNull(keyMapper, "keyMapper == null");
@@ -121,6 +145,9 @@ public final class AdbRegionCommitCoordinator {
         "commitRecorder == null");
     this.writeGuard = Objects.requireNonNull(writeGuard,
         "writeGuard == null");
+    this.txnRegionGuard = Objects.requireNonNull(txnRegionGuard,
+        "txnRegionGuard == null");
+    this.routeEpoch = routeEpoch;
   }
 
   /**
@@ -138,6 +165,8 @@ public final class AdbRegionCommitCoordinator {
       writeGuard.beforeCommit();
       List<RegionWriteSet> participants = buildParticipants(txn, commitTs,
           writeKeys, metas);
+      txnRegionGuard.beforeCommit("region-commit", routeEpoch,
+          regionIds(participants));
       if (participants.size() == 1 && !prewriteSingleRegion) {
         return commitSingleRegion(participants.get(0));
       }
@@ -279,6 +308,14 @@ public final class AdbRegionCommitCoordinator {
           participant.request.getRegionId(), participant.primary));
     }
     return txnParticipants;
+  }
+
+  private static List<String> regionIds(List<RegionWriteSet> participants) {
+    List<String> regionIds = new ArrayList<>();
+    for (RegionWriteSet participant : participants) {
+      regionIds.add(participant.request.getRegionId());
+    }
+    return regionIds;
   }
 
   private RegionWriteSet primaryParticipant(List<RegionWriteSet> participants) {

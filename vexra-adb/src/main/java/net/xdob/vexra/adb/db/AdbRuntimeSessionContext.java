@@ -16,6 +16,7 @@ public final class AdbRuntimeSessionContext {
   private final AdbRegionCommitClient commitClient;
   private final long routeTtlMillis;
   private final LongSupplier clock;
+  private final AdbCrossRegionTxnGuard txnRegionGuard;
   private volatile AdbControlPlaneSnapshot snapshot;
   private volatile long lastControlPlaneRefreshMillis;
 
@@ -46,6 +47,32 @@ public final class AdbRuntimeSessionContext {
       AdbControlPlaneClient controlPlaneClient,
       AdbRegionCommitClient commitClient, long routeTtlMillis,
       LongSupplier clock) {
+    this(txnManager, controlPlaneClient, commitClient, routeTtlMillis,
+        clock, AdbCrossRegionTxnGuard.noop());
+  }
+
+  /**
+   * 创建带 route TTL 和生产事务范围 guard 的 ADB runtime session context。
+   *
+   * @param txnManager 事务管理器
+   * @param controlPlaneClient 控制面客户端
+   * @param commitClient region commit client
+   * @param routeTtlMillis 控制面路由 TTL，超过后写入会失败
+   * @param clock 当前时间来源
+   * @param productionGuard 生产范围 guard
+   */
+  public AdbRuntimeSessionContext(TxnManager txnManager,
+      AdbControlPlaneClient controlPlaneClient,
+      AdbRegionCommitClient commitClient, long routeTtlMillis,
+      LongSupplier clock, AdbProductionGuard productionGuard) {
+    this(txnManager, controlPlaneClient, commitClient, routeTtlMillis,
+        clock, AdbCrossRegionTxnGuard.fromProductionGuard(productionGuard));
+  }
+
+  private AdbRuntimeSessionContext(TxnManager txnManager,
+      AdbControlPlaneClient controlPlaneClient,
+      AdbRegionCommitClient commitClient, long routeTtlMillis,
+      LongSupplier clock, AdbCrossRegionTxnGuard txnRegionGuard) {
     this.txnManager = Objects.requireNonNull(txnManager, "txnManager == null");
     this.controlPlaneClient = Objects.requireNonNull(controlPlaneClient,
         "controlPlaneClient == null");
@@ -56,6 +83,8 @@ public final class AdbRuntimeSessionContext {
     }
     this.routeTtlMillis = routeTtlMillis;
     this.clock = Objects.requireNonNull(clock, "clock == null");
+    this.txnRegionGuard = Objects.requireNonNull(txnRegionGuard,
+        "txnRegionGuard == null");
     this.txnManager.setTimestampProvider(
         new AdbControlPlaneTimestampProvider(controlPlaneClient));
     refreshRouteSnapshot();
@@ -77,7 +106,8 @@ public final class AdbRuntimeSessionContext {
     txnManager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
         next.getRouter(), commitClient, java.util.function.Function.identity(),
         false, AdbDurableCommitRecorder.noop(),
-        this::requireControlPlaneFreshForWrite));
+        this::requireControlPlaneFreshForWrite, txnRegionGuard,
+        next.getRouteEpoch()));
     this.snapshot = next;
     this.lastControlPlaneRefreshMillis = clock.getAsLong();
     return next;

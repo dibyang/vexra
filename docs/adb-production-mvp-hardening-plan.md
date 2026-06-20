@@ -477,6 +477,13 @@ sequenceDiagram
 - GC：保留每个 logical key 最新 committed version，保护长事务和备份。
 - 故障组合：partial commit + restart + resolve + GC。
 
+### 当前实现增量
+
+- 新增 `AdbTxnRegionClassifier`，按当前 route snapshot 和 write set 计算事务参与 region 列表。
+- 新增 `AdbCrossRegionTxnGuard`，把参与 region 列表交给 `AdbProductionGuard.validateTransactionRegions`；MVP 生产模式默认只放行单 region 事务，跨 region 事务需要 experimental 模式显式开启。
+- `AdbRegionCommitCoordinator` 支持显式接入事务 region guard，并在任何 prewrite/commit RPC 前完成校验；旧构造器默认 no-op，避免影响已有测试和非生产原型路径。
+- `AdbRuntimeSessionContext` 新增带 `AdbProductionGuard` 的构造入口，SQL runtime 可以在安装 route snapshot 时同步启用 GA-04 事务边界。
+
 ## ADB-GA-05：安装与运维产品化
 
 ### 目标

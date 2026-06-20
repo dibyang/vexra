@@ -477,6 +477,13 @@ sequenceDiagram
 - GC: keep the latest committed version for each logical key and protect long transactions/backups.
 - Combined failure: partial commit + restart + resolve + GC.
 
+### Current Implementation Increment
+
+- Add `AdbTxnRegionClassifier`, which calculates participant regions from the current route snapshot and write set.
+- Add `AdbCrossRegionTxnGuard`, which passes participant regions to `AdbProductionGuard.validateTransactionRegions`; MVP production mode allows single-region transactions by default and requires explicit experimental mode for cross-region work.
+- `AdbRegionCommitCoordinator` can now explicitly install the transaction-region guard and validates before any prewrite/commit RPC. Existing constructors keep a no-op guard for compatibility with prototype and non-production paths.
+- `AdbRuntimeSessionContext` adds a constructor that accepts `AdbProductionGuard`, so the SQL runtime can enable GA-04 transaction boundaries while installing a route snapshot.
+
 ## ADB-GA-05: Install and Operations Productization
 
 ### Goals

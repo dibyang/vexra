@@ -182,6 +182,108 @@ class AdbRegionCommitCoordinatorTest {
   }
 
   /**
+   * 验证 region 分类器会按 write set 命中的 region 去重并保持顺序。
+   */
+  @Test
+  void shouldClassifyTxnWriteSetRegions() {
+    RowKey split = rowKey(50);
+    AdbTxnRegionClassifier classifier = new AdbTxnRegionClassifier(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        Function.identity());
+
+    List<String> regions = classifier.classify(Arrays.asList(rowKey(1),
+        rowKey(100), rowKey(2)));
+
+    assertEquals(Arrays.asList("r1", "r2"), regions);
+  }
+
+  /**
+   * 验证生产 guard 放行单 region 事务。
+   */
+  @Test
+  void shouldAllowSingleRegionCommitWithProductionGuard() throws Exception {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Collections.singletonList(region("r1",
+            new KeyRange(new byte[0], new byte[0]), "node-a", 1, 1))),
+        client, Function.identity(), false, AdbDurableCommitRecorder.noop(),
+        AdbRegionWriteGuard.NOOP,
+        AdbCrossRegionTxnGuard.fromProductionGuard(mvpClusterGuard()), 3));
+
+    Transaction2 txn = txnWithWrites(rowKey(1));
+    manager.commit(txn);
+
+    assertEquals(1, client.commits.size());
+    assertEquals("r1", client.commits.get(0).getRegionId());
+    assertEquals(TxnState.COMMITTED, txn.getState());
+  }
+
+  /**
+   * 验证 MVP 生产模式会在任何 region RPC 前拒绝跨 region 事务。
+   */
+  @Test
+  void shouldRejectCrossRegionCommitBeforeRpcInMvpProductionMode() {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client, Function.identity(), false, AdbDurableCommitRecorder.noop(),
+        AdbRegionWriteGuard.NOOP,
+        AdbCrossRegionTxnGuard.fromProductionGuard(mvpClusterGuard()), 9));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> manager.commit(txn));
+
+    assertTrue(error.getMessage().contains("CROSS_REGION_TRANSACTION"));
+    assertEquals(0, client.prewrites.size());
+    assertEquals(0, client.commits.size());
+    assertEquals(0, client.rollbacks.size());
+    assertEquals(TxnState.PENDING, txn.getState());
+  }
+
+  /**
+   * 验证 experimental 模式显式开启后可以继续执行跨 region 2PC。
+   */
+  @Test
+  void shouldAllowCrossRegionCommitWhenExperimentalGuardAllowsIt()
+      throws Exception {
+    RecordingStore store = new RecordingStore();
+    RecordingCommitClient client = new RecordingCommitClient();
+    RowKey split = rowKey(50);
+    TxnManager manager = new TxnManager(store);
+    manager.setRegionCommitCoordinator(new AdbRegionCommitCoordinator(
+        new RegionRouter(Arrays.asList(
+            region("r1", new KeyRange(new byte[0], split.toBytes()),
+                "node-a", 1, 1),
+            region("r2", new KeyRange(split.toBytes(), new byte[0]),
+                "node-b", 1, 1))),
+        client, Function.identity(), false, AdbDurableCommitRecorder.noop(),
+        AdbRegionWriteGuard.NOOP,
+        AdbCrossRegionTxnGuard.fromProductionGuard(experimentalGuard()), 10));
+
+    Transaction2 txn = txnWithWrites(rowKey(1), rowKey(100));
+    manager.commit(txn);
+
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.prewrites));
+    assertEquals(Arrays.asList("r1", "r2"), client.regionIds(client.commits));
+    assertEquals(TxnState.COMMITTED, txn.getState());
+  }
+
+  /**
    * 验证 prewrite 失败会回滚已经 prewrite 成功的 participant。
    */
   @Test
@@ -447,7 +549,19 @@ class AdbRegionCommitCoordinatorTest {
                 new VirtualNodeReplica("node-a", ReplicaRole.DATA_VOTER),
                 new VirtualNodeReplica("node-b", ReplicaRole.DATA_VOTER),
                 new VirtualNodeReplica("witness-a", ReplicaRole.WITNESS_VOTER)),
-            0, 0, 0));
+        0, 0, 0));
+  }
+
+  private static AdbProductionGuard mvpClusterGuard() {
+    return new AdbProductionGuard(AdbProductionMode.MVP_CLUSTER,
+        AdbProductionTopologyKind.TWO_DATA_ONE_WITNESS,
+        true, true, true, false);
+  }
+
+  private static AdbProductionGuard experimentalGuard() {
+    return new AdbProductionGuard(AdbProductionMode.EXPERIMENTAL,
+        AdbProductionTopologyKind.TWO_DATA_ONE_WITNESS,
+        true, true, true, true);
   }
 
   private static final class RecordingCommitClient
