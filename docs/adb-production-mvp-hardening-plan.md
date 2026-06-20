@@ -191,8 +191,10 @@ sequenceDiagram
 - `AdbProductionGuardTest` 覆盖单机兼容、2 data + witness 生产放行、缺安全默认值拒绝、纯 2 data 拒绝、跨 region 默认拒绝和实验 opt-in。
 - `AdbTableProvider` 已在 JDBC table engine 建表入口读取 `adb.production.*`、`adb.install.topology` 和安全参数；显式生产参数存在时，业务表创建会校验 `LOCAL_SQL`，分布式 SQL 表会校验 `DISTRIBUTED_SQL`，raft write client 会校验 `SINGLE_REGION_TRANSACTION`。
 - `AdbTableProviderIntegrationTest` 覆盖显式 `mvp-cluster` 缺 TLS/auth/最小权限时拒绝建分布式表，以及 `2data1witness` 加安全默认值时允许创建分布式表。
+- `AdbSqlServerConfig` 已支持从命令行读取 `--adb.production.mode`、`--adb.production.topology`、`--adb.install.topology`、`--adb.production.allowExperimental` 和 `--adb.security.*` 参数；`AdbSqlServerMain.newServer` 会在构造 h2db TCP Server 前校验 `LOCAL_SQL`，坏的生产配置不会进入 Server 启动边界。
+- `AdbSqlServerMainTest` 覆盖 SQL Server 生产参数解析、缺安全默认值拒绝启动，以及 `2data1witness` 加安全默认值时允许构造 Server。
 
-本阶段仍需把 guard 继续接入 JDBC URL / Server 启动、事务 commit、备份恢复和滚动升级等真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
+本阶段仍需把 guard 继续接入 JDBC URL 转换、事务 commit、备份恢复和滚动升级等真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
 
 ## ADB-GA-02：数据安全闭环
 

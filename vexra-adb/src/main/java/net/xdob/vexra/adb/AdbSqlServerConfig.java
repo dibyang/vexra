@@ -4,6 +4,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
+import net.xdob.vexra.adb.db.AdbProductionGuard;
 
 /**
  * ADB SQL server 的进程启动配置。
@@ -18,6 +20,7 @@ public final class AdbSqlServerConfig {
   private final boolean ifNotExists;
   private final Path readyFile;
   private final Path stopFile;
+  private final Properties productionProperties;
 
   /**
    * 创建 ADB SQL server 启动配置。
@@ -31,6 +34,24 @@ public final class AdbSqlServerConfig {
    */
   public AdbSqlServerConfig(int port, Path baseDir, boolean tcpAllowOthers,
       boolean ifNotExists, Path readyFile, Path stopFile) {
+    this(port, baseDir, tcpAllowOthers, ifNotExists, readyFile, stopFile,
+        new Properties());
+  }
+
+  /**
+   * 创建 ADB SQL server 启动配置。
+   *
+   * @param port h2db TCP Server 监听端口
+   * @param baseDir 可选数据库根目录
+   * @param tcpAllowOthers 是否允许非本机 TCP 连接
+   * @param ifNotExists 是否允许远程创建不存在的数据库
+   * @param readyFile 可选 ready 文件路径
+   * @param stopFile 可选 stop 文件路径
+   * @param productionProperties 生产范围校验参数；为空时保持单机兼容
+   */
+  public AdbSqlServerConfig(int port, Path baseDir, boolean tcpAllowOthers,
+      boolean ifNotExists, Path readyFile, Path stopFile,
+      Properties productionProperties) {
     if (port <= 0 || port > 65535) {
       throw new IllegalArgumentException("invalid port: " + port);
     }
@@ -40,6 +61,7 @@ public final class AdbSqlServerConfig {
     this.ifNotExists = ifNotExists;
     this.readyFile = readyFile;
     this.stopFile = stopFile;
+    this.productionProperties = copy(productionProperties);
   }
 
   /**
@@ -56,7 +78,8 @@ public final class AdbSqlServerConfig {
         optionalBoolean(values, "tcpAllowOthers", false),
         optionalBoolean(values, "ifNotExists", false),
         optionalPath(values, "ready"),
-        optionalPath(values, "stop"));
+        optionalPath(values, "stop"),
+        productionProperties(values));
   }
 
   public int getPort() {
@@ -81,6 +104,18 @@ public final class AdbSqlServerConfig {
 
   public Path getStopFile() {
     return stopFile;
+  }
+
+  /**
+   * 返回 SQL server 启动边界使用的生产范围 guard。
+   *
+   * @return 生产范围 guard；未配置生产参数时为默认单机 guard
+   */
+  public AdbProductionGuard productionGuard() {
+    if (productionProperties.isEmpty()) {
+      return AdbProductionGuard.singleNodeDefault();
+    }
+    return AdbProductionGuard.fromProperties(productionProperties);
   }
 
   /**
@@ -137,6 +172,36 @@ public final class AdbSqlServerConfig {
       return defaultValue;
     }
     return Boolean.parseBoolean(value.trim());
+  }
+
+  private static Properties productionProperties(Map<String, String> args) {
+    Properties properties = new Properties();
+    copyIfPresent(args, properties, AdbProductionGuard.MODE_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.TOPOLOGY_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.INSTALL_TOPOLOGY_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.ALLOW_EXPERIMENTAL_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.TLS_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.AUTH_KEY);
+    copyIfPresent(args, properties, AdbProductionGuard.LEAST_PRIVILEGE_KEY);
+    return properties;
+  }
+
+  private static void copyIfPresent(Map<String, String> source,
+      Properties target, String key) {
+    String value = source.get(key);
+    if (value != null && !value.trim().isEmpty()) {
+      target.setProperty(key, value.trim());
+    }
+  }
+
+  private static Properties copy(Properties source) {
+    Properties copy = new Properties();
+    if (source != null) {
+      for (String name : source.stringPropertyNames()) {
+        copy.setProperty(name, source.getProperty(name));
+      }
+    }
+    return copy;
   }
 
   private static final class ArgsBuilder {

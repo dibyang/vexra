@@ -1,5 +1,7 @@
 package net.xdob.vexra.adb;
 
+import net.xdob.vexra.adb.db.AdbProductionState;
+import net.xdob.vexra.adb.db.AdbUnsupportedProductionFeatureException;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import org.h2.tools.Server;
 import org.junit.jupiter.api.Test;
@@ -17,6 +19,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -63,6 +66,24 @@ class AdbSqlServerMainTest {
   }
 
   /**
+   * 验证 SQL server 启动参数可以承载生产范围 guard 参数。
+   */
+  @Test
+  void shouldParseSqlServerProductionGuardArguments() {
+    AdbSqlServerConfig config = AdbSqlServerConfig.parse(new String[] {
+        "--port", "19091",
+        "--adb.production.mode", "mvp-cluster",
+        "--adb.production.topology", "2data1witness",
+        "--adb.security.tls.enabled", "true",
+        "--adb.security.auth.enabled", "true",
+        "--adb.security.leastPrivilege.enabled", "true"
+    });
+
+    assertEquals(AdbProductionState.CLUSTER_READY,
+        config.productionGuard().getState());
+  }
+
+  /**
    * 验证 SQL server main 可以构造未启动的 h2db TCP Server。
    *
    * @throws Exception server 构造或关闭失败时抛出
@@ -71,6 +92,51 @@ class AdbSqlServerMainTest {
   void shouldCreateTcpServerFromConfig() throws Exception {
     AdbSqlServerConfig config = new AdbSqlServerConfig(findFreePort(),
         tempDir, false, true, null, null);
+
+    Server server = AdbSqlServerMain.newServer(config);
+    try {
+      assertNotNull(server);
+    } finally {
+      server.stop();
+    }
+  }
+
+  /**
+   * 验证显式生产集群模式缺安全默认值时，SQL server 不会进入 h2db TCP Server 构造。
+   */
+  @Test
+  void shouldRejectSqlServerStartupWithoutSecureProductionDefaults()
+      throws Exception {
+    AdbSqlServerConfig config = AdbSqlServerConfig.parse(new String[] {
+        "--port", String.valueOf(findFreePort()),
+        "--adb.production.mode", "mvp-cluster",
+        "--adb.production.topology", "2data1witness"
+    });
+
+    SQLException error = assertThrows(SQLException.class,
+        () -> AdbSqlServerMain.newServer(config));
+    assertEquals(AdbUnsupportedProductionFeatureException.SQL_STATE,
+        error.getSQLState());
+    assertTrue(error.getMessage().contains(
+        "mvp cluster requires TLS, auth and least privilege"),
+        error.getMessage());
+  }
+
+  /**
+   * 验证 2 data + witness 且安全默认值完整时，SQL server 启动边界允许构造。
+   */
+  @Test
+  void shouldCreateSqlServerWithSecureProductionDefaults() throws Exception {
+    AdbSqlServerConfig config = AdbSqlServerConfig.parse(new String[] {
+        "--port", String.valueOf(findFreePort()),
+        "--baseDir", tempDir.toString(),
+        "--ifNotExists", "true",
+        "--adb.production.mode", "mvp-cluster",
+        "--adb.production.topology", "2data1witness",
+        "--adb.security.tls.enabled", "true",
+        "--adb.security.auth.enabled", "true",
+        "--adb.security.leastPrivilege.enabled", "true"
+    });
 
     Server server = AdbSqlServerMain.newServer(config);
     try {

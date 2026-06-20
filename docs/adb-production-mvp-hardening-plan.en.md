@@ -191,8 +191,10 @@ Validation reads config and control-plane snapshots only. It must not modify bus
 - `AdbProductionGuardTest` covers single-node compatibility, 2 data + witness production allow, missing secure-default rejection, pure 2-data rejection, default cross-region rejection, and experimental opt-in.
 - `AdbTableProvider` now reads `adb.production.*`, `adb.install.topology`, and security parameters at the JDBC table-engine create-table entrypoint. When explicit production parameters are present, business table creation validates `LOCAL_SQL`, distributed SQL tables validate `DISTRIBUTED_SQL`, and raft write clients validate `SINGLE_REGION_TRANSACTION`.
 - `AdbTableProviderIntegrationTest` covers rejecting an explicit `mvp-cluster` distributed table when TLS/auth/least-privilege defaults are missing, and allowing a distributed table when `2data1witness` plus secure defaults are present.
+- `AdbSqlServerConfig` now reads `--adb.production.mode`, `--adb.production.topology`, `--adb.install.topology`, `--adb.production.allowExperimental`, and `--adb.security.*` command-line parameters. `AdbSqlServerMain.newServer` validates `LOCAL_SQL` before constructing the h2db TCP Server, so invalid production configuration cannot cross the Server startup boundary.
+- `AdbSqlServerMainTest` covers SQL Server production-parameter parsing, startup rejection when secure defaults are missing, and Server construction when `2data1witness` plus secure defaults are present.
 
-This phase still needs to wire the guard into the JDBC URL / Server startup, transaction commit, backup/restore, rolling-upgrade, and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
+This phase still needs to wire the guard into the JDBC URL conversion, transaction commit, backup/restore, rolling-upgrade, and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
 
 ## ADB-GA-02: Data Safety Closure
 

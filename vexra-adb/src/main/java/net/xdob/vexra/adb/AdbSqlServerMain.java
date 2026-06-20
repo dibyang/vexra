@@ -9,6 +9,8 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
 import java.util.Collections;
+import net.xdob.vexra.adb.db.AdbProductionCapability;
+import net.xdob.vexra.adb.db.AdbProductionRequestContext;
 
 /**
  * ADB SQL/JDBC 服务的产品级 JVM 入口。
@@ -65,6 +67,8 @@ public final class AdbSqlServerMain {
    */
   public static Server newServer(AdbSqlServerConfig config)
       throws SQLException {
+    config.productionGuard().requireCapability(AdbProductionCapability.LOCAL_SQL,
+        AdbProductionRequestContext.local("start adb sql server"));
     return Server.createTcpServer(config.toH2TcpServerArgs());
   }
 
