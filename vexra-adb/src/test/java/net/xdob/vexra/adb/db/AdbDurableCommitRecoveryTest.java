@@ -1,9 +1,16 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.TabId;
+import net.xdob.vexra.adb.ldb.LdbStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.sql.SQLException;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -12,6 +19,8 @@ import static org.junit.jupiter.api.Assertions.*;
  * ADB-GA-02 durable commit marker 和恢复决策测试。
  */
 class AdbDurableCommitRecoveryTest {
+  @TempDir
+  File tempDir;
 
   /**
    * 验证 durable commit marker 只能按数据安全状态机前进。
@@ -111,9 +120,65 @@ class AdbDurableCommitRecoveryTest {
     assertTrue(error.getMessage().contains("idempotency key conflict"));
   }
 
+  /**
+   * 验证持久化 recorder 能在 store reopen 后保留 in-doubt marker，并生成前滚恢复动作。
+   */
+  @Test
+  void shouldScanPersistentMarkerAfterReopen() throws Exception {
+    File dbDir = new File(tempDir, "persistent-marker");
+    try (LdbStore store = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(store);
+      AdbDurableCommitMarker marker = recorder.prewritten(request("r1"));
+      recorder.raftCommitted(marker);
+    }
+
+    try (LdbStore reopened = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(reopened);
+      Collection<AdbDurableCommitMarker> markers = recorder.snapshot();
+      List<AdbCommitRecoveryDecision> decisions =
+          new AdbCommitRecoveryScanner().scan(markers);
+
+      assertEquals(1, decisions.size());
+      assertEquals("r1", decisions.get(0).getMarker().getRegionId());
+      assertEquals(AdbDurableCommitState.RAFT_COMMITTED,
+          decisions.get(0).getMarker().getState());
+      assertEquals(AdbCommitRecoveryAction.ROLL_FORWARD,
+          decisions.get(0).getAction());
+    }
+  }
+
+  /**
+   * 验证持久化 recorder 对重复提交保持同一 marker，不会降级已完成状态。
+   */
+  @Test
+  void shouldKeepPersistentMarkerIdempotent() throws Exception {
+    File dbDir = new File(tempDir, "persistent-idempotent");
+    try (LdbStore store = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(store);
+      AdbDurableCommitMarker marker = recorder.prewritten(request("r1"));
+      marker = recorder.raftCommitted(marker);
+      marker = recorder.storeCommitted(marker);
+      recorder.replied(marker);
+
+      AdbDurableCommitMarker duplicate = recorder.prewritten(request("r1"));
+      assertEquals(AdbDurableCommitState.REPLIED, duplicate.getState());
+      assertEquals(1, recorder.snapshot().size());
+    }
+  }
+
   private static AdbDurableCommitMarker marker(long txnId,
       AdbDurableCommitState state) {
     return new AdbDurableCommitMarker(txnId, "client-" + txnId,
         100, 200, "r1", state, "");
+  }
+
+  private static AdbRegionCommitRequest request(String regionId) {
+    return new AdbRegionCommitRequest(regionId, 1, "node-a", 100,
+        10, 20, regionId, RowKey.of(TabId.of(1, 0L), 1), 3000,
+        true, Collections.singletonList(RowKey.of(TabId.of(1, 0L), 1)),
+        Collections.emptyList());
   }
 }

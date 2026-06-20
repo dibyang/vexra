@@ -62,7 +62,7 @@ public final class AdbCommitIdempotencyStore {
         new java.util.ArrayList<>(markers.values()));
   }
 
-  private static String storageKey(AdbDurableCommitMarker marker) {
+  static String storageKey(AdbDurableCommitMarker marker) {
     return marker.idempotencyKey() + "|region:" + marker.getRegionId();
   }
 }
