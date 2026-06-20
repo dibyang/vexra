@@ -147,6 +147,20 @@ class AdbRuntimeDistributionSmokeTest {
     assertTrue(Files.exists(doctorScript(runtimeDir)));
   }
 
+  /**
+   * 验证 runtime zip 包含发布门禁脚本。
+   *
+   * @throws Exception 解包失败时抛出
+   */
+  @Test
+  void shouldIncludeReleaseProfileScriptInRuntimeDistribution()
+      throws Exception {
+    Path runtimeDir = tempDir.resolve("runtime-release-profile-script");
+    extract(runtimeZip(), runtimeDir);
+
+    assertTrue(Files.exists(releaseProfileScript(runtimeDir)));
+  }
+
   private RuntimeProcessHandle startSqlServerScript(Path runtimeDir, int port,
       Path serverDir, Path ready, Path stop) throws IOException {
     Path script = sqlServerScript(runtimeDir);
@@ -266,6 +280,12 @@ class AdbRuntimeDistributionSmokeTest {
 
   private static Path doctorScript(Path runtimeDir) {
     String name = isWindows() ? "adb-doctor.bat" : "adb-doctor";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path releaseProfileScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-release-profile.bat"
+        : "adb-release-profile";
     return runtimeDir.resolve("bin").resolve(name);
   }
 

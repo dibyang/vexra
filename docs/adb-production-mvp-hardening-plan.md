@@ -704,7 +704,10 @@ Gradle 入口：
 
 默认输出目录为 `vexra-adb/build/adb-release-evidence/<releaseId>`。CI 可通过
 `-PadbReleaseId`、`-PadbReleaseOutput`、`-PadbReleaseCommands` 和
-`-PadbReleaseChecksums` 覆盖批次号、输出目录、验证命令和 checksum 摘要。
+`-PadbReleaseChecksums` 覆盖批次号、输出目录、验证命令和 checksum 摘要；也可以通过
+`-PadbTrialDataScaleAccepted`、`-PadbTrialRollbackPlanReady`、
+`-PadbTrialAlertingReady`、`-PadbTrialOnCallWindowReady`、
+`-PadbTrialKnownLimitationsAccepted` 和 `-PadbTrialNotes` 显式确认试生产准入项。
 
 `AdbReleaseProfileMain` 会同时生成试生产准入文件。试生产项默认全部为 false，必须由 CI
 或人工审批显式传入：
@@ -712,7 +715,13 @@ Gradle 入口：
 ```powershell
 .\gradlew.bat :vexra-adb:adbReleaseProfile `
   -PadbReleaseId=rel-001 `
-  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001
+  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001 `
+  -PadbTrialDataScaleAccepted=true `
+  -PadbTrialRollbackPlanReady=true `
+  -PadbTrialAlertingReady=true `
+  -PadbTrialOnCallWindowReady=true `
+  -PadbTrialKnownLimitationsAccepted=true `
+  -PadbTrialNotes=first-guarded-window
 ```
 
 命令行直接调用时可使用 `--trialDataScaleAccepted`、`--trialRollbackPlanReady`、

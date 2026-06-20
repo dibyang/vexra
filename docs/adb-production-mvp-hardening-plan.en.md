@@ -707,7 +707,10 @@ The default output directory is
 `vexra-adb/build/adb-release-evidence/<releaseId>`. CI can override the batch id,
 output directory, verification commands, and checksum summary with
 `-PadbReleaseId`, `-PadbReleaseOutput`, `-PadbReleaseCommands`, and
-`-PadbReleaseChecksums`.
+`-PadbReleaseChecksums`. CI can also explicitly confirm trial-production entry
+items with `-PadbTrialDataScaleAccepted`, `-PadbTrialRollbackPlanReady`,
+`-PadbTrialAlertingReady`, `-PadbTrialOnCallWindowReady`,
+`-PadbTrialKnownLimitationsAccepted`, and `-PadbTrialNotes`.
 
 `AdbReleaseProfileMain` also writes a trial-production admission file. Trial items
 default to false and must be explicitly confirmed by CI or human approval:
@@ -715,7 +718,13 @@ default to false and must be explicitly confirmed by CI or human approval:
 ```powershell
 .\gradlew.bat :vexra-adb:adbReleaseProfile `
   -PadbReleaseId=rel-001 `
-  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001
+  -PadbReleaseOutput=vexra-adb/build/adb-release-evidence/rel-001 `
+  -PadbTrialDataScaleAccepted=true `
+  -PadbTrialRollbackPlanReady=true `
+  -PadbTrialAlertingReady=true `
+  -PadbTrialOnCallWindowReady=true `
+  -PadbTrialKnownLimitationsAccepted=true `
+  -PadbTrialNotes=first-guarded-window
 ```
 
 Direct CLI invocation can pass `--trialDataScaleAccepted`,

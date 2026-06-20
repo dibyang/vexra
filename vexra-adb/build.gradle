@@ -128,13 +128,20 @@ tasks.register('adbReleaseProfile', JavaExec) {
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'net.xdob.vexra.adb.AdbReleaseProfileMain'
     def releaseId = findProperty('adbReleaseId') ?: "local-${project.version}"
-    def output = findProperty('adbReleaseOutput') ?:
-        layout.buildDirectory.dir("adb-release-evidence/${releaseId}").get().asFile.absolutePath
+    def output = findProperty('adbReleaseOutput')
+        ? rootProject.file(findProperty('adbReleaseOutput').toString()).absolutePath
+        : layout.buildDirectory.dir("adb-release-evidence/${releaseId}").get().asFile.absolutePath
     args '--releaseId', releaseId.toString(),
         '--version', project.version.toString(),
         '--output', output.toString(),
         '--commands', (findProperty('adbReleaseCommands') ?: '.\\gradlew.bat :vexra-adb:test').toString(),
-        '--checksums', (findProperty('adbReleaseChecksums') ?: 'none=not-provided').toString()
+        '--checksums', (findProperty('adbReleaseChecksums') ?: 'none=not-provided').toString(),
+        '--trialDataScaleAccepted', (findProperty('adbTrialDataScaleAccepted') ?: 'false').toString(),
+        '--trialRollbackPlanReady', (findProperty('adbTrialRollbackPlanReady') ?: 'false').toString(),
+        '--trialAlertingReady', (findProperty('adbTrialAlertingReady') ?: 'false').toString(),
+        '--trialOnCallWindowReady', (findProperty('adbTrialOnCallWindowReady') ?: 'false').toString(),
+        '--trialKnownLimitationsAccepted', (findProperty('adbTrialKnownLimitationsAccepted') ?: 'false').toString(),
+        '--trialNotes', (findProperty('adbTrialNotes') ?: '').toString()
 }
 
 tasks.register('adbRuntimeDist', Zip) {
