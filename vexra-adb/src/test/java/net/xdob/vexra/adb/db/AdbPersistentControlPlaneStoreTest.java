@@ -350,6 +350,103 @@ class AdbPersistentControlPlaneStoreTest {
     }
   }
 
+  /**
+   * 验证控制面 lease 和 config 可以跨 store 重开恢复。
+   *
+   * @throws Exception store 创建、写入或读取失败时抛出
+   */
+  @Test
+  void shouldPersistLeasesAndConfigsAcrossReopen() throws Exception {
+    File dbDir = new File(tempDir, "lease-config");
+    try (LdbStore store = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      controlPlane.persistLease(new AdbControlPlaneLeaseRecord(
+          "tso-owner", "node-a", 7, 5000, 99));
+      controlPlane.persistConfig(new AdbControlPlaneConfigRecord(
+          "adb.production.mode", "mvp-cluster", 3, 1234));
+    }
+
+    try (LdbStore reopened = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(reopened, 0);
+
+      assertEquals(1, controlPlane.listLeases().size());
+      assertEquals("tso-owner", controlPlane.listLeases().get(0)
+          .getLeaseName());
+      assertEquals("node-a", controlPlane.listLeases().get(0).getOwner());
+      assertEquals(99, controlPlane.listLeases().get(0).getFencingToken());
+      assertEquals(1, controlPlane.listConfigs().size());
+      assertEquals("mvp-cluster", controlPlane.listConfigs().get(0)
+          .getValue());
+    }
+  }
+
+  /**
+   * 验证 system table provider 可以输出 lease 和 config 行。
+   *
+   * @throws Exception store 创建、写入或行输出失败时抛出
+   */
+  @Test
+  void shouldExposeLeasesAndConfigsAsSystemTableRows() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "sys-lease")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      controlPlane.persistLease(new AdbControlPlaneLeaseRecord(
+          "gc-worker", "node-a", 2, 2000, 11));
+      controlPlane.persistConfig(new AdbControlPlaneConfigRecord(
+          "adb.production.mode", "mvp-cluster", 3, 1200));
+      AdbSystemTableProvider provider = new AdbSystemTableProvider(
+          controlPlane);
+
+      List<Map<String, String>> leases = provider.leases(1500);
+      assertEquals(1, leases.size());
+      assertEquals("gc-worker", leases.get(0).get("lease_name"));
+      assertEquals("node-a", leases.get(0).get("owner"));
+      assertEquals("true", leases.get(0).get("active"));
+      assertEquals("11", leases.get(0).get("fencing_token"));
+
+      List<Map<String, String>> configs = provider.configs();
+      assertEquals(1, configs.size());
+      assertEquals("adb.production.mode", configs.get(0).get("config_key"));
+      assertEquals("mvp-cluster", configs.get(0).get("value"));
+      assertEquals("3", configs.get(0).get("version"));
+    }
+  }
+
+  /**
+   * 验证 capability system table 可以反映生产 guard 的启用和拒绝原因。
+   *
+   * @throws Exception 行输出失败时抛出
+   */
+  @Test
+  void shouldExposeCapabilitiesAsSystemTableRows() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "sys-cap")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      AdbSystemTableProvider provider = new AdbSystemTableProvider(
+          controlPlane);
+      AdbProductionGuard guard = new AdbProductionGuard(
+          AdbProductionMode.MVP_CLUSTER,
+          AdbProductionTopologyKind.TWO_DATA_ONE_WITNESS,
+          true, true, true, false);
+
+      List<Map<String, String>> rows = provider.capabilities(guard);
+
+      assertEquals("true", findCapability(rows,
+          AdbProductionCapability.DISTRIBUTED_SQL).get("enabled"));
+      assertEquals("true", findCapability(rows,
+          AdbProductionCapability.SINGLE_REGION_TRANSACTION).get("enabled"));
+      Map<String, String> crossRegion = findCapability(rows,
+          AdbProductionCapability.CROSS_REGION_TRANSACTION);
+      assertEquals("false", crossRegion.get("enabled"));
+      assertEquals("experimental capability is disabled",
+          crossRegion.get("reason"));
+    }
+  }
+
   private static RegionMetadata region(String regionId, byte[] startKey,
       byte[] endKey, String leaderId) {
     return new RegionMetadata(regionId, new KeyRange(startKey, endKey), 1,
@@ -362,5 +459,15 @@ class AdbPersistentControlPlaneStoreTest {
 
   private static byte[] bytes(String value) {
     return value.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+  }
+
+  private static Map<String, String> findCapability(
+      List<Map<String, String>> rows, AdbProductionCapability capability) {
+    for (Map<String, String> row : rows) {
+      if (capability.name().equals(row.get("capability"))) {
+        return row;
+      }
+    }
+    throw new AssertionError("missing capability row: " + capability);
   }
 }

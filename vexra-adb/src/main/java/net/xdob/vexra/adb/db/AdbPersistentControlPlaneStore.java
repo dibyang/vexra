@@ -32,10 +32,14 @@ public final class AdbPersistentControlPlaneStore
     implements AdbRouteSnapshotPublisher {
   private static final byte[] NODES_KEY = key("adb.cp.nodes.v1");
   private static final byte[] REGIONS_KEY = key("adb.cp.regions.v1");
+  private static final byte[] LEASES_KEY = key("adb.cp.leases.v1");
+  private static final byte[] CONFIGS_KEY = key("adb.cp.configs.v1");
   private static final byte[] ROUTE_EPOCH_KEY = key("adb.cp.routeEpoch.v1");
   private static final byte[] TSO_KEY = key("adb.cp.tso.v1");
   private static final int NODES_MAGIC = 0x4143504e;
   private static final int REGIONS_MAGIC = 0x41435052;
+  private static final int LEASES_MAGIC = 0x4143504c;
+  private static final int CONFIGS_MAGIC = 0x41435043;
   private static final int VERSION = 1;
 
   private final DbStore store;
@@ -159,6 +163,74 @@ public final class AdbPersistentControlPlaneStore
   }
 
   /**
+   * 写入或替换控制面 lease 记录。
+   *
+   * @param record lease 记录
+   * @throws SQLException 底层读取、写入或解码失败时抛出
+   */
+  public synchronized void persistLease(AdbControlPlaneLeaseRecord record)
+      throws SQLException {
+    Objects.requireNonNull(record, "record == null");
+    List<AdbControlPlaneLeaseRecord> leases = new ArrayList<>(listLeases());
+    int index = findLease(leases, record.getLeaseName());
+    if (index >= 0) {
+      leases.set(index, record);
+    } else {
+      leases.add(record);
+    }
+    store.put(CF.META.getCfId(), LEASES_KEY, encodeLeases(leases));
+  }
+
+  /**
+   * 读取全部控制面 lease。
+   *
+   * @return 不可变 lease 列表
+   * @throws SQLException 底层读取或解码失败时抛出
+   */
+  public synchronized List<AdbControlPlaneLeaseRecord> listLeases()
+      throws SQLException {
+    byte[] value = store.get(CF.META.getCfId(), LEASES_KEY);
+    if (value == null) {
+      return Collections.emptyList();
+    }
+    return Collections.unmodifiableList(decodeLeases(value));
+  }
+
+  /**
+   * 写入或替换控制面配置记录。
+   *
+   * @param record 配置记录
+   * @throws SQLException 底层读取、写入或解码失败时抛出
+   */
+  public synchronized void persistConfig(AdbControlPlaneConfigRecord record)
+      throws SQLException {
+    Objects.requireNonNull(record, "record == null");
+    List<AdbControlPlaneConfigRecord> configs = new ArrayList<>(listConfigs());
+    int index = findConfig(configs, record.getConfigKey());
+    if (index >= 0) {
+      configs.set(index, record);
+    } else {
+      configs.add(record);
+    }
+    store.put(CF.META.getCfId(), CONFIGS_KEY, encodeConfigs(configs));
+  }
+
+  /**
+   * 读取全部控制面配置记录。
+   *
+   * @return 不可变配置记录列表
+   * @throws SQLException 底层读取或解码失败时抛出
+   */
+  public synchronized List<AdbControlPlaneConfigRecord> listConfigs()
+      throws SQLException {
+    byte[] value = store.get(CF.META.getCfId(), CONFIGS_KEY);
+    if (value == null) {
+      return Collections.emptyList();
+    }
+    return Collections.unmodifiableList(decodeConfigs(value));
+  }
+
+  /**
    * 发布新的 region 快照并推进 route epoch。
    *
    * @param newRegions 新 region 元数据集合
@@ -246,6 +318,26 @@ public final class AdbPersistentControlPlaneStore
     return -1;
   }
 
+  private static int findLease(List<AdbControlPlaneLeaseRecord> leases,
+      String leaseName) {
+    for (int i = 0; i < leases.size(); i++) {
+      if (leases.get(i).getLeaseName().equals(leaseName)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  private static int findConfig(List<AdbControlPlaneConfigRecord> configs,
+      String configKey) {
+    for (int i = 0; i < configs.size(); i++) {
+      if (configs.get(i).getConfigKey().equals(configKey)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
   private static byte[] encodeNodes(List<AdbControlPlaneNodeRecord> nodes)
       throws SQLException {
     try {
@@ -290,6 +382,88 @@ public final class AdbPersistentControlPlaneStore
       return nodes;
     } catch (IOException | RuntimeException e) {
       throw new SQLException("Failed to decode control-plane nodes", e);
+    }
+  }
+
+  private static byte[] encodeLeases(
+      List<AdbControlPlaneLeaseRecord> leases) throws SQLException {
+    try {
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      DataOutputStream out = new DataOutputStream(bytes);
+      out.writeInt(LEASES_MAGIC);
+      out.writeInt(VERSION);
+      out.writeInt(leases.size());
+      for (AdbControlPlaneLeaseRecord lease : leases) {
+        writeString(out, lease.getLeaseName());
+        writeString(out, lease.getOwner());
+        out.writeLong(lease.getEpoch());
+        out.writeLong(lease.getExpireAtMillis());
+        out.writeLong(lease.getFencingToken());
+      }
+      return bytes.toByteArray();
+    } catch (IOException e) {
+      throw new SQLException("Failed to encode control-plane leases", e);
+    }
+  }
+
+  private static List<AdbControlPlaneLeaseRecord> decodeLeases(byte[] value)
+      throws SQLException {
+    try {
+      DataInputStream in = new DataInputStream(new ByteArrayInputStream(value));
+      requireHeader(in, LEASES_MAGIC, "leases");
+      int size = in.readInt();
+      if (size < 0) {
+        throw new SQLException("Invalid control-plane lease count: " + size);
+      }
+      List<AdbControlPlaneLeaseRecord> leases = new ArrayList<>(size);
+      for (int i = 0; i < size; i++) {
+        leases.add(new AdbControlPlaneLeaseRecord(readString(in),
+            readString(in), in.readLong(), in.readLong(), in.readLong()));
+      }
+      return leases;
+    } catch (IOException | RuntimeException e) {
+      throw new SQLException("Failed to decode control-plane leases", e);
+    }
+  }
+
+  private static byte[] encodeConfigs(
+      List<AdbControlPlaneConfigRecord> configs) throws SQLException {
+    try {
+      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+      DataOutputStream out = new DataOutputStream(bytes);
+      out.writeInt(CONFIGS_MAGIC);
+      out.writeInt(VERSION);
+      out.writeInt(configs.size());
+      for (AdbControlPlaneConfigRecord config : configs) {
+        writeString(out, config.getConfigKey());
+        writeString(out, config.getValue());
+        out.writeLong(config.getVersion());
+        out.writeLong(config.getUpdatedAtMillis());
+      }
+      return bytes.toByteArray();
+    } catch (IOException e) {
+      throw new SQLException("Failed to encode control-plane configs", e);
+    }
+  }
+
+  private static List<AdbControlPlaneConfigRecord> decodeConfigs(byte[] value)
+      throws SQLException {
+    try {
+      DataInputStream in = new DataInputStream(new ByteArrayInputStream(value));
+      requireHeader(in, CONFIGS_MAGIC, "configs");
+      int size = in.readInt();
+      if (size < 0) {
+        throw new SQLException("Invalid control-plane config count: "
+            + size);
+      }
+      List<AdbControlPlaneConfigRecord> configs = new ArrayList<>(size);
+      for (int i = 0; i < size; i++) {
+        configs.add(new AdbControlPlaneConfigRecord(readString(in),
+            readString(in), in.readLong(), in.readLong()));
+      }
+      return configs;
+    } catch (IOException | RuntimeException e) {
+      throw new SQLException("Failed to decode control-plane configs", e);
     }
   }
 

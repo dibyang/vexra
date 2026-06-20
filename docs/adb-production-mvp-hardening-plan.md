@@ -425,7 +425,7 @@ sequenceDiagram
 ### 当前实现增量
 
 - 第一批 GA-03 实现引入 `AdbPersistentControlPlaneStore`，用 `CF.META` 下的 `adb.cp.*` 独立命名空间持久化控制面元数据，不改变 ADB 表数据、事务数据和已有 shared catalog 兼容路径。
-- 本增量已覆盖节点心跳记录、region 快照、route epoch、route watch、控制面 TTL 写入保护、单调 TSO，以及 nodes/regions/tso 的 `AdbSystemTableProvider` 输出；租约、多副本控制面、leases/capabilities 系统表仍保留在后续 GA-03 子任务。
+- 本增量已覆盖节点心跳记录、region 快照、route epoch、route watch、控制面 TTL 写入保护、单调 TSO，以及 nodes/regions/tso/leases/capabilities 的 `AdbSystemTableProvider` 输出；多副本控制面服务化和 lease 与真实 TSO owner 的强绑定仍保留在后续 GA-03 子任务。
 - `AdbNodeHeartbeat` 写入后生成 `AdbControlPlaneNodeRecord`，健康心跳落为 `UP`；`AdbNodeHeartbeatService` 会按超时阈值将节点推进到 `SUSPECT` / `DOWN`，新心跳可恢复为 `UP`。`RECOVERING` 和 `DECOMMISSIONED` 仍由后续显式运维状态机补齐。
 - region 快照采用整体替换方式发布并推进 route epoch，适合当前 split/merge 管理器的最小闭环；后续控制面服务化时再拆成带版本校验的 region CRUD。
 - TSO 使用 store 原子 `addLong` 持久推进，重启后不得回退；首次分配会基于构造参数初始化到不低于指定初始值。
