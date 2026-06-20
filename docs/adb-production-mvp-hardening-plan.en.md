@@ -422,6 +422,14 @@ sequenceDiagram
 - Writes are rejected after control-plane TTL expires.
 - System tables expose nodes, regions, TSO, and leases.
 
+### Current Implementation Increment
+
+- The first GA-03 increment adds `AdbPersistentControlPlaneStore`, using an isolated `adb.cp.*` namespace in `CF.META` for control-plane metadata. It does not change ADB table data, transaction data, or the existing shared-catalog compatibility path.
+- This increment covers node heartbeat records, region snapshots, route epoch, and monotonic TSO. Leases, replicated control-plane service, route watch, system-table provider, and control-plane TTL remain later GA-03 subtasks.
+- `AdbNodeHeartbeat` writes produce `AdbControlPlaneNodeRecord` entries and mark healthy heartbeat nodes as `UP`; the full `SUSPECT`, `DOWN`, `RECOVERING`, and `DECOMMISSIONED` state machine will be completed by the later heartbeat service.
+- Region snapshots are published as whole-snapshot replacements and advance route epoch, matching the current split/merge manager boundary. A later service increment can split this into version-checked region CRUD.
+- TSO advances through the store atomic `addLong` path and must not roll back after reopen; first allocation initializes the persisted value to at least the configured initial timestamp.
+
 ## ADB-GA-04: Minimum Production Transactions
 
 ### Goals

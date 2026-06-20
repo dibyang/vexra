@@ -422,6 +422,14 @@ sequenceDiagram
 - 控制面不可达时写入按 TTL 拒绝。
 - system table 输出 nodes、regions、tso 和 leases。
 
+### 当前实现增量
+
+- 第一批 GA-03 实现引入 `AdbPersistentControlPlaneStore`，用 `CF.META` 下的 `adb.cp.*` 独立命名空间持久化控制面元数据，不改变 ADB 表数据、事务数据和已有 shared catalog 兼容路径。
+- 本增量先覆盖节点心跳记录、region 快照、route epoch 和单调 TSO；租约、多副本控制面、route watch、system table provider 和控制面 TTL 仍保留在后续 GA-03 子任务。
+- `AdbNodeHeartbeat` 写入后生成 `AdbControlPlaneNodeRecord`，节点状态先按健康心跳落为 `UP`；`SUSPECT`、`DOWN`、`RECOVERING`、`DECOMMISSIONED` 状态机由后续 heartbeat service 补齐。
+- region 快照采用整体替换方式发布并推进 route epoch，适合当前 split/merge 管理器的最小闭环；后续控制面服务化时再拆成带版本校验的 region CRUD。
+- TSO 使用 store 原子 `addLong` 持久推进，重启后不得回退；首次分配会基于构造参数初始化到不低于指定初始值。
+
 ## ADB-GA-04：事务最小生产化
 
 ### 目标
