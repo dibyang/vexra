@@ -220,6 +220,7 @@ If the first release allows only single-region transactions, step 3 allows exact
 | `AdbCommitRecoveryScanner` | Scan in-doubt transactions during startup and recover them |
 | `AdbCommitIdempotencyStore` | Deduplicate by txnId/client request id |
 | `AdbCrashInjectionHook` | Test-only injection at prewrite, raft commit, store commit, and before reply |
+| `AdbCommitCrashInjectionGate` | Aggregate recovery evidence for each commit crash-injection point and feed the release-gate data-safety check |
 | `AdbDataSafetyVerifier` | Validate commit marker, visible version, lock record, and region commit index consistency |
 
 ### Data Structures
@@ -233,6 +234,15 @@ If the first release allows only single-region transactions, step 3 allows exact
 | `regionIds` | Touched region set; MVP allows one |
 | `state` | `PREWRITTEN` / `RAFT_COMMITTED` / `STORE_COMMITTED` / `REPLIED` / `ROLLED_BACK` |
 | `lastError` | Last recovery error |
+
+`AdbCommitCrashInjectionGate` reports must record at least these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `injectionPoint` | Crash point: before prewrite, after prewrite before raft, after raft before store, or after store before reply |
+| `recovered` | Whether kill/reopen or client retry reached the expected recovery outcome |
+| `finalState` | Durable marker state after recovery; nullable, but passing scenarios must match the expected state |
+| `notes` | Failure reason, log path, or manual diagnostic summary |
 
 ### State Machine
 
@@ -296,8 +306,11 @@ Illegal transitions:
 - `AdbStartupRecoveryServiceTest` covers automatic RAFT_COMMITTED marker recovery when `DbStoreEngine.getOrCreate()` opens a store for the first time.
 - `AdbRemoteCommitRecoveryExecutorTest` covers remote marker rollback, roll-forward, and return-committed behavior through the region commit client.
 - `AdbRegionCommitCoordinatorTest` covers single-region success markers, rollback markers after prewrite failure, and primary-committed/secondary-in-doubt markers on the real coordinator path.
+- `AdbCommitCrashInjectionGate` now defines a structured release gate for commit crash-injection: every required injection point must appear, recover successfully, and end in the durable marker state required by the data-safety semantics.
+- `AdbEndToEndClusterStressGate` now requires the end-to-end report to carry a passing commit crash-injection evaluation, preventing ordinary soak/recovery evidence from replacing commit-specific crash evidence.
+- `AdbCommitCrashInjectionGateTest` covers full matrix pass, missing injection point failure, recovery failure, final-state mismatch, and end-to-end release-gate propagation.
 
-This phase has not yet turned crash-injection plus kill/restart acceptance into release gates. The next increment should add failure-injection and process-level acceptance.
+This phase has not yet connected kill/restart process-level acceptance to the real multi-process release profile. The next increment should wire the structured crash gate into process-level failure-injection scripts and the release evidence directory.
 
 ## ADB-GA-03: Lightweight Control Plane
 
@@ -570,7 +583,7 @@ sequenceDiagram
 | Unit tests | `:vexra-adb:test` passes |
 | Compatibility tests | Old `jdbc:adb:*` single-node path passes |
 | Cluster smoke | 2 data + 1 witness start, write, query, and stop pass |
-| Data safety | Commit crash-injection passes |
+| Data safety | Commit crash-injection passes, and the end-to-end report includes a passing `AdbCommitCrashInjectionGate` result |
 | Failure recovery | kill leader, kill follower, kill witness, full-cluster restart pass |
 | Backup/restore | Full backup/restore checksum matches |
 | Rolling upgrade | Per-node upgrade and rollback drill passes |
@@ -592,7 +605,7 @@ sequenceDiagram
 
 - Add a CI release profile.
 - Soak test emits a structured report and reuses `AdbEndToEndClusterStressGate`.
-- Failure injection saves logs, metrics, and recovery result.
+- Failure injection saves logs, metrics, and recovery result; commit crash-injection must cover every injection point defined by GA-02.
 - Every release creates a release evidence directory with commands, versions, reports, and checksums.
 
 ## Recommended Implementation Order

@@ -8,8 +8,8 @@ import java.util.Objects;
  * ADB 端到端集群压测门禁。
  *
  * <p>门禁复用已有长稳压测 evaluator，再叠加 Run-12 对真实集群闭环的要求：SQL 到
- * region 的读写 smoke、恢复演练和滚动升级演练必须全部通过，并且至少有一次 SQL/region
- * smoke 循环。</p>
+ * region 的读写 smoke、commit 崩溃注入、恢复演练和滚动升级演练必须全部通过，并且至少有
+ * 一次 SQL/region smoke 循环。</p>
  */
 public final class AdbEndToEndClusterStressGate {
   private final AdbLongRunStressEvaluator longRunEvaluator =
@@ -30,6 +30,7 @@ public final class AdbEndToEndClusterStressGate {
     List<String> reasons = new ArrayList<>(
         longRunEvaluator.evaluate(report.getLongRunReport(), criteria)
             .getFailureReasons());
+    reasons.addAll(report.getCommitCrashEvaluation().getFailureReasons());
     if (!report.isClusterReadWritePassed()) {
       reasons.add("cluster read/write smoke failed");
     }

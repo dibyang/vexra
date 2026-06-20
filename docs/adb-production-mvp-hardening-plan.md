@@ -220,6 +220,7 @@ sequenceDiagram
 | `AdbCommitRecoveryScanner` | 启动时扫描 in-doubt transaction 并恢复 |
 | `AdbCommitIdempotencyStore` | 基于 txnId/client request id 去重 |
 | `AdbCrashInjectionHook` | 测试专用，在 prewrite、raft commit、store commit、reply 前注入失败 |
+| `AdbCommitCrashInjectionGate` | 汇总每个 commit 崩溃注入点的恢复证据，并作为 release gate 的数据安全输入 |
 | `AdbDataSafetyVerifier` | 验证提交记录、可见版本、lock record、region commit index 一致 |
 
 ### 数据结构
@@ -233,6 +234,15 @@ sequenceDiagram
 | `regionIds` | 命中的 region 集合，MVP 只允许一个 |
 | `state` | `PREWRITTEN` / `RAFT_COMMITTED` / `STORE_COMMITTED` / `REPLIED` / `ROLLED_BACK` |
 | `lastError` | 最近一次恢复错误 |
+
+`AdbCommitCrashInjectionGate` 的报告结构必须至少记录以下字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `injectionPoint` | 崩溃注入点，覆盖 prewrite 前、prewrite 后 raft 前、raft 后 store 前、store 后 reply 前 |
+| `recovered` | kill/reopen 或客户端重试后是否恢复到期望状态 |
+| `finalState` | 恢复后的 durable marker 状态，可为空但通过场景必须匹配期望 |
+| `notes` | 失败原因、日志路径或人工诊断摘要 |
 
 ### 状态机
 
@@ -296,8 +306,11 @@ stateDiagram-v2
 - `AdbStartupRecoveryServiceTest` 覆盖 `DbStoreEngine.getOrCreate()` 首次打开 store 时自动恢复 RAFT_COMMITTED marker。
 - `AdbRemoteCommitRecoveryExecutorTest` 覆盖 remote marker 通过 region commit client 完成 rollback、roll-forward 和 return committed。
 - `AdbRegionCommitCoordinatorTest` 覆盖真实 coordinator 路径上的单 region 成功 marker、prewrite 失败回滚 marker、primary 已提交后 secondary 待恢复 marker。
+- `AdbCommitCrashInjectionGate` 已定义 commit crash-injection 的结构化 release gate：每个必需注入点必须出现、恢复成功，并落到与数据安全语义一致的最终 marker 状态。
+- `AdbEndToEndClusterStressGate` 已要求端到端报告携带通过的 commit crash-injection 评估结果，避免只有普通长稳/恢复演练而缺少 commit 崩溃点证据。
+- `AdbCommitCrashInjectionGateTest` 覆盖完整注入矩阵通过、缺失注入点失败、恢复失败、最终状态不匹配和端到端 release gate 透传失败原因。
 
-本阶段尚未把 crash-injection 和 kill/restart 验收串成发布门禁。下一轮需要补故障注入和进程级验收。
+本阶段尚未把 kill/restart 进程级验收接入真实多进程 release profile。下一轮需要把结构化 crash gate 接到进程级故障注入脚本和证据目录。
 
 ## ADB-GA-03：轻量控制面
 
@@ -570,7 +583,7 @@ sequenceDiagram
 | 单元测试 | `:vexra-adb:test` 通过 |
 | 兼容测试 | 旧 `jdbc:adb:*` 单机路径通过 |
 | 集群 smoke | 2 data + 1 witness 启动、写入、查询、停止通过 |
-| 数据安全 | commit crash-injection 全部通过 |
+| 数据安全 | commit crash-injection 全部通过，且端到端报告必须包含 `AdbCommitCrashInjectionGate` 通过结果 |
 | 故障恢复 | kill leader、kill follower、kill witness、重启全集群通过 |
 | 备份恢复 | 全量备份恢复 checksum 一致 |
 | 滚动升级 | 逐节点升级和回滚演练通过 |
@@ -592,7 +605,7 @@ sequenceDiagram
 
 - CI 增加 release profile。
 - 长稳压测输出结构化报告，复用 `AdbEndToEndClusterStressGate`。
-- 故障注入测试必须保存日志、指标和恢复结果。
+- 故障注入测试必须保存日志、指标和恢复结果；commit crash-injection 必须覆盖 GA-02 定义的全部注入点。
 - 每次发布生成 release evidence 目录，包含命令、版本、报告和 checksum。
 
 ## 实施顺序建议

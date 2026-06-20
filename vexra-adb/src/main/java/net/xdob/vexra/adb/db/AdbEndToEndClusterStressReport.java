@@ -1,16 +1,18 @@
 package net.xdob.vexra.adb.db;
 
+import java.util.List;
 import java.util.Objects;
 
 /**
  * ADB 端到端集群压测报告。
  *
  * <p>该报告把已有长稳压测指标扩展到 Run-12 的产品化门禁：除了吞吐、失败率、延迟和故障
- * 注入矩阵，还必须证明 SQL/region 读写、恢复演练和滚动升级演练都通过。</p>
+ * 注入矩阵，还必须证明 SQL/region 读写、commit 崩溃注入、恢复演练和滚动升级演练都通过。</p>
  */
 public final class AdbEndToEndClusterStressReport {
   private final String clusterName;
   private final AdbLongRunStressReport longRunReport;
+  private final AdbLongRunStressEvaluation commitCrashEvaluation;
   private final boolean clusterReadWritePassed;
   private final boolean recoveryDrillPassed;
   private final boolean rollingUpgradePassed;
@@ -20,9 +22,32 @@ public final class AdbEndToEndClusterStressReport {
       AdbLongRunStressReport longRunReport, boolean clusterReadWritePassed,
       boolean recoveryDrillPassed, boolean rollingUpgradePassed,
       int sqlRegionSmokeCycles) {
+    this(clusterName, longRunReport, missingCommitCrashEvaluation(),
+        clusterReadWritePassed, recoveryDrillPassed, rollingUpgradePassed,
+        sqlRegionSmokeCycles);
+  }
+
+  /**
+   * 创建端到端集群压测报告。
+   *
+   * @param clusterName 集群名称
+   * @param longRunReport 长稳压测报告
+   * @param commitCrashEvaluation commit 崩溃注入门禁结果
+   * @param clusterReadWritePassed SQL/region 读写 smoke 是否通过
+   * @param recoveryDrillPassed 恢复演练是否通过
+   * @param rollingUpgradePassed 滚动升级演练是否通过
+   * @param sqlRegionSmokeCycles SQL/region smoke 循环次数
+   */
+  public AdbEndToEndClusterStressReport(String clusterName,
+      AdbLongRunStressReport longRunReport,
+      AdbLongRunStressEvaluation commitCrashEvaluation,
+      boolean clusterReadWritePassed, boolean recoveryDrillPassed,
+      boolean rollingUpgradePassed, int sqlRegionSmokeCycles) {
     this.clusterName = normalize(clusterName, "clusterName");
     this.longRunReport = Objects.requireNonNull(longRunReport,
         "longRunReport == null");
+    this.commitCrashEvaluation = Objects.requireNonNull(
+        commitCrashEvaluation, "commitCrashEvaluation == null");
     this.clusterReadWritePassed = clusterReadWritePassed;
     this.recoveryDrillPassed = recoveryDrillPassed;
     this.rollingUpgradePassed = rollingUpgradePassed;
@@ -38,6 +63,10 @@ public final class AdbEndToEndClusterStressReport {
 
   public AdbLongRunStressReport getLongRunReport() {
     return longRunReport;
+  }
+
+  public AdbLongRunStressEvaluation getCommitCrashEvaluation() {
+    return commitCrashEvaluation;
   }
 
   public boolean isClusterReadWritePassed() {
@@ -61,5 +90,11 @@ public final class AdbEndToEndClusterStressReport {
       throw new IllegalArgumentException(fieldName + " is empty");
     }
     return value.trim();
+  }
+
+  private static AdbLongRunStressEvaluation missingCommitCrashEvaluation() {
+    List<String> reasons = new java.util.ArrayList<>();
+    reasons.add("commit crash injection gate is missing");
+    return new AdbLongRunStressEvaluation(reasons);
   }
 }

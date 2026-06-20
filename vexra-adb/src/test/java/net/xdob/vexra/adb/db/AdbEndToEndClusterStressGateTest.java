@@ -13,7 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * ADB 端到端集群压测门禁测试。
  *
  * <p>测试覆盖 `ADB-Run-12` 的核心验收：完整报告通过，缺失集群读写、恢复或滚动升级
- * 证据时失败。</p>
+ * 证据时失败；同时确保 GA-02 commit 崩溃注入证据会被纳入 release gate。</p>
  */
 class AdbEndToEndClusterStressGateTest {
 
@@ -77,7 +77,60 @@ class AdbEndToEndClusterStressGateTest {
         "p99 latency exceeds limit"));
   }
 
+  /**
+   * 验证缺失 commit 崩溃注入门禁证据时不能通过端到端门禁。
+   */
+  @Test
+  void shouldFailWhenCommitCrashInjectionGateIsMissing() {
+    AdbLongRunStressEvaluation evaluation =
+        new AdbEndToEndClusterStressGate().evaluate(legacyReport(true, true,
+            true, 3, longRunReport(0, 50, allRecoveredFaults())),
+            criteria());
+
+    assertFalse(evaluation.isPassed());
+    assertTrue(evaluation.getFailureReasons().contains(
+        "commit crash injection gate is missing"));
+  }
+
+  /**
+   * 验证 commit 崩溃注入门禁失败原因会透传到端到端门禁。
+   */
+  @Test
+  void shouldFailWhenCommitCrashInjectionGateFails() {
+    AdbLongRunStressEvaluation failedCrashGate =
+        new AdbCommitCrashInjectionGate().evaluate(
+            new AdbCommitCrashInjectionReport("missing", Arrays.asList(
+                new AdbCommitCrashInjectionResult(
+                    AdbCommitCrashInjectionPoint.BEFORE_PREWRITE, true,
+                    null, "recovered"))));
+    AdbLongRunStressEvaluation evaluation =
+        new AdbEndToEndClusterStressGate().evaluate(report(true, true, true,
+            3, longRunReport(0, 50, allRecoveredFaults()), failedCrashGate),
+            criteria());
+
+    assertFalse(evaluation.isPassed());
+    assertTrue(evaluation.getFailureReasons().contains(
+        "missing commit crash scenario: AFTER_PREWRITE_BEFORE_RAFT"));
+  }
+
   private static AdbEndToEndClusterStressReport report(boolean readWrite,
+      boolean recovery, boolean rollingUpgrade, int smokeCycles,
+      AdbLongRunStressReport longRunReport) {
+    return report(readWrite, recovery, rollingUpgrade, smokeCycles,
+        longRunReport, new AdbCommitCrashInjectionGate().evaluate(
+            AdbCommitCrashInjectionGateTest.completeReport()));
+  }
+
+  private static AdbEndToEndClusterStressReport report(boolean readWrite,
+      boolean recovery, boolean rollingUpgrade, int smokeCycles,
+      AdbLongRunStressReport longRunReport,
+      AdbLongRunStressEvaluation commitCrashEvaluation) {
+    return new AdbEndToEndClusterStressReport("run12-cluster", longRunReport,
+        commitCrashEvaluation, readWrite, recovery, rollingUpgrade,
+        smokeCycles);
+  }
+
+  private static AdbEndToEndClusterStressReport legacyReport(boolean readWrite,
       boolean recovery, boolean rollingUpgrade, int smokeCycles,
       AdbLongRunStressReport longRunReport) {
     return new AdbEndToEndClusterStressReport("run12-cluster", longRunReport,
