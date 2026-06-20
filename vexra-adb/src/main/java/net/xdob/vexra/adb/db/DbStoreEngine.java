@@ -39,6 +39,7 @@ public class DbStoreEngine {
               default:
                 throw new IllegalArgumentException("Unsupported store type: " + type);
             }
+            new AdbStartupRecoveryService(store).recoverOnce();
             stores.put(dbPath, store);
           } catch (Exception e) {
             throw DbException.get(ErrorCode.GENERAL_ERROR_1, e);

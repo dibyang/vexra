@@ -87,7 +87,10 @@ public interface UnorderedAsync {
           return;
         }
 
-        if (e != null) {
+        if (replyException instanceof NotLeaderException) {
+          client.handleNotLeaderException(request,
+              (NotLeaderException) replyException, null);
+        } else if (e != null) {
           if (LOG.isTraceEnabled()) {
             LOG.trace(clientId + ": attempt #" + attemptCount + " failed~ " + request, e);
           } else {

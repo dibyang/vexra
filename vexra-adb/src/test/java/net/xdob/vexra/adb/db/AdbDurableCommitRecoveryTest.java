@@ -240,6 +240,31 @@ class AdbDurableCommitRecoveryTest {
     }
   }
 
+  /**
+   * 验证启动恢复服务可以同步扫描持久化 marker 并执行前滚。
+   */
+  @Test
+  void shouldRecoverPersistentMarkerThroughStartupService() throws Exception {
+    File dbDir = new File(tempDir, "startup-service");
+    try (LdbStore store = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(store);
+      AdbDurableCommitMarker marker = recorder.prewritten(request("r1"));
+      recorder.raftCommitted(marker);
+    }
+
+    try (LdbStore reopened = new LdbStore(dbDir.getAbsolutePath())) {
+      AdbCommitRecoveryResult result =
+          new AdbStartupRecoveryService(reopened).recoverOnce();
+      AdbPersistentDurableCommitRecorder recorder =
+          new AdbPersistentDurableCommitRecorder(reopened);
+
+      assertEquals(1, result.getRolledForward());
+      assertEquals(AdbDurableCommitState.REPLIED,
+          marker(recorder.snapshot(), "r1", 100).getState());
+    }
+  }
+
   private static AdbDurableCommitMarker marker(long txnId,
       AdbDurableCommitState state) {
     return new AdbDurableCommitMarker(txnId, "client-" + txnId,
