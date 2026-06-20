@@ -486,6 +486,9 @@ sequenceDiagram
 - 新增 `AdbTransactionConflictException`，为可重试的事务写冲突、锁冲突和提交幂等冲突提供稳定 SQLState `ADB02` 与错误码 `7201`。
 - `AdbPrewriteApplicator` 已在 foreign intent、intent key、write conflict 和 lock txn mismatch 场景直接抛出稳定事务冲突异常；`AdbRegionCommitCoordinator` 已在异步提交失败路径上保留或映射该 SQLState，避免 JDBC 调用方只能依赖错误消息判断重试。
 - `AdbPrewriteApplicatorTest` 和 `AdbRegionCommitCoordinatorTest` 已覆盖 prewrite 冲突与 region commit client 冲突的 SQLState / error code。
+- 新增 `AdbBackupSafePointRegistry` 和 `AdbBackupSafePoint`，备份任务可在运行期注册需要保护的读取时间戳，并在备份完成后释放。
+- `AdbGlobalSafePointAdvancer` 已把备份 safe point 与活跃事务 startTs 一起作为 GC 推进上界；候选 safe point 达到或越过任一备份保护点时，本轮推进会被保守阻塞。
+- `AdbGlobalSafePointAdvancerTest` 已覆盖备份保护点注册、更新、释放、阻塞推进和释放后继续推进。
 
 ## ADB-GA-05：安装与运维产品化
 

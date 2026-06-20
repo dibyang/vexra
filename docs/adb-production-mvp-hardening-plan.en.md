@@ -486,6 +486,9 @@ sequenceDiagram
 - Add `AdbTransactionConflictException`, which gives retryable write conflicts, lock conflicts, and commit-idempotency conflicts a stable SQLState `ADB02` and error code `7201`.
 - `AdbPrewriteApplicator` now throws the stable transaction-conflict exception for foreign intent, intent-key, write-conflict, and lock transaction mismatch cases. `AdbRegionCommitCoordinator` preserves or maps that SQLState on asynchronous commit failures so JDBC callers do not need to classify retryable conflicts by message text only.
 - `AdbPrewriteApplicatorTest` and `AdbRegionCommitCoordinatorTest` cover the SQLState / error code for prewrite conflicts and region commit client conflict failures.
+- Add `AdbBackupSafePointRegistry` and `AdbBackupSafePoint`, allowing backup jobs to register the read timestamp that must be protected and release it when the backup finishes.
+- `AdbGlobalSafePointAdvancer` now treats backup safe points and active transaction start timestamps as GC-advance upper bounds. When the candidate safe point reaches or crosses any backup protection point, the advance is conservatively blocked.
+- `AdbGlobalSafePointAdvancerTest` covers backup protection registration, update, release, blocked advance, and advance after release.
 
 ## ADB-GA-05: Install and Operations Productization
 

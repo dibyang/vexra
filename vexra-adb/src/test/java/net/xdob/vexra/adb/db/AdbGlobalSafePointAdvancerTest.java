@@ -144,6 +144,57 @@ class AdbGlobalSafePointAdvancerTest {
     assertThrows(IllegalArgumentException.class, advancer::advanceOnce);
   }
 
+  /**
+   * 验证备份 safe point 会阻止 GC safe point 越过备份读取时间戳。
+   */
+  @Test
+  void shouldBlockWhenCandidateReachesBackupSafePoint() {
+    AdbBackupSafePointRegistry registry = new AdbBackupSafePointRegistry();
+    registry.register("backup-a", 25);
+    AdbGcSafePointManager manager = new AdbGcSafePointManager(10);
+    AdbGlobalSafePointAdvancer advancer =
+        new AdbGlobalSafePointAdvancer(manager, () -> 30,
+            Collections::emptyList, registry);
+
+    AdbGlobalSafePointAdvanceResult blocked = advancer.advanceOnce();
+
+    assertFalse(blocked.isAdvanced());
+    assertFalse(blocked.isBlockedByActiveTransaction());
+    assertTrue(blocked.isBlockedByBackupSafePoint());
+    assertEquals(Collections.singletonList(25L),
+        blocked.getBackupSafePoints());
+    assertEquals(10, manager.getSafePoint());
+
+    registry.release("backup-a");
+    AdbGlobalSafePointAdvanceResult advanced = advancer.advanceOnce();
+
+    assertTrue(advanced.isAdvanced());
+    assertFalse(advanced.isBlockedByBackupSafePoint());
+    assertEquals(30, manager.getSafePoint());
+  }
+
+  /**
+   * 验证备份 safe point 注册表支持更新和释放保护点。
+   */
+  @Test
+  void shouldRegisterUpdateAndReleaseBackupSafePoint() {
+    AdbBackupSafePointRegistry registry = new AdbBackupSafePointRegistry();
+
+    AdbBackupSafePoint first = registry.register(" backup-a ", 20);
+    AdbBackupSafePoint updated = registry.register("backup-a", 30);
+
+    assertEquals("backup-a", first.getBackupId());
+    assertEquals(20, first.getSafePoint());
+    assertEquals(30, updated.getSafePoint());
+    assertEquals(Collections.singletonList(30L), registry.safePointSnapshot());
+    assertEquals(1, registry.snapshot().size());
+
+    AdbBackupSafePoint released = registry.release("backup-a");
+
+    assertEquals(30, released.getSafePoint());
+    assertTrue(registry.safePointSnapshot().isEmpty());
+  }
+
   private static RegionMetadata region(String regionId) {
     return new RegionMetadata(regionId, new KeyRange(new byte[0],
         new byte[0]), 1, new VirtualNodeMetadata("vn-" + regionId, 1,

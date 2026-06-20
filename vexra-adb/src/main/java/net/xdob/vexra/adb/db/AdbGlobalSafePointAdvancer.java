@@ -18,6 +18,7 @@ public final class AdbGlobalSafePointAdvancer {
   private final AdbGcSafePointManager safePointManager;
   private final LongSupplier candidateSafePointSupplier;
   private final Supplier<Collection<Long>> activeStartTsSupplier;
+  private final Supplier<Collection<Long>> backupSafePointSupplier;
 
   /**
    * 创建基于控制面 TSO 的 safe point 推进器。
@@ -47,12 +48,47 @@ public final class AdbGlobalSafePointAdvancer {
   public AdbGlobalSafePointAdvancer(AdbGcSafePointManager safePointManager,
       LongSupplier candidateSafePointSupplier,
       Supplier<Collection<Long>> activeStartTsSupplier) {
+    this(safePointManager, candidateSafePointSupplier, activeStartTsSupplier,
+        java.util.Collections::emptyList);
+  }
+
+  /**
+   * 创建带备份 safe point 保护的可测试推进器。
+   *
+   * @param safePointManager safe point manager
+   * @param candidateSafePointSupplier 候选 safe point 提供器
+   * @param activeStartTsSupplier 活跃事务 startTs 快照提供器
+   * @param backupSafePointSupplier 备份保护 safe point 快照提供器
+   */
+  public AdbGlobalSafePointAdvancer(AdbGcSafePointManager safePointManager,
+      LongSupplier candidateSafePointSupplier,
+      Supplier<Collection<Long>> activeStartTsSupplier,
+      Supplier<Collection<Long>> backupSafePointSupplier) {
     this.safePointManager = Objects.requireNonNull(safePointManager,
         "safePointManager == null");
     this.candidateSafePointSupplier = Objects.requireNonNull(
         candidateSafePointSupplier, "candidateSafePointSupplier == null");
     this.activeStartTsSupplier = Objects.requireNonNull(
         activeStartTsSupplier, "activeStartTsSupplier == null");
+    this.backupSafePointSupplier = Objects.requireNonNull(
+        backupSafePointSupplier, "backupSafePointSupplier == null");
+  }
+
+  /**
+   * 创建带备份 safe point 注册表的推进器。
+   *
+   * @param safePointManager safe point manager
+   * @param candidateSafePointSupplier 候选 safe point 提供器
+   * @param activeStartTsSupplier 活跃事务 startTs 快照提供器
+   * @param backupSafePointRegistry 备份 safe point 注册表
+   */
+  public AdbGlobalSafePointAdvancer(AdbGcSafePointManager safePointManager,
+      LongSupplier candidateSafePointSupplier,
+      Supplier<Collection<Long>> activeStartTsSupplier,
+      AdbBackupSafePointRegistry backupSafePointRegistry) {
+    this(safePointManager, candidateSafePointSupplier, activeStartTsSupplier,
+        Objects.requireNonNull(backupSafePointRegistry,
+            "backupSafePointRegistry == null")::safePointSnapshot);
   }
 
   /**
@@ -68,14 +104,24 @@ public final class AdbGlobalSafePointAdvancer {
           + candidate);
     }
     List<Long> activeStartTs = activeStartTsSnapshot();
+    List<Long> backupSafePoints = backupSafePointSnapshot();
     long target = Math.max(previous, candidate);
+    if (reachesProtectedPoint(target, activeStartTs)) {
+      return new AdbGlobalSafePointAdvanceResult(previous, candidate,
+          previous, activeStartTs, backupSafePoints, false, true, false);
+    }
+    if (reachesProtectedPoint(target, backupSafePoints)) {
+      return new AdbGlobalSafePointAdvanceResult(previous, candidate,
+          previous, activeStartTs, backupSafePoints, false, false, true);
+    }
     try {
       long advancedTo = safePointManager.advanceTo(target, activeStartTs);
       return new AdbGlobalSafePointAdvanceResult(previous, candidate,
-          advancedTo, activeStartTs, advancedTo > previous, false);
+          advancedTo, activeStartTs, backupSafePoints, advancedTo > previous,
+          false, false);
     } catch (IllegalStateException e) {
       return new AdbGlobalSafePointAdvanceResult(previous, candidate,
-          previous, activeStartTs, false, true);
+          previous, activeStartTs, backupSafePoints, false, true, false);
     }
   }
 
@@ -94,6 +140,33 @@ public final class AdbGlobalSafePointAdvancer {
       snapshot.add(startTs);
     }
     return snapshot;
+  }
+
+  private List<Long> backupSafePointSnapshot() {
+    Collection<Long> supplied = backupSafePointSupplier.get();
+    if (supplied == null || supplied.isEmpty()) {
+      return new ArrayList<>();
+    }
+    List<Long> snapshot = new ArrayList<>();
+    for (Long safePoint : supplied) {
+      Objects.requireNonNull(safePoint, "backup safe point is null");
+      if (safePoint < 0) {
+        throw new IllegalArgumentException("backup safe point is negative: "
+            + safePoint);
+      }
+      snapshot.add(safePoint);
+    }
+    return snapshot;
+  }
+
+  private static boolean reachesProtectedPoint(long target,
+      List<Long> protectedPoints) {
+    for (Long protectedPoint : protectedPoints) {
+      if (target >= protectedPoint) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static long nonNegative(long value, String fieldName) {
