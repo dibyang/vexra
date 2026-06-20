@@ -583,6 +583,8 @@ sequenceDiagram
 - 新增 `adb-upgrade-plan` runtime 命令入口，基于 `RollingUpgradePlan` 输出目标版本、已升级节点、下一节点、剩余升级步骤和每步回滚提示。
 - 当前滚动升级命令会在可选生产 guard 校验后生成无副作用 runbook，不连接集群、不停止进程、不修改节点状态；真实执行仍需运维系统或人工按预检、备份、逐节点升级、健康验证顺序执行。
 - `AdbUpgradePlanMainTest` 覆盖下一节点和剩余步骤输出、生产 guard 拒绝和安全生产 guard 放行；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含滚动升级计划脚本。
+- 新增 `AdbOperationsProductionGate` 与 `AdbOperationsProductionReport`，把 2 data + 1 witness 预检、安全默认值、runtime 脚本、FULL backup/restore checksum、滚动升级 runbook、回滚步骤和 doctor 诊断包聚合成 GA-05 结构化 release gate 输入；该门禁只校验证据完整性，真实执行仍由 preflight、backup/restore、upgrade-plan、doctor 和后续运维系统产出报告。
+- `AdbOperationsProductionGateTest` 覆盖完整报告通过、预检/安全/runtime 脚本证据缺失失败、备份恢复/checksum 证据缺失失败、滚动升级/回滚/doctor 证据缺失失败。
 
 ## ADB-GA-06：可观测性与诊断
 

@@ -583,6 +583,8 @@ sequenceDiagram
 - Add the `adb-upgrade-plan` runtime command entrypoint. It uses `RollingUpgradePlan` to output the target version, upgraded nodes, next node, remaining upgrade steps, and rollback hint for each step.
 - The current rolling-upgrade command only generates a side-effect-free runbook after optional production-guard validation. It does not connect to the cluster, stop processes, or mutate node state; real execution still belongs to the operations system or a human runbook following preflight, backup, per-node upgrade, and health verification.
 - `AdbUpgradePlanMainTest` covers next-node and remaining-step output, production-guard rejection, and secure production-guard allow. `AdbRuntimeDistributionSmokeTest` covers the rolling-upgrade plan script being included in the runtime zip.
+- Add `AdbOperationsProductionGate` and `AdbOperationsProductionReport`, aggregating 2 data + 1 witness preflight, secure defaults, runtime scripts, FULL backup/restore checksum, rolling-upgrade runbook, rollback steps, and doctor diagnostic bundle into structured GA-05 release-gate input. This gate only validates evidence completeness; real execution still comes from preflight, backup/restore, upgrade-plan, doctor, and later operations-system report generation.
+- `AdbOperationsProductionGateTest` covers a complete report passing, missing preflight / security / runtime-script evidence failing, missing backup-restore / checksum evidence failing, and missing rolling-upgrade / rollback / doctor evidence failing.
 
 ## ADB-GA-06: Observability and Diagnostics
 
