@@ -564,6 +564,9 @@ sequenceDiagram
 - 新增 `adb-backup` / `adb-restore` runtime 命令入口，复用 `DbStore.checkpoint(String)` 与 `DbStore.restore(String)` 执行本地 LDB/Rocks FULL backup/restore。
 - 当前备份恢复命令仅覆盖本地全量模式，参数为 `--storeDir`、`--location`、可选 `--store`、`--planId` 和 `--checkpointTs`；不声明增量备份、PITR、对象存储上传或多 region 调度。
 - `AdbStoreBackupRestoreMainTest` 覆盖命令入口执行备份、写入新数据、恢复后读回 checkpoint 数据；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含备份与恢复脚本。
+- 新增 `adb-upgrade-plan` runtime 命令入口，基于 `RollingUpgradePlan` 输出目标版本、已升级节点、下一节点、剩余升级步骤和每步回滚提示。
+- 当前滚动升级命令只生成无副作用 runbook，不连接集群、不停止进程、不修改节点状态；真实执行仍需运维系统或人工按预检、备份、逐节点升级、健康验证顺序执行。
+- `AdbUpgradePlanMainTest` 覆盖下一节点和剩余步骤输出；`AdbRuntimeDistributionSmokeTest` 覆盖 runtime zip 包含滚动升级计划脚本。
 
 ## ADB-GA-06：可观测性与诊断
 

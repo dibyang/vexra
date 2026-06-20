@@ -564,6 +564,9 @@ sequenceDiagram
 - Add `adb-backup` / `adb-restore` runtime command entrypoints, reusing `DbStore.checkpoint(String)` and `DbStore.restore(String)` for local LDB/Rocks FULL backup/restore.
 - The current backup/restore commands only cover local full mode. Parameters are `--storeDir`, `--location`, optional `--store`, `--planId`, and `--checkpointTs`; they do not claim incremental backup, PITR, object-storage upload, or multi-region scheduling.
 - `AdbStoreBackupRestoreMainTest` covers command-entry backup, a later write, restore, and reading checkpoint data back. `AdbRuntimeDistributionSmokeTest` covers the backup and restore scripts being included in the runtime zip.
+- Add the `adb-upgrade-plan` runtime command entrypoint. It uses `RollingUpgradePlan` to output the target version, upgraded nodes, next node, remaining upgrade steps, and rollback hint for each step.
+- The current rolling-upgrade command only generates a side-effect-free runbook. It does not connect to the cluster, stop processes, or mutate node state; real execution still belongs to the operations system or a human runbook following preflight, backup, per-node upgrade, and health verification.
+- `AdbUpgradePlanMainTest` covers next-node and remaining-step output. `AdbRuntimeDistributionSmokeTest` covers the rolling-upgrade plan script being included in the runtime zip.
 
 ## ADB-GA-06: Observability and Diagnostics
 

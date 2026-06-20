@@ -120,6 +120,20 @@ class AdbRuntimeDistributionSmokeTest {
     assertTrue(Files.exists(restoreScript(runtimeDir)));
   }
 
+  /**
+   * 验证 runtime zip 包含滚动升级计划脚本。
+   *
+   * @throws Exception 解包失败时抛出
+   */
+  @Test
+  void shouldIncludeUpgradePlanScriptInRuntimeDistribution()
+      throws Exception {
+    Path runtimeDir = tempDir.resolve("runtime-upgrade-script");
+    extract(runtimeZip(), runtimeDir);
+
+    assertTrue(Files.exists(upgradePlanScript(runtimeDir)));
+  }
+
   private RuntimeProcessHandle startSqlServerScript(Path runtimeDir, int port,
       Path serverDir, Path ready, Path stop) throws IOException {
     Path script = sqlServerScript(runtimeDir);
@@ -229,6 +243,11 @@ class AdbRuntimeDistributionSmokeTest {
 
   private static Path restoreScript(Path runtimeDir) {
     String name = isWindows() ? "adb-restore.bat" : "adb-restore";
+    return runtimeDir.resolve("bin").resolve(name);
+  }
+
+  private static Path upgradePlanScript(Path runtimeDir) {
+    String name = isWindows() ? "adb-upgrade-plan.bat" : "adb-upgrade-plan";
     return runtimeDir.resolve("bin").resolve(name);
   }
 

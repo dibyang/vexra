@@ -91,6 +91,16 @@ tasks.register('adbRestoreStartScripts', org.gradle.jvm.application.tasks.Create
     exitEnvironmentVar = 'ADB_RESTORE_EXIT_CONSOLE'
 }
 
+tasks.register('adbUpgradePlanStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-upgrade-plan'
+    mainClassName = 'net.xdob.vexra.adb.AdbUpgradePlanMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/upgrade').get().asFile
+    optsEnvironmentVar = 'ADB_UPGRADE_PLAN_OPTS'
+    exitEnvironmentVar = 'ADB_UPGRADE_PLAN_EXIT_CONSOLE'
+}
+
 tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
     dependsOn tasks.named('jar')
     applicationName = 'adb-release-profile'
@@ -124,6 +134,7 @@ tasks.register('adbRuntimeDist', Zip) {
         tasks.named('adbClusterPreflightStartScripts'),
         tasks.named('adbBackupStartScripts'),
         tasks.named('adbRestoreStartScripts'),
+        tasks.named('adbUpgradePlanStartScripts'),
         tasks.named('adbReleaseProfileStartScripts')
     archiveClassifier = 'runtime'
 
@@ -138,6 +149,7 @@ tasks.register('adbRuntimeDist', Zip) {
         from(tasks.named('adbClusterPreflightStartScripts'))
         from(tasks.named('adbBackupStartScripts'))
         from(tasks.named('adbRestoreStartScripts'))
+        from(tasks.named('adbUpgradePlanStartScripts'))
         from(tasks.named('adbReleaseProfileStartScripts'))
         fileMode = 0755
     }
