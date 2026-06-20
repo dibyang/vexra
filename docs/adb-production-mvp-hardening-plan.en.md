@@ -614,6 +614,8 @@ sequenceDiagram
 | `AdbReleaseEvidenceWriter` | Write release evidence to a stable file for CI, manual audit, and trial-production entry review |
 | `AdbReleaseProfileRunner` | Run the end-to-end release gate, build evidence, and archive the result |
 | `AdbReleaseProfileResult` | Return whether the release profile passed, the evidence file path, and failure reasons |
+| `AdbReleaseProfileMain` | Command-line entrypoint that accepts release parameters and runs `AdbReleaseProfileRunner` |
+| Gradle `adbReleaseProfile` | Build entrypoint that writes default release evidence and fails the build when the gate fails |
 
 The first `AdbReleaseEvidenceWriter` output is `release-evidence.properties`
 with at least these fields:
@@ -642,6 +644,18 @@ Failure handling and rollback:
 3. `AdbReleaseProfileRunner` calls `AdbEndToEndClusterStressGate` to produce the final evaluation.
 4. The runner builds `AdbReleaseEvidence` and calls `AdbReleaseEvidenceWriter` to write the evidence directory.
 5. The runner returns `AdbReleaseProfileResult`; failures keep the evidence and block release.
+
+Gradle entrypoint:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbReleaseProfile
+```
+
+The default output directory is
+`vexra-adb/build/adb-release-evidence/<releaseId>`. CI can override the batch id,
+output directory, verification commands, and checksum summary with
+`-PadbReleaseId`, `-PadbReleaseOutput`, `-PadbReleaseCommands`, and
+`-PadbReleaseChecksums`.
 
 ### Trial-Production Entry
 

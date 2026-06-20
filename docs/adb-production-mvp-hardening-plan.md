@@ -614,6 +614,8 @@ sequenceDiagram
 | `AdbReleaseEvidenceWriter` | 将 release evidence 写入固定文件，供 CI、人工审计和试生产准入复核 |
 | `AdbReleaseProfileRunner` | 执行端到端 release gate 评估，构造 evidence，并把结果写入归档目录 |
 | `AdbReleaseProfileResult` | 返回 release profile 是否通过、evidence 文件路径和失败原因 |
+| `AdbReleaseProfileMain` | 命令行入口，接收 release 参数并执行 `AdbReleaseProfileRunner` |
+| Gradle `adbReleaseProfile` | 构建入口，生成默认 release evidence 并在门禁失败时失败构建 |
 
 `AdbReleaseEvidenceWriter` 第一版输出 `release-evidence.properties`，字段至少包含：
 
@@ -641,6 +643,16 @@ sequenceDiagram
 3. `AdbReleaseProfileRunner` 调用 `AdbEndToEndClusterStressGate` 得到最终评估。
 4. runner 构造 `AdbReleaseEvidence` 并调用 `AdbReleaseEvidenceWriter` 写入 evidence 目录。
 5. runner 返回 `AdbReleaseProfileResult`；失败时保留 evidence 并阻断发布。
+
+Gradle 入口：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbReleaseProfile
+```
+
+默认输出目录为 `vexra-adb/build/adb-release-evidence/<releaseId>`。CI 可通过
+`-PadbReleaseId`、`-PadbReleaseOutput`、`-PadbReleaseCommands` 和
+`-PadbReleaseChecksums` 覆盖批次号、输出目录、验证命令和 checksum 摘要。
 
 ### 试生产准入
 

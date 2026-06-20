@@ -61,10 +61,37 @@ tasks.register('adbClusterPlanStartScripts', org.gradle.jvm.application.tasks.Cr
     exitEnvironmentVar = 'ADB_CLUSTER_PLAN_EXIT_CONSOLE'
 }
 
+tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-release-profile'
+    mainClassName = 'net.xdob.vexra.adb.AdbReleaseProfileMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/release').get().asFile
+    optsEnvironmentVar = 'ADB_RELEASE_PROFILE_OPTS'
+    exitEnvironmentVar = 'ADB_RELEASE_PROFILE_EXIT_CONSOLE'
+}
+
+tasks.register('adbReleaseProfile', JavaExec) {
+    dependsOn tasks.named('classes')
+    group = 'verification'
+    description = 'Runs the ADB GA release profile gate and writes release evidence.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'net.xdob.vexra.adb.AdbReleaseProfileMain'
+    def releaseId = findProperty('adbReleaseId') ?: "local-${project.version}"
+    def output = findProperty('adbReleaseOutput') ?:
+        layout.buildDirectory.dir("adb-release-evidence/${releaseId}").get().asFile.absolutePath
+    args '--releaseId', releaseId.toString(),
+        '--version', project.version.toString(),
+        '--output', output.toString(),
+        '--commands', (findProperty('adbReleaseCommands') ?: '.\\gradlew.bat :vexra-adb:test').toString(),
+        '--checksums', (findProperty('adbReleaseChecksums') ?: 'none=not-provided').toString()
+}
+
 tasks.register('adbRuntimeDist', Zip) {
     dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
         tasks.named('adbRegionNodeStartScripts'),
-        tasks.named('adbClusterPlanStartScripts')
+        tasks.named('adbClusterPlanStartScripts'),
+        tasks.named('adbReleaseProfileStartScripts')
     archiveClassifier = 'runtime'
 
     into('lib') {
@@ -75,6 +102,7 @@ tasks.register('adbRuntimeDist', Zip) {
         from(tasks.named('adbSqlServerStartScripts'))
         from(tasks.named('adbRegionNodeStartScripts'))
         from(tasks.named('adbClusterPlanStartScripts'))
+        from(tasks.named('adbReleaseProfileStartScripts'))
         fileMode = 0755
     }
 }
