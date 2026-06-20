@@ -32,8 +32,13 @@ class AdbRuntimeDiagnosticCollectorTest {
    */
   @Test
   void shouldCollectRuntimeOperationsAndMetrics() throws Exception {
+    AdbSqlDiagnosticsRegistry.clear();
     try (LdbStore store = new LdbStore(new File(tempDir, "runtime-diag-store")
         .getAbsolutePath())) {
+      AdbSqlDiagnosticsRegistry.getOrCreate("database:runtime-diag")
+          .record(AdbSqlDiagnosticEvent.failure(1L, "SELECT", "TEST",
+              "ADB_TABLE_PRIMARY_FIND TEST", 1_200L,
+              new java.sql.SQLException("diagnostic failure")));
       AdbRuntimeOperationsBridge bridge = new AdbRuntimeOperationsBridge(store,
           new InMemoryAdbControlPlaneClient(Arrays.asList(
               region("r1", new byte[0], new byte[] {50}, "node-a"),
@@ -52,7 +57,20 @@ class AdbRuntimeDiagnosticCollectorTest {
       assertEquals(1,
           snapshot.getMetrics().get(
               "vexra_cluster_unavailable_region_count"));
+      assertEquals("1", snapshot.getOperations().get("sql.scope.count"));
+      assertEquals("database:runtime-diag",
+          snapshot.getOperations().get("sql.scope.0.name"));
+      assertEquals(1L, metric(snapshot, "adb_sql_registered_scope_count"));
+      assertEquals(1L, metric(snapshot, "adb_sql_total_sql_count"));
+      assertEquals(1L, metric(snapshot, "adb_sql_failed_sql_count"));
+    } finally {
+      AdbSqlDiagnosticsRegistry.clear();
     }
+  }
+
+  private static long metric(AdbRuntimeDiagnosticCollector.Snapshot snapshot,
+      String name) {
+    return snapshot.getMetrics().get(name).longValue();
   }
 
   private static RegionMetadata region(String regionId, byte[] startKey,

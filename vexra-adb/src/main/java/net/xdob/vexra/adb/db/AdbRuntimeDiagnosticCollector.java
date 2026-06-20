@@ -38,7 +38,47 @@ public final class AdbRuntimeDiagnosticCollector {
         : operationsBridge.systemTableRow(ddlRunning).entrySet()) {
       operations.put("runtime." + entry.getKey(), entry.getValue());
     }
-    return new Snapshot(operations, operationsBridge.metrics(ddlRunning));
+    Map<String, Number> metrics = new LinkedHashMap<>(
+        operationsBridge.metrics(ddlRunning));
+    collectSqlDiagnostics(operations, metrics);
+    return new Snapshot(operations, metrics);
+  }
+
+  /**
+   * 合并当前进程内 SQL 诊断快照。
+   *
+   * <p>operations 保留按 scope 展开的最近事件，便于故障定位；metrics 只输出聚合数字，
+   * 避免按数据库路径生成高基数指标。</p>
+   */
+  private static void collectSqlDiagnostics(Map<String, String> operations,
+      Map<String, Number> metrics) {
+    Map<String, AdbSqlDiagnosticSnapshot> snapshots =
+        AdbSqlDiagnosticsRegistry.snapshotAll();
+    operations.put("sql.scope.count", String.valueOf(snapshots.size()));
+
+    long totalSqlCount = 0L;
+    long slowSqlCount = 0L;
+    long failedSqlCount = 0L;
+    long maxLatencyMillis = 0L;
+    int index = 0;
+    for (Map.Entry<String, AdbSqlDiagnosticSnapshot> entry
+        : snapshots.entrySet()) {
+      String prefix = "sql.scope." + index;
+      operations.put(prefix + ".name", entry.getKey());
+      operations.putAll(entry.getValue().toOperations(prefix));
+      totalSqlCount += entry.getValue().getTotalSqlCount();
+      slowSqlCount += entry.getValue().getSlowSqlCount();
+      failedSqlCount += entry.getValue().getFailedSqlCount();
+      maxLatencyMillis = Math.max(maxLatencyMillis,
+          entry.getValue().getMaxLatencyMillis());
+      index++;
+    }
+
+    metrics.put("adb_sql_registered_scope_count", snapshots.size());
+    metrics.put("adb_sql_total_sql_count", totalSqlCount);
+    metrics.put("adb_sql_slow_sql_count", slowSqlCount);
+    metrics.put("adb_sql_failed_sql_count", failedSqlCount);
+    metrics.put("adb_sql_max_latency_millis", maxLatencyMillis);
   }
 
   /**
