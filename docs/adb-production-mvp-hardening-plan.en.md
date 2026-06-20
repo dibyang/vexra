@@ -624,8 +624,9 @@ sequenceDiagram
 - Added the `adb-doctor` runtime command entry point `AdbDoctorMain`. The current command reads the same properties file used by `adb-cluster-plan`, runs `AdbClusterPreflightChecker`, and writes redacted config, version information, preflight results, and doctor metrics. It does not start nodes, connect to the business database, or modify data directories.
 - `adb-doctor` supports `--logs path1,path2` and `--logTailLines n` to collect key log tails. Missing log files are recorded in the bundle instead of failing the whole diagnostic run.
 - `adb-doctor` supports `--evidence path1,path2` and `--operationReports path1,path2` to explicitly include release evidence, backup/restore reports, rolling-upgrade reports, or other properties-based operation results. Sensitive keys are redacted and missing files are recorded as `missing`.
-- `adbRuntimeDist` now includes the `adb-doctor` script. `AdbDiagnosticBundleWriterTest` covers redaction, `AdbDiagnosticLogTailerTest` covers log tailing, `AdbDiagnosticPropertiesCollectorTest` covers evidence/report collection, `AdbDoctorMainTest` covers bundle generation through the main method, and `AdbRuntimeDistributionSmokeTest` covers the runtime zip script.
-- Later GA-06 work still needs to feed real runtime system tables, slow/failed SQL summaries, automatic log discovery, and latest in-memory lock resolve / GC worker results into the same bundle.
+- Added `AdbRuntimeDiagnosticCollector` to convert an in-process `AdbRuntimeOperationsBridge` operations system row and metrics into diagnostic-bundle fields for embedded runtimes and a later live doctor entry point.
+- `adbRuntimeDist` now includes the `adb-doctor` script. `AdbDiagnosticBundleWriterTest` covers redaction, `AdbDiagnosticLogTailerTest` covers log tailing, `AdbDiagnosticPropertiesCollectorTest` covers evidence/report collection, `AdbRuntimeDiagnosticCollectorTest` covers runtime system row / metrics collection, `AdbDoctorMainTest` covers bundle generation through the main method, and `AdbRuntimeDistributionSmokeTest` covers the runtime zip script.
+- Later GA-06 work still needs to feed slow/failed SQL summaries, automatic log discovery, and latest in-memory lock resolve / GC worker results into the same bundle, and design live runtime connection parameters for `adb-doctor`.
 
 ## ADB-GA-07: Release Gate and Trial Production
 
