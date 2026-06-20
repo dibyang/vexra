@@ -197,8 +197,10 @@ Validation reads config and control-plane snapshots only. It must not modify bus
 - `AdbTxnManagerProductionGuardTest` covers rejecting local commit under invalid production configuration without advancing commit timestamp, and allowing local single-region commit under secure `2data1witness` configuration. `AdbRuntimeSessionContextTest` covers detach restoring the commit guard to no-op.
 - `AdbStoreBackupRestoreMain` and `AdbUpgradePlanMain` now validate `BACKUP_RESTORE` and `ROLLING_UPGRADE` respectively when explicit production parameters are present. Invalid production configuration fails before opening a store or rendering an upgrade runbook.
 - `AdbStoreBackupRestoreMainTest` and `AdbUpgradePlanMainTest` cover rejecting operations entries when secure defaults are missing, and keeping local FULL backup/restore plus rolling-upgrade runbook generation available under secure `2data1witness` configuration.
+- `AdbJdbcUrlPrefixProvider` now reads `adb.production.*`, `adb.install.topology`, and `adb.security.*` URL settings before mapping `jdbc:adb:*` to `jdbc:h2:*`. When explicit production parameters are present, it validates `LOCAL_SQL` first and strips ADB-private production settings from the generated H2 URL so h2db's native URL parser does not consume them.
+- `AdbJdbcUrlPrefixProviderTest` covers rejecting URL conversion when secure defaults are missing, and allowing secure `2data1witness` conversion while preserving non-ADB H2 URL settings.
 
-This phase still needs to wire the guard into JDBC URL conversion and other real entrypoints. Later phases must call this guard when changing those paths and must not bypass the production scope freeze.
+The main SQL/JDBC, transaction, and operations entrypoints for this phase are now wired into the guard. Later phases must call this guard when adding or changing real entrypoints and must not bypass the production scope freeze.
 
 ## ADB-GA-02: Data Safety Closure
 

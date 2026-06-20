@@ -197,8 +197,10 @@ sequenceDiagram
 - `AdbTxnManagerProductionGuardTest` 覆盖坏生产配置拒绝本地 commit 且不推进 commit timestamp，以及安全 `2data1witness` 配置允许本地单 region commit；`AdbRuntimeSessionContextTest` 覆盖 detach 会恢复 commit guard 为 no-op。
 - `AdbStoreBackupRestoreMain` 和 `AdbUpgradePlanMain` 已在显式生产参数存在时分别校验 `BACKUP_RESTORE` 与 `ROLLING_UPGRADE`，坏的生产配置会在打开 store 或输出 runbook 前失败。
 - `AdbStoreBackupRestoreMainTest` 与 `AdbUpgradePlanMainTest` 覆盖缺安全默认值拒绝运维入口，以及安全 `2data1witness` 配置下本地 FULL 备份恢复和滚动升级 runbook 继续可用。
+- `AdbJdbcUrlPrefixProvider` 已在 `jdbc:adb:*` 映射为 `jdbc:h2:*` 前读取 URL 中的 `adb.production.*`、`adb.install.topology` 和 `adb.security.*` 参数；显式生产参数存在时会先校验 `LOCAL_SQL`，并把 ADB 私有生产参数从生成的 H2 URL 中剥离，避免 h2db 原生 URL 解析误消费这些配置。
+- `AdbJdbcUrlPrefixProviderTest` 覆盖缺安全默认值拒绝 URL 转换，以及安全 `2data1witness` 配置允许转换并保留非 ADB 的 H2 URL 设置。
 
-本阶段仍需把 guard 继续接入 JDBC URL 转换等真实入口；后续阶段在改动对应路径时必须先调用该 guard，不能绕过生产范围冻结。
+本阶段的 SQL/JDBC、事务和运维主要入口已接入 guard；后续阶段在新增或改动真实入口时必须先调用该 guard，不能绕过生产范围冻结。
 
 ## ADB-GA-02：数据安全闭环
 

@@ -1,8 +1,15 @@
 package net.xdob.vexra.adb.h2plugin;
 
+import java.sql.SQLException;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
+import net.xdob.vexra.adb.AdbProductionCommandOptions;
+import net.xdob.vexra.adb.db.AdbProductionCapability;
+import net.xdob.vexra.adb.db.AdbProductionRequestContext;
 import net.xdob.vexra.adb.db.DbStoreType;
 import org.h2.api.JdbcUrlPrefixProvider;
+import org.h2.message.DbException;
 
 /**
  * ADB JDBC URL 前缀兼容 provider。
@@ -89,7 +96,9 @@ public final class AdbJdbcUrlPrefixProvider implements JdbcUrlPrefixProvider {
             name = name.substring(ROCKSDB_STORE_PREFIX.length());
             storeType = DbStoreType.ROCKSDB;
         }
-        String h2Url = H2_URL_PREFIX + name;
+        UrlParts parts = splitSettings(name);
+        validateProductionSettings(parts.settings);
+        String h2Url = H2_URL_PREFIX + parts.name + renderSettings(parts.settings);
         if (!containsSetting(h2Url, DEFAULT_TABLE_ENGINE_SETTING)) {
             h2Url = h2Url + ";" + DEFAULT_TABLE_ENGINE_SETTING + "=" + AdbTableProvider.ID;
         }
@@ -104,5 +113,72 @@ public final class AdbJdbcUrlPrefixProvider implements JdbcUrlPrefixProvider {
     private static boolean containsSetting(String url, String settingName) {
         String marker = ";" + settingName.toUpperCase(Locale.ROOT) + "=";
         return url.toUpperCase(Locale.ROOT).contains(marker);
+    }
+
+    private static UrlParts splitSettings(String name) {
+        int settingsStart = name.indexOf(';');
+        if (settingsStart < 0) {
+            return new UrlParts(name, new LinkedHashMap<String, String>());
+        }
+        String databaseName = name.substring(0, settingsStart);
+        LinkedHashMap<String, String> settings = new LinkedHashMap<>();
+        String[] items = name.substring(settingsStart + 1).split(";");
+        for (String item : items) {
+            if (item == null || item.trim().isEmpty()) {
+                continue;
+            }
+            int separator = item.indexOf('=');
+            if (separator <= 0) {
+                settings.put(item.trim(), "");
+            } else {
+                settings.put(item.substring(0, separator).trim(),
+                    item.substring(separator + 1).trim());
+            }
+        }
+        return new UrlParts(databaseName, settings);
+    }
+
+    private static void validateProductionSettings(Map<String, String> settings) {
+        if (!AdbProductionCommandOptions.hasProductionProperties(settings)) {
+            return;
+        }
+        try {
+            AdbProductionCommandOptions.productionGuard(settings)
+                .requireCapability(AdbProductionCapability.LOCAL_SQL,
+                    AdbProductionRequestContext.local("jdbc url conversion"));
+        } catch (SQLException e) {
+            throw DbException.convert(e);
+        }
+    }
+
+    private static String renderSettings(Map<String, String> settings) {
+        StringBuilder builder = new StringBuilder();
+        for (Map.Entry<String, String> entry : settings.entrySet()) {
+            if (isProductionSetting(entry.getKey())) {
+                continue;
+            }
+            builder.append(';').append(entry.getKey());
+            if (!entry.getValue().isEmpty()) {
+                builder.append('=').append(entry.getValue());
+            }
+        }
+        return builder.toString();
+    }
+
+    private static boolean isProductionSetting(String key) {
+        String normalized = key.trim().toLowerCase(Locale.ROOT);
+        return normalized.startsWith("adb.production.")
+            || normalized.startsWith("adb.security.")
+            || "adb.install.topology".equals(normalized);
+    }
+
+    private static final class UrlParts {
+        private final String name;
+        private final LinkedHashMap<String, String> settings;
+
+        private UrlParts(String name, LinkedHashMap<String, String> settings) {
+            this.name = name;
+            this.settings = settings;
+        }
     }
 }

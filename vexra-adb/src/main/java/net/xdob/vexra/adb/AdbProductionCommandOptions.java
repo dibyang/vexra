@@ -11,7 +11,7 @@ import net.xdob.vexra.adb.db.AdbProductionGuard;
  * 参数，不消费业务命令自己的参数。调用方可以在显式生产参数存在时构造
  * {@link AdbProductionGuard}，未传生产参数时继续保持旧的本地兼容行为。</p>
  */
-final class AdbProductionCommandOptions {
+public final class AdbProductionCommandOptions {
   private AdbProductionCommandOptions() {
   }
 
@@ -21,7 +21,7 @@ final class AdbProductionCommandOptions {
    * @param values 已解析的 `--key value` 参数
    * @return 存在任一生产范围参数时返回 true
    */
-  static boolean hasProductionProperties(Map<String, String> values) {
+  public static boolean hasProductionProperties(Map<String, String> values) {
     return !productionProperties(values).isEmpty();
   }
 
@@ -31,7 +31,7 @@ final class AdbProductionCommandOptions {
    * @param values 已解析的 `--key value` 参数
    * @return 生产范围 guard；未传生产参数时返回默认单机 guard
    */
-  static AdbProductionGuard productionGuard(Map<String, String> values) {
+  public static AdbProductionGuard productionGuard(Map<String, String> values) {
     Properties properties = productionProperties(values);
     if (properties.isEmpty()) {
       return AdbProductionGuard.singleNodeDefault();
@@ -53,9 +53,22 @@ final class AdbProductionCommandOptions {
 
   private static void copyIfPresent(Map<String, String> source,
       Properties target, String key) {
-    String value = source.get(key);
+    String value = valueOf(source, key);
     if (value != null && !value.trim().isEmpty()) {
       target.setProperty(key, value.trim());
     }
+  }
+
+  private static String valueOf(Map<String, String> source, String key) {
+    String value = source.get(key);
+    if (value != null) {
+      return value;
+    }
+    for (Map.Entry<String, String> entry : source.entrySet()) {
+      if (key.equalsIgnoreCase(entry.getKey())) {
+        return entry.getValue();
+      }
+    }
+    return null;
   }
 }
