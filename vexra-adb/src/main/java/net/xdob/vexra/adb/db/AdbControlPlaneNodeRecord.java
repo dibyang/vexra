@@ -85,6 +85,19 @@ public final class AdbControlPlaneNodeRecord {
     return failureDomain;
   }
 
+  /**
+   * 创建仅更新控制面状态的新节点记录。
+   *
+   * @param nextStatus 新状态
+   * @return 保留地址、角色和心跳进度的新记录
+   */
+  public AdbControlPlaneNodeRecord withStatus(
+      AdbControlPlaneNodeStatus nextStatus) {
+    return new AdbControlPlaneNodeRecord(nodeId, role, host, port,
+        nextStatus, lastHeartbeatMillis, commitIndex, appliedIndex,
+        failureDomain);
+  }
+
   private static String normalize(String value, String fieldName) {
     if (value == null || value.trim().isEmpty()) {
       throw new IllegalArgumentException(fieldName + " is empty");

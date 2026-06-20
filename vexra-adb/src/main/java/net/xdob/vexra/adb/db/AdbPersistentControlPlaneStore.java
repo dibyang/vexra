@@ -67,6 +67,18 @@ public final class AdbPersistentControlPlaneStore
       throws SQLException {
     AdbControlPlaneNodeRecord record = Objects.requireNonNull(heartbeat,
         "heartbeat == null").toUpRecord();
+    persistNodeRecord(record);
+  }
+
+  /**
+   * 写入或替换控制面节点记录。
+   *
+   * @param record 节点记录
+   * @throws SQLException 底层读取、写入或解码失败时抛出
+   */
+  public synchronized void persistNodeRecord(
+      AdbControlPlaneNodeRecord record) throws SQLException {
+    Objects.requireNonNull(record, "record == null");
     List<AdbControlPlaneNodeRecord> nodes = new ArrayList<>(listNodes());
     int index = findNode(nodes, record.getNodeId());
     if (index >= 0) {

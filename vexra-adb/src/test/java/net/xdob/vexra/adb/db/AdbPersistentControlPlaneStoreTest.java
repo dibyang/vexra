@@ -166,6 +166,107 @@ class AdbPersistentControlPlaneStoreTest {
     }
   }
 
+  /**
+   * 验证 heartbeat service 会先把超时节点推进到 SUSPECT。
+   *
+   * @throws Exception store 创建、心跳写入或状态评估失败时抛出
+   */
+  @Test
+  void shouldMoveNodeToSuspectAfterHeartbeatTimeout() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "suspect")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      AdbNodeHeartbeatService service =
+          new AdbNodeHeartbeatService(controlPlane, 100, 300);
+
+      service.heartbeat(new AdbNodeHeartbeat("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          1, 1, 1000, "rack-a"));
+
+      assertEquals(1, service.evaluateTimeouts(1100));
+      assertEquals(AdbControlPlaneNodeStatus.SUSPECT,
+          controlPlane.getNode("node-a").get().getStatus());
+    }
+  }
+
+  /**
+   * 验证 heartbeat service 会把长时间未心跳节点推进到 DOWN。
+   *
+   * @throws Exception store 创建、心跳写入或状态评估失败时抛出
+   */
+  @Test
+  void shouldMoveNodeToDownAfterFailureThreshold() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "down")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      AdbNodeHeartbeatService service =
+          new AdbNodeHeartbeatService(controlPlane, 100, 300);
+
+      service.heartbeat(new AdbNodeHeartbeat("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          1, 1, 1000, "rack-a"));
+
+      assertEquals(1, service.evaluateTimeouts(1300));
+      assertEquals(AdbControlPlaneNodeStatus.DOWN,
+          controlPlane.getNode("node-a").get().getStatus());
+    }
+  }
+
+  /**
+   * 验证节点恢复心跳后会回到 UP。
+   *
+   * @throws Exception store 创建、心跳写入或状态评估失败时抛出
+   */
+  @Test
+  void shouldRecoverNodeToUpWhenHeartbeatArrives() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "recover")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      AdbNodeHeartbeatService service =
+          new AdbNodeHeartbeatService(controlPlane, 100, 300);
+
+      service.heartbeat(new AdbNodeHeartbeat("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          1, 1, 1000, "rack-a"));
+      service.evaluateTimeouts(1300);
+      service.heartbeat(new AdbNodeHeartbeat("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          2, 2, 1310, "rack-a"));
+
+      assertEquals(AdbControlPlaneNodeStatus.UP,
+          controlPlane.getNode("node-a").get().getStatus());
+      assertEquals(2, controlPlane.getNode("node-a").get()
+          .getCommitIndex());
+    }
+  }
+
+  /**
+   * 验证后台超时评估不会覆盖显式运维状态。
+   *
+   * @throws Exception store 创建、记录写入或状态评估失败时抛出
+   */
+  @Test
+  void shouldKeepExplicitOperationalStateDuringTimeoutEvaluation()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "explicit")
+        .getAbsolutePath())) {
+      AdbPersistentControlPlaneStore controlPlane =
+          new AdbPersistentControlPlaneStore(store, 0);
+      AdbNodeHeartbeatService service =
+          new AdbNodeHeartbeatService(controlPlane, 100, 300);
+      controlPlane.persistNodeRecord(new AdbControlPlaneNodeRecord("node-a",
+          AdbDeploymentNodeRole.DATA_NODE, "127.0.0.1", 17001,
+          AdbControlPlaneNodeStatus.RECOVERING, 1000, 1, 1, "rack-a"));
+
+      assertEquals(0, service.evaluateTimeouts(2000));
+      assertEquals(AdbControlPlaneNodeStatus.RECOVERING,
+          controlPlane.getNode("node-a").get().getStatus());
+    }
+  }
+
   private static RegionMetadata region(String regionId, byte[] startKey,
       byte[] endKey, String leaderId) {
     return new RegionMetadata(regionId, new KeyRange(startKey, endKey), 1,
