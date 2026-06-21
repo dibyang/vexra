@@ -91,6 +91,32 @@ public class TxnMap2 {
   }
 
   /**
+   * 批量追加插入一个已经编码好的 row value。
+   *
+   * <p>该方法服务于 JDBC bulk insert fast path：调用方已经完成 RowKey/RowValue
+   * 构造，可以避免再次把 H2 Row 包装成 Value 后编码。对于无法使用 append hint 的 key，
+   * 仍会回退到当前事务快照下的可见性检查，保证重复主键不会被静默覆盖。</p>
+   *
+   * @param dataKey row key
+   * @param value 已编码的 row value
+   * @return 已存在的可见版本；不存在时返回 null
+   * @throws SQLException 可见性检查或写入失败时抛出
+   */
+  public RowValue putEncodedIfAbsent(DataKey dataKey, RowValue value)
+      throws SQLException {
+    if (canSkipAppendUniqueCheck(dataKey)) {
+      this.put(dataKey, value, null);
+      return null;
+    }
+    RowValue old = getVisible(dataKey);
+    if (old == null || old.deleted || old.payload == null) {
+      this.put(dataKey, value, old);
+      return null;
+    }
+    return old;
+  }
+
+  /**
    * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
    *
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>

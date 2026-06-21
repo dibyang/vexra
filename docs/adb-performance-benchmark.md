@@ -111,6 +111,40 @@ store mixed 基线：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/store_mixed.properties"
 ```
 
+## 第三轮 JDBC bulk insert 结果
+
+第三轮新增 JDBC 连接下的 ADB bulk insert 路径。benchmark 仍然通过
+`jdbc:adb:ldb:*` 打开数据库，并通过 H2 创建 ADB 表；正式插入阶段复用当前 H2
+`SessionLocal` 调用 ADB table bulk API，从而避开 H2 SQL executor 对多 values
+insert 的逐行 `Table.addRow` 调度，同时保留 JDBC transaction event 的提交边界。
+
+当前三条线结果如下：
+
+| 模式 | workload | operations | batch | throughput ops/s | p99 us | 结果文件 | 说明 |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `store` | `insert` | 3000 | 不适用 | 130434.78 | 41 | `vexra-adb/build/adb-benchmark/store_insert.properties` | 本地 store 封装基线 |
+| `txn` | `insert` | 3000 | 3000 | 63829.79 | 25 | `vexra-adb/build/adb-benchmark/txn_insert_goal.properties` | ADB 本地事务/MVCC/commit 路径 |
+| `jdbc_bulk` | `insert` | 100000 | 5000 | 357142.86 | 6 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties` | JDBC 连接 + ADB table bulk API |
+
+`jdbc_bulk` 已超过硬目标 `3000 ops/s`，也明显超过期望余量 `5000 ops/s`。第一版
+fast path 只允许本地、无二级索引的表；带二级索引或 region commit coordinator 的表会拒绝
+bulk fast path，避免索引不一致或绕过分布式提交。重复主键仍会报错。
+
+JDBC bulk insert 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc_bulk" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/goal-jdbc-bulk-insert-100k/adb-benchmark" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=3000" `
+  "-PadbBenchmarkOperations=100000" `
+  "-PadbBenchmarkTransactionBatchSize=5000" `
+  "-PadbBenchmarkStatementBatchSize=5000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties"
+```
+
 ## 第二轮插入优化结果
 
 第二轮围绕 insert 热路径继续优化：

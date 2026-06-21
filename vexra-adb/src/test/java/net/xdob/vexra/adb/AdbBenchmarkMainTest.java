@@ -140,6 +140,34 @@ class AdbBenchmarkMainTest {
   }
 
   @Test
+  void shouldRunJdbcBulkInsertBenchmarkAgainstLdbUrl() throws Exception {
+    Path output = tempDir.resolve("jdbc-bulk.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("jdbc-bulk").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--mode", "jdbc_bulk",
+        "--url", url,
+        "--workload", "insert",
+        "--rows", "20",
+        "--warmupOperations", "3",
+        "--operations", "10",
+        "--transactionBatchSize", "5",
+        "--statementBatchSize", "5",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("jdbc_bulk", result.getMode());
+    assertEquals("insert", result.getWorkload());
+    assertEquals(10L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("jdbc_bulk", properties.getProperty("mode"));
+    assertTrue(Long.parseLong(properties.getProperty(
+        "sqlDiagnostics.totalSqlCount")) > 0L);
+  }
+
+  @Test
   void shouldRunPointLookupBenchmarkAgainstLdbUrl() throws Exception {
     String url = "jdbc:adb:ldb:" + tempDir.resolve("lookup").resolve(
         "adb-benchmark") + ";DB_CLOSE_DELAY=0";

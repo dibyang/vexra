@@ -3,6 +3,7 @@ package net.xdob.vexra.adb;
 import net.xdob.vexra.adb.db.ScanDirection;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
+import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.Transaction2;
 import net.xdob.vexra.adb.db.TxnManager;
 import net.xdob.vexra.adb.db.VersionScanSource;
@@ -12,6 +13,13 @@ import net.xdob.vexra.adb.db.AdbSqlOperationStats;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.ldb.LdbStore;
+import org.h2.engine.Session;
+import org.h2.engine.SessionLocal;
+import org.h2.jdbc.JdbcConnection;
+import org.h2.result.DefaultRow;
+import org.h2.result.Row;
+import org.h2.schema.Schema;
+import org.h2.table.Table;
 import org.h2.value.Value;
 import org.h2.value.ValueBigint;
 import org.h2.value.ValueRow;
@@ -28,9 +36,11 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
@@ -111,6 +121,10 @@ public final class AdbBenchmarkMain {
     if ("jdbc".equals(mode)) {
       result = benchmark.executeJdbc(url, workload, rows, warmupOperations,
           operations, rangeSize, dropTable, transactionBatchSize,
+          statementBatchSize, sqlDiagnostics);
+    } else if ("jdbc_bulk".equals(mode)) {
+      result = benchmark.executeJdbcBulk(url, workload, rows,
+          warmupOperations, operations, dropTable, transactionBatchSize,
           statementBatchSize, sqlDiagnostics);
     } else if ("txn".equals(mode)) {
       result = benchmark.executeTxn(storeDir, workload, rows,
@@ -253,6 +267,127 @@ public final class AdbBenchmarkMain {
           percentile(latencies, 0.50D), percentile(latencies, 0.95D),
           percentile(latencies, 0.99D), latencies[latencies.length - 1]);
     }
+  }
+
+  /**
+   * 执行 JDBC 连接下的 ADB bulk insert benchmark。
+   *
+   * <p>该模式仍通过 JDBC URL 建库建表，并复用当前 JDBC session 的事务事件提交 ADB
+   * 事务；区别是插入阶段直接命中 ADB table bulk API，避免 H2 SQL executor 对多 values
+   * insert 的逐行 `Table.addRow` 调度。</p>
+   */
+  public AdbBenchmarkResult executeJdbcBulk(String url, String workload,
+      int rows, int warmupOperations, int operations, boolean dropTable,
+      int transactionBatchSize, int statementBatchSize,
+      boolean sqlDiagnostics) throws Exception {
+    if (!"insert".equals(workload)) {
+      throw new IllegalArgumentException(
+          "jdbc_bulk mode only supports insert workload: " + workload);
+    }
+    Class.forName("org.h2.Driver");
+    try (Connection connection = DriverManager.getConnection(url,
+        new Properties())) {
+      connection.setAutoCommit(false);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics);
+      connection.commit();
+      AdbTable table = adbBenchmarkTable(connection);
+
+      executeJdbcBulkBatches(connection, table, rows, warmupOperations,
+          statementBatchSize, transactionBatchSize, false, null);
+      AdbSqlDiagnosticsRegistry.resetAll();
+
+      long[] latencies = new long[operations];
+      long started = System.nanoTime();
+      long failed = executeJdbcBulkBatches(connection, table, rows, operations,
+          statementBatchSize, transactionBatchSize, true, latencies);
+      long durationMillis = Math.max(1L,
+          (System.nanoTime() - started) / 1_000_000L);
+      Arrays.sort(latencies);
+      double throughput = operations * 1000D / durationMillis;
+      return new AdbBenchmarkResult("jdbc_bulk", workload, url,
+          warmupOperations, operations, failed, durationMillis, throughput,
+          percentile(latencies, 0.50D), percentile(latencies, 0.95D),
+          percentile(latencies, 0.99D), latencies[latencies.length - 1],
+          collectSqlDiagnostics());
+    }
+  }
+
+  private static long executeJdbcBulkBatches(Connection connection,
+      AdbTable table, int rows, int operations, int statementBatchSize,
+      int transactionBatchSize, boolean countedRun, long[] latencies)
+      throws Exception {
+    long failed = 0L;
+    int completedInTransaction = 0;
+    SessionLocal session = sessionLocal(connection);
+    int index = 0;
+    while (index < operations) {
+      int batchSize = Math.min(statementBatchSize, operations - index);
+      long opStarted = System.nanoTime();
+      try {
+        long firstId = rows + (countedRun ? 1_000_000L : 100_000L) + index;
+        table.bulkInsertAppendRows(session, rows(firstId, batchSize,
+            countedRun ? "insert-" : "warmup-insert-"));
+        completedInTransaction += batchSize;
+        commitIfNeeded(connection, transactionBatchSize,
+            completedInTransaction);
+        if (completedInTransaction >= transactionBatchSize) {
+          completedInTransaction = 0;
+        }
+      } catch (Exception e) {
+        failed += batchSize;
+        connection.rollback();
+        completedInTransaction = 0;
+      } finally {
+        if (latencies != null) {
+          long perRowMicros = nanosToMicros(System.nanoTime() - opStarted)
+              / Math.max(1, batchSize);
+          for (int i = 0; i < batchSize; i++) {
+            latencies[index + i] = perRowMicros;
+          }
+        }
+      }
+      index += batchSize;
+    }
+    commitRemaining(connection, transactionBatchSize, completedInTransaction);
+    return failed;
+  }
+
+  private static AdbTable adbBenchmarkTable(Connection connection)
+      throws Exception {
+    SessionLocal session = sessionLocal(connection);
+    Schema schema = session.getDatabase().getSchema(
+        session.getCurrentSchemaName());
+    Table table = schema.findTableOrView(session, TABLE_NAME);
+    if (!(table instanceof AdbTable)) {
+      throw new IllegalStateException("ADB benchmark table is not AdbTable: "
+          + table);
+    }
+    return (AdbTable) table;
+  }
+
+  private static SessionLocal sessionLocal(Connection connection)
+      throws Exception {
+    Session session = connection.unwrap(JdbcConnection.class).getSession();
+    if (!(session instanceof SessionLocal)) {
+      throw new IllegalStateException("Unsupported H2 session type: "
+          + session.getClass().getName());
+    }
+    return (SessionLocal) session;
+  }
+
+  private static List<Row> rows(long firstId, int batchSize,
+      String namePrefix) {
+    ArrayList<Row> rows = new ArrayList<>(batchSize);
+    for (int i = 0; i < batchSize; i++) {
+      long id = firstId + i;
+      DefaultRow row = new DefaultRow(new Value[]{
+          ValueBigint.get(id),
+          ValueVarchar.get(namePrefix + id)
+      });
+      row.setKey(id);
+      rows.add(row);
+    }
+    return rows;
   }
 
   /**

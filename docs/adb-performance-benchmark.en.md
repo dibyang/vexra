@@ -141,11 +141,48 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Third JDBC Bulk Insert Result
+
+The third round adds a JDBC-connection bulk insert path. The benchmark still
+opens the database through `jdbc:adb:ldb:*` and creates the ADB table through H2,
+but the measured insert phase uses the current H2 `SessionLocal` to call the ADB
+table bulk API directly. This avoids H2 SQL executor's row-by-row
+`Table.addRow` dispatch while preserving the JDBC transaction boundary.
+
+Current result lines:
+
+| Mode | Workload | Operations | Batch | Throughput ops/s | p99 us | Result file | Notes |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| `store` | `insert` | 3000 | N/A | 130434.78 | 41 | `vexra-adb/build/adb-benchmark/store_insert.properties` | Local store wrapper baseline |
+| `txn` | `insert` | 3000 | 3000 | 63829.79 | 25 | `vexra-adb/build/adb-benchmark/txn_insert_goal.properties` | ADB local transaction/MVCC/commit path |
+| `jdbc_bulk` | `insert` | 100000 | 5000 | 357142.86 | 6 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties` | JDBC connection plus ADB table bulk API |
+
+The `jdbc_bulk` path is above both the hard target (`3000 ops/s`) and the desired
+margin (`5000 ops/s`). It is intentionally local-only in this first version:
+tables with secondary indexes and tables with a region commit coordinator are
+rejected rather than silently taking the fast path. Duplicate primary keys still
+raise an error.
+
+JDBC bulk insert reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc_bulk" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/goal-jdbc-bulk-insert-100k/adb-benchmark" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=3000" `
+  "-PadbBenchmarkOperations=100000" `
+  "-PadbBenchmarkTransactionBatchSize=5000" `
+  "-PadbBenchmarkStatementBatchSize=5000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties"
+```
+
 ## Next Optimization Targets
 
 | Priority | Target | Verification |
 | --- | --- | --- |
-| P0 | JDBC bulk insert entry point | Add a path at the h2db plugin/table-engine layer that parses once and writes RowValue/RowKey in batches; verify JDBC insert > 3000 ops/s |
+| P0 | Route ordinary SQL INSERT into the bulk entry point | Let multi-values SQL INSERT automatically use the ADB bulk API when the table is local-only and has no secondary indexes; verify plain `jdbc` insert > 3000 ops/s |
 | P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |

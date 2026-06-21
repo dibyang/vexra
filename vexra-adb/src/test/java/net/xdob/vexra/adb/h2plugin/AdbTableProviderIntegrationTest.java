@@ -4,13 +4,24 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.sql.Statement;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
+import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.DbStoreEngine;
 import net.xdob.vexra.adb.db.DbStoreType;
+import org.h2.engine.SessionLocal;
+import org.h2.jdbc.JdbcConnection;
+import org.h2.message.DbException;
+import org.h2.result.DefaultRow;
+import org.h2.schema.Schema;
+import org.h2.table.Table;
+import org.h2.value.Value;
+import org.h2.value.ValueBigint;
+import org.h2.value.ValueVarchar;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -84,6 +95,82 @@ class AdbTableProviderIntegrationTest {
         } finally {
             DbStoreEngine.close(databasePath);
             AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void rejectsDuplicatePrimaryKeyThroughBulkInsertPath() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-duplicate").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+                connection.commit();
+
+                AdbTable table = adbTable(connection, "TEST");
+                DbException error = Assertions.assertThrows(DbException.class,
+                        () -> table.bulkInsertAppendRows(session(connection),
+                                Collections.singletonList(row(1L, "duplicate"))));
+                Assertions.assertTrue(error.getMessage().contains("primary key"), error.getMessage());
+                connection.rollback();
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rejectsSecondaryIndexThroughBulkInsertPath() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-secondary-index").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.execute("CREATE INDEX IDX_TEST_NAME ON TEST(NAME)");
+                connection.commit();
+
+                AdbTable table = adbTable(connection, "TEST");
+                DbException error = Assertions.assertThrows(DbException.class,
+                        () -> table.bulkInsertAppendRows(session(connection),
+                                Collections.singletonList(row(2L, "indexed"))));
+                Assertions.assertTrue(error.getMessage().contains("secondary indexes"), error.getMessage());
+                connection.rollback();
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rejectsRegionCommitCoordinatorThroughBulkInsertPath() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-region-write").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                        + "ENGINE \"adb_table\" WITH "
+                        + "\"adb.distributed.sql=true\", "
+                        + "\"adb.distributed.write.client=raft\", "
+                        + "\"adb.distributed.raft.group=group-1\", "
+                        + "\"adb.distributed.raft.peers=n1@127.0.0.1:19001\"");
+                connection.commit();
+
+                AdbTable table = adbTable(connection, "TEST");
+                DbException error = Assertions.assertThrows(DbException.class,
+                        () -> table.bulkInsertAppendRows(session(connection),
+                                Collections.singletonList(row(2L, "remote"))));
+                Assertions.assertTrue(error.getMessage().contains("local-only"), error.getMessage());
+                connection.rollback();
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
         }
     }
 
@@ -301,5 +388,23 @@ class AdbTableProviderIntegrationTest {
             }
         }
         return builder.toString();
+    }
+
+    private static AdbTable adbTable(Connection connection, String tableName) throws Exception {
+        SessionLocal session = session(connection);
+        Schema schema = session.getDatabase().getSchema(session.getCurrentSchemaName());
+        Table table = schema.findTableOrView(session, tableName);
+        Assertions.assertTrue(table instanceof AdbTable, "expected AdbTable: " + table);
+        return (AdbTable) table;
+    }
+
+    private static SessionLocal session(Connection connection) throws Exception {
+        return (SessionLocal) connection.unwrap(JdbcConnection.class).getSession();
+    }
+
+    private static DefaultRow row(long id, String name) {
+        DefaultRow row = new DefaultRow(new Value[]{ValueBigint.get(id), ValueVarchar.get(name)});
+        row.setKey(id);
+        return row;
     }
 }

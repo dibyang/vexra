@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.h2plugin.AdbTransactionRegistry;
 import net.xdob.vexra.adb.key.IndexBuildState;
+import net.xdob.vexra.adb.key.RowKey;
 import org.h2.api.DatabaseEventListener;
 import org.h2.api.ErrorCode;
 import org.h2.command.ddl.CreateTableData;
@@ -651,6 +652,98 @@ public class AdbTable extends TableBase {
       recordSqlDiagnostic("INSERT", "ADD_ROW", startMillis, failure);
     }
     analyzeIfRequired(session);
+  }
+
+  /**
+   * 在当前 JDBC session 的 ADB 事务内批量追加写入 row。
+   *
+   * <p>该入口面向 benchmark 和后续 h2db bulk insert 扩展点：它绕过 H2
+   * `Table.addRow -> Index.add` 的逐行调度，但仍复用 TxnManager/MVCC/RowCodec
+   * 和 JDBC transaction event 的提交边界。第一版只允许没有二级索引的本地表使用；
+   * 带二级索引或远端 region commit 的表必须继续走普通路径，避免索引不一致或绕过分布式提交。</p>
+   *
+   * @param session 当前 H2 session
+   * @param rows 需要插入的 row；方法不会修改该列表
+   * @return 成功写入当前事务的 row 数
+   */
+  public int bulkInsertAppendRows(SessionLocal session, List<Row> rows) {
+    if (rows == null || rows.isEmpty()) {
+      return 0;
+    }
+    if (hasSecondaryIndex()) {
+      throw DbException.getUnsupportedException(
+          "ADB bulk insert currently requires a table without secondary indexes");
+    }
+    if (getSqlDistributedWriteRuntime() != null
+        || txnManager.getRegionCommitCoordinator() != null) {
+      throw DbException.getUnsupportedException(
+          "ADB bulk insert fast path is local-only");
+    }
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
+    syncLastModificationIdWithDatabase();
+    TxnMap2 map = getTxnMap(session);
+    int count = 0;
+    try {
+      for (Row row : rows) {
+        prepareBulkRow(row);
+        RowKey rowKey = RowKey.of(map.getTabId(getId()), row.getKey());
+        RowValue old = map.putEncodedIfAbsent(rowKey,
+            rowValue(map.getTransaction().getTxnId(), row));
+        if (old != null) {
+          throw duplicateKey(row.getKey(), old);
+        }
+        count++;
+      }
+    } catch (SQLException e) {
+      failure = convertException(e);
+      throw failure;
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
+    }
+    analyzeIfRequired(session);
+    return count;
+  }
+
+  private boolean hasSecondaryIndex() {
+    for (Index index : indexes) {
+      if (index instanceof AdbSecondaryIndex) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private void prepareBulkRow(Row row) {
+    if (primaryIndex.getMainIndexColumn() == SearchRow.ROWID_INDEX) {
+      if (row.getKey() == 0) {
+        row.setKey(nextKey());
+      }
+      return;
+    }
+    long key = row.getValue(primaryIndex.getMainIndexColumn()).getLong();
+    row.setKey(key);
+  }
+
+  private static RowValue rowValue(long txnId, Row row) {
+    RowValue value = new RowValue();
+    value.txnId = txnId;
+    value.commitTs = 0L;
+    value.deleted = false;
+    value.payload = RowCodec.encode(row);
+    return value;
+  }
+
+  private DbException duplicateKey(long rowId, RowValue old) {
+    int errorCode = ErrorCode.DUPLICATE_KEY_1;
+    Row oldRow = RowCodec.decode(rowId, old.payload);
+    DbException e = DbException.get(errorCode,
+        getName() + " primary key " + rowId + ' ' + oldRow);
+    e.setSource(primaryIndex);
+    return e;
   }
 
   @Override
