@@ -82,6 +82,40 @@ class AdbBenchmarkMainTest {
   }
 
   /**
+   * 验证 JDBC benchmark 可以用多个 ldb 连接并发执行，并输出线程诊断。
+   */
+  @Test
+  void shouldRunConcurrentMixedBenchmarkAgainstLdbUrl() throws Exception {
+    Path output = tempDir.resolve("concurrent.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("concurrent").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "mixed",
+        "--rows", "20",
+        "--warmupOperations", "4",
+        "--operations", "8",
+        "--rangeSize", "4",
+        "--transactionBatchSize", "4",
+        "--threads", "2",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("jdbc", result.getMode());
+    assertEquals("mixed", result.getWorkload());
+    assertEquals(8L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("2", result.getDetails().get("concurrency.threads"));
+    assertEquals("8", result.getDetails().get(
+        "concurrency.completedOperations"));
+    assertEquals("2", properties.getProperty("concurrency.threads"));
+    assertEquals("8", properties.getProperty(
+        "concurrency.completedOperations"));
+  }
+
+  /**
    * 验证 store 模式可以绕过 SQL / table engine，形成 LdbStore 本地封装基线。
    */
   @Test

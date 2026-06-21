@@ -86,6 +86,42 @@
 该结果说明重复 scan 优化对写入有效，但 SQL/JDBC、H2 执行、commit 扫描 txn ref 和
 table-engine 边界仍是主要瓶颈。
 
+## 第五轮多线程混合负载诊断
+
+本轮先补齐 `jdbc` benchmark 的 `threads` 参数和 `concurrency.*` 输出字段，用同一套
+`mixed` workload 验证单机多 JDBC connection 下的伸缩性。测试仍使用文件型
+`jdbc:adb:ldb:*`，`rows=5000`、`warmupOperations=300`、`operations=3000`、
+`transactionBatchSize=100`。
+
+| threads | throughput ops/s | p50 us | p95 us | p99 us | max us | per-thread ops/s | 结果文件 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 1351.35 | 578 | 1667 | 2656 | 7378 | 1351.35 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_1.properties` |
+| 2 | 1110.70 | 956 | 2153 | 3878 | 9316 | 555.35 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_2.properties` |
+| 4 | 1315.21 | 1458 | 3224 | 5816 | 10465 | 328.80 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_4.properties` |
+| 8 | 1515.15 | 2338 | 5159 | 8046 | 19585 | 189.39 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties` |
+
+结论：当前 mixed workload 在 8 线程下只比 1 线程提升约 12.1%，但 p99 从 2656us
+升至 8046us，说明多连接并发主要放大了共享路径延迟，而不是线性提升吞吐。
+`sqlDiagnostics.*` 也显示 `ADB_TABLE_ADD_ROW`、`ADB_TABLE_PRIMARY_FIND` 和
+`ADB_TABLE_RANGE_COUNT_FAST` 的平均延迟随线程数明显升高，其中 8 线程下
+`ADB_TABLE_ADD_ROW` 最大延迟达到 64ms。下一阶段应优先细分 commit / row-count /
+主键查找 / range count 的锁等待和 store 写入时间，而不是继续单纯提高客户端线程数。
+
+复现命令示例：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
+```
+
 ## 后续优化靶点
 
 | 优先级 | 靶点 | 验证方式 |
@@ -95,7 +131,7 @@ table-engine 边界仍是主要瓶颈。
 | P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
 | P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
 | P1 | range scan 避免 SQL COUNT 路径上的额外 materialization | 对比 `LdbStore` scan 与 SQL scan 的行迭代次数、对象创建数 |
-| P1 | 增加多线程压测模式 | 验证单线程优化后是否出现锁竞争或 store 写放大 |
+| P1 | 细化多线程关键路径耗时 | 基于 `threads` benchmark 区分 commit、row-count、主键查找、range count、store 写入和锁等待 |
 
 ## 复现命令
 

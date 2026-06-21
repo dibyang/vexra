@@ -277,7 +277,8 @@ Common parameters:
   -PadbBenchmarkWarmupOperations=1000 `
   -PadbBenchmarkOperations=10000 `
   -PadbBenchmarkRangeSize=64 `
-  -PadbBenchmarkTransactionBatchSize=1
+  -PadbBenchmarkTransactionBatchSize=1 `
+  -PadbBenchmarkThreads=1
 ```
 
 In `jdbc` mode, `-PadbBenchmarkTransactionBatchSize=1` means one SQL statement
@@ -330,10 +331,17 @@ The runtime package also includes `bin/adb-benchmark.bat` /
 .\bin\adb-benchmark.bat --url "jdbc:adb:ldb:.\work\bench\adb-benchmark;DB_CLOSE_DELAY=0" --workload mixed --rows 10000 --operations 10000 --output .\run\adb-benchmark.properties
 ```
 
+In `jdbc` mode, `-PadbBenchmarkThreads=N` runs the same workload concurrently
+through multiple JDBC connections. It is mainly intended to identify lock
+contention, transaction commit, and shared lower-store bottlenecks; short local
+runs should not be treated as production capacity.
+
 The output properties include at least `mode`, `workload`, `url`, `operations`,
 `failedOperations`, `durationMillis`, `throughputPerSecond`,
 `p50LatencyMicros`, `p95LatencyMicros`, `p99LatencyMicros`,
-`maxLatencyMicros`, and `passed`. These results can feed release evidence or a
+`maxLatencyMicros`, `passed`, `concurrency.threads`, and
+`concurrency.perThreadThroughputPerSecond`. When `threads > 1`, the report also
+includes `concurrency.completedOperations`. These results can feed release evidence or a
 future long-running stress platform, but a short single-node run is not a
 replacement for multi-hour / multi-node stress testing.
 

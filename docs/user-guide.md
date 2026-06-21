@@ -275,7 +275,8 @@ vexra-adb/build/adb-benchmark/adb-benchmark.properties
   -PadbBenchmarkWarmupOperations=1000 `
   -PadbBenchmarkOperations=10000 `
   -PadbBenchmarkRangeSize=64 `
-  -PadbBenchmarkTransactionBatchSize=1
+  -PadbBenchmarkTransactionBatchSize=1 `
+  -PadbBenchmarkThreads=1
 ```
 
 `jdbc` 模式的 `-PadbBenchmarkTransactionBatchSize=1` 表示每条 SQL 自动提交。写入吞吐偏低时，
@@ -326,9 +327,15 @@ runtime 包也包含 `bin/adb-benchmark.bat` / `bin/adb-benchmark`，参数与 m
 .\bin\adb-benchmark.bat --url "jdbc:adb:ldb:.\work\bench\adb-benchmark;DB_CLOSE_DELAY=0" --workload mixed --rows 10000 --operations 10000 --output .\run\adb-benchmark.properties
 ```
 
+`jdbc` 模式还可以通过 `-PadbBenchmarkThreads=N` 使用多个 JDBC connection 并发执行同一 workload。
+该参数主要用于定位锁竞争、事务提交和底层存储共享路径瓶颈；短跑结果会受本机磁盘和 JVM 状态影响，
+不应直接等同于生产容量。
+
 输出 properties 至少包含：`mode`、`workload`、`url`、`operations`、`failedOperations`、
 `durationMillis`、`throughputPerSecond`、`p50LatencyMicros`、`p95LatencyMicros`、
-`p99LatencyMicros`、`maxLatencyMicros` 和 `passed`。这些结果可以作为 release evidence
+`p99LatencyMicros`、`maxLatencyMicros`、`passed`、`concurrency.threads` 和
+`concurrency.perThreadThroughputPerSecond`。当 `threads > 1` 时，还会包含
+`concurrency.completedOperations`。这些结果可以作为 release evidence
 或后续长稳平台的输入，但单机短跑不能替代多小时/多节点压测。
 
 当前本地基线和优化判断见 [ADB 性能基线报告](adb-performance-benchmark.md)。

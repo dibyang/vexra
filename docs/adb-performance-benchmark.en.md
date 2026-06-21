@@ -590,6 +590,45 @@ JDBC bulk insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties"
 ```
 
+## Fifth Round: Multi-Thread Mixed Workload Diagnostics
+
+This round adds the `threads` parameter to the `jdbc` benchmark path and writes
+`concurrency.*` fields into the properties report. The run uses the same
+file-backed `jdbc:adb:ldb:*` mixed workload with `rows=5000`,
+`warmupOperations=300`, `operations=3000`, and `transactionBatchSize=100`.
+
+| threads | throughput ops/s | p50 us | p95 us | p99 us | max us | per-thread ops/s | Result file |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 1351.35 | 578 | 1667 | 2656 | 7378 | 1351.35 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_1.properties` |
+| 2 | 1110.70 | 956 | 2153 | 3878 | 9316 | 555.35 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_2.properties` |
+| 4 | 1315.21 | 1458 | 3224 | 5816 | 10465 | 328.80 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_4.properties` |
+| 8 | 1515.15 | 2338 | 5159 | 8046 | 19585 | 189.39 | `vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties` |
+
+Conclusion: the mixed workload improves by only about 12.1% from 1 thread to 8
+threads, while p99 grows from 2656us to 8046us. More client-side concurrency
+mainly amplifies shared-path latency instead of delivering linear throughput.
+The `sqlDiagnostics.*` output also shows that average latency for
+`ADB_TABLE_ADD_ROW`, `ADB_TABLE_PRIMARY_FIND`, and `ADB_TABLE_RANGE_COUNT_FAST`
+rises with concurrency; at 8 threads, `ADB_TABLE_ADD_ROW` reaches a 64ms max
+latency. The next optimization stage should split commit / row-count /
+primary-key lookup / range-count / store-write / lock-wait timing instead of
+only increasing client threads.
+
+Reproduction example:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
+```
+
 ## Next Optimization Targets
 
 | Priority | Target | Verification |
@@ -599,7 +638,7 @@ JDBC bulk insert reproduction command:
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |
 | P1 | Avoid extra materialization in SQL COUNT range scans | Compare `LdbStore` scan row iteration and object counts with SQL scan |
-| P1 | Add multi-thread benchmark mode | Check whether lock contention or store write amplification appears after single-thread optimization |
+| P1 | Split multi-thread key-path timing | Use the `threads` benchmark to separate commit, row-count, primary-key lookup, range count, store write, and lock-wait time |
 
 ## Reproduction Commands
 
