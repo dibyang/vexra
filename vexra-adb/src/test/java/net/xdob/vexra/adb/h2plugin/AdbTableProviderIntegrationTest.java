@@ -276,6 +276,33 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void pointLookupCacheSeesCommittedUpdateAndDelete() throws Exception {
+        String databasePath = tempDir.resolve("adb-point-cache").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'first')");
+                Assertions.assertEquals("first",
+                        singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
+                Assertions.assertEquals("first",
+                        singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
+
+                statement.executeUpdate("UPDATE TEST SET NAME = 'second' WHERE ID = 1");
+                Assertions.assertEquals("second",
+                        singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
+
+                statement.executeUpdate("DELETE FROM TEST WHERE ID = 1");
+                Assertions.assertEquals(0L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE ID = 1"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void executesDistributedSqlPlanThroughJdbcWhenTableOptsIn() throws Exception {
         String databasePath = tempDir.resolve("adb-distributed-sql").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

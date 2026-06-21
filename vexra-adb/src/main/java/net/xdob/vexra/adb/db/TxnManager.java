@@ -25,6 +25,8 @@ public class TxnManager {
       new java.util.concurrent.ConcurrentHashMap<>();
   private final Map<TabId, java.util.concurrent.atomic.AtomicLong> maxRowIdHints =
       new java.util.concurrent.ConcurrentHashMap<>();
+  private final Map<DataKey, RowValue> committedRowCache =
+      new java.util.concurrent.ConcurrentHashMap<>();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -496,12 +498,43 @@ public class TxnManager {
 
     regionReadRouter.routePointRead(txn, rowKey);
 
+    RowValue cached = getVisibleCommittedFromCache(txn, rowKey);
+    if (cached != null) {
+      return cached.deleted ? null : cached;
+    }
+
     // 2. 璇?committed 鎴?Intent
     RowValue visible = this.getVisibleCommitted(txn, rowKey);
 
     long version = visible == null ? 0L : visible.commitTs;
     txn.recordRead(rowKey, version);
     return visible;
+  }
+
+  private RowValue getVisibleCommittedFromCache(Transaction2 txn,
+      DataKey rowKey) throws SQLException {
+    if (rowKey == null || !rowKey.isRow()) {
+      return null;
+    }
+    RowValue cached = committedRowCache.get(rowKey);
+    if (cached == null || cached.commitTs > txn.getStartTs()) {
+      return null;
+    }
+    if (!cachedCommittedVersionExists(rowKey, cached.commitTs)) {
+      committedRowCache.remove(rowKey, cached);
+      return null;
+    }
+    txn.recordRead(rowKey, cached.commitTs);
+    if (cached.deleted) {
+      return copyWithRowKey(cached, rowKey.getRowId());
+    }
+    return copyWithRowKey(cached, rowKey.getRowId());
+  }
+
+  private boolean cachedCommittedVersionExists(DataKey rowKey, long commitTs)
+      throws SQLException {
+    VersionKey versionKey = VersionKey.of(rowKey, true, commitTs);
+    return store.get(versionKey.toBytes()) != null;
   }
 
 
@@ -617,6 +650,7 @@ public class TxnManager {
       }
       commitLocalOrRemote(txn, commitTs, writeKeys, metas);
 
+      refreshCommittedRowCache(txn, commitTs, writeKeys);
       txn.afterCommitSuccess(commitTs);
       for (DataKey key : writeKeys) {
         recordRowIdHint(key);
@@ -707,6 +741,30 @@ public class TxnManager {
     copy.payload = source.payload;
     copy.rowKey = source.rowKey;
     copy.commitTs = commitTs;
+    return copy;
+  }
+
+  private void refreshCommittedRowCache(Transaction2 txn, long commitTs,
+      Collection<DataKey> writeKeys) {
+    for (DataKey key : writeKeys) {
+      if (key == null || !key.isRow()) {
+        continue;
+      }
+      RowValue value = txn.getWriteSet().get(key);
+      if (value == null) {
+        continue;
+      }
+      committedRowCache.put(key, copyForCommit(value, commitTs));
+    }
+  }
+
+  private static RowValue copyWithRowKey(RowValue source, long rowId) {
+    RowValue copy = new RowValue();
+    copy.txnId = source.txnId;
+    copy.deleted = source.deleted;
+    copy.payload = source.payload;
+    copy.rowKey = rowId;
+    copy.commitTs = source.commitTs;
     return copy;
   }
 

@@ -2,6 +2,7 @@ package net.xdob.vexra.adb.db;
 
 
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -17,6 +18,7 @@ import org.h2.index.IndexType;
 import org.h2.index.SingleRowCursor;
 import org.h2.message.DbException;
 import org.h2.mvstore.MVStoreException;
+import org.h2.result.DefaultRow;
 import org.h2.result.Row;
 import org.h2.result.SearchRow;
 import org.h2.result.SortOrder;
@@ -31,8 +33,12 @@ import org.h2.value.ValueNull;
  * A table stored in a RocksStore.
  */
 public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
+  private static final int DECODED_ROW_CACHE_LIMIT =
+      Integer.getInteger("adb.pointLookup.decodedRowCacheLimit", 16_384);
 
   private final AdbTable rocksTable;
+  private final ConcurrentHashMap<RowKey, CachedDecodedRow> decodedRowCache =
+      new ConcurrentHashMap<>();
 
 
   private int mainIndexColumn = SearchRow.ROWID_INDEX;
@@ -266,9 +272,10 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
         }
         RowValue rowValue = map.getVisible(firstKey);
         if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
+          decodedRowCache.remove(firstKey);
           return new SingleRowCursor(null);
         }
-        Row row = RowCodec.decode(first, rowValue.payload);
+        Row row = decodePointRow(firstKey, first, rowValue);
         return new SingleRowCursor(setRowKey(row, first));
       }
 
@@ -308,9 +315,10 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       RowKey firstKey = RowKey.of(map.getTabId(table.getId()), key);
       RowValue rowValue = map.getVisible(firstKey);
       if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
+        decodedRowCache.remove(firstKey);
         return null;
       }
-      return RowCodec.decode(key, rowValue.payload);
+      return decodePointRow(firstKey, key, rowValue);
     } catch (SQLException e) {
       throw rocksTable.convertException(e);
     }
@@ -342,6 +350,7 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
   @Override
   public void remove(SessionLocal session) {
     TxnMap2 map = getTxnMap(session);
+    decodedRowCache.clear();
     //map.clear(KeyWrapper.tablePrefix(table.getId()));
   }
 
@@ -351,6 +360,7 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       database.getLobStorage().removeAllForTable(table.getId());
     }
     TxnMap2 map = getTxnMap(session);
+    decodedRowCache.clear();
     //map.clear(KeyWrapper.tablePrefix(table.getId()));
   }
 
@@ -427,6 +437,50 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       row.setKey(key);
     }
     return row;
+  }
+
+  private Row decodePointRow(RowKey rowKey, long rowId, RowValue rowValue) {
+    CachedDecodedRow cached = decodedRowCache.get(rowKey);
+    if (cached != null && cached.commitTs == rowValue.commitTs) {
+      return cached.toRow(rowId);
+    }
+    Row row = RowCodec.decode(rowId, rowValue.payload);
+    cacheDecodedRow(rowKey, rowValue.commitTs, row);
+    return row;
+  }
+
+  private void cacheDecodedRow(RowKey rowKey, long commitTs, Row row) {
+    if (DECODED_ROW_CACHE_LIMIT <= 0) {
+      return;
+    }
+    if (decodedRowCache.size() >= DECODED_ROW_CACHE_LIMIT) {
+      decodedRowCache.clear();
+    }
+    decodedRowCache.put(rowKey, CachedDecodedRow.of(commitTs, row));
+  }
+
+  private static final class CachedDecodedRow {
+    private final long commitTs;
+    private final Value[] values;
+
+    private CachedDecodedRow(long commitTs, Value[] values) {
+      this.commitTs = commitTs;
+      this.values = values;
+    }
+
+    private static CachedDecodedRow of(long commitTs, Row row) {
+      Value[] values = new Value[row.getColumnCount()];
+      for (int i = 0; i < values.length; i++) {
+        values[i] = row.getValue(i);
+      }
+      return new CachedDecodedRow(commitTs, values);
+    }
+
+    private Row toRow(long rowId) {
+      DefaultRow row = new DefaultRow(Arrays.copyOf(values, values.length));
+      row.setKey(rowId);
+      return row;
+    }
   }
 
   /**

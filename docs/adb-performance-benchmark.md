@@ -112,6 +112,56 @@ store mixed 基线：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/store_mixed.properties"
 ```
 
+## 第四轮点查优化结果
+
+本轮围绕 JDBC 主键点查和 mixed workload 中的点查比例做了两项低风险快路径：
+
+1. `TxnManager` 在本地提交成功后缓存 row key 对应的最新 committed `RowValue`，点查事务在
+   `commitTs <= startTs` 时可以跳过 committed version 前缀扫描。为避免 checkpoint/restore 后读到
+   旧内存缓存，缓存命中前会用精确 `VersionKey` 做一次底层存在性校验；若物理版本不存在则失效并回退扫描。
+2. `AdbPrimaryIndex` 对主键点查增加有上限的 decoded row cache，使用 `RowKey + commitTs` 校验，避免重复
+   payload decode；更新后 commitTs 改变会自动失效，删除或表清理会移除缓存。
+
+验证结果：
+
+| 模式 | workload | batch | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | 781.45 | 1020 | 2661 | 3748 | 8216 | `vexra-adb/build/adb-benchmark/point_lookup_committed_cache.properties` |
+| `jdbc` | `mixed` | 100 | 981.68 | 612 | 3580 | 5215 | 8341 | `vexra-adb/build/adb-benchmark/jdbc_mixed_point_cache.properties` |
+
+与上一轮可比结果相比，单独 `point_lookup` 从约 770 ops/s 小幅提升到约 781 ops/s，说明主键点查剩余大头仍在
+H2 executor / JDBC `ResultSet` / Row 对象边界；`mixed` batch 100 从约 500 ops/s 提升到约 982 ops/s，
+说明点查路径的可见版本扫描和 decode 开销在混合负载中确实会放大。本轮完整执行
+`.\gradlew.bat :vexra-adb:test --rerun-tasks` 通过，并额外覆盖 committed cache 在 update、delete 和
+backup/restore 边界下不返回旧值。
+
+点查复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-committed-cache/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_committed_cache.properties"
+```
+
+mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-point-cache/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_point_cache.properties"
+```
+
 ## 第三轮 JDBC bulk insert 结果
 
 第三轮新增 JDBC 连接下的 ADB bulk insert 路径。benchmark 仍然通过

@@ -233,3 +233,62 @@ JDBC mixed batch 100:
   "-PadbBenchmarkTransactionBatchSize=100" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_batch100.properties"
 ```
+
+## Fourth Round: Point Lookup Optimization
+
+This round adds two conservative fast paths for JDBC primary-key lookup and
+for the point-lookup-heavy part of the mixed workload:
+
+1. `TxnManager` caches the latest committed `RowValue` for row keys after a
+   successful local commit. A point lookup can skip the committed-version
+   prefix scan when the cached `commitTs` is visible to the transaction. To
+   preserve checkpoint/restore correctness, each cache hit first verifies that
+   the exact physical `VersionKey` still exists in the lower store; stale cache
+   entries are invalidated and fall back to the original scan.
+2. `AdbPrimaryIndex` keeps a bounded decoded-row cache for primary-key lookups.
+   Entries are validated by `RowKey + commitTs`, so updates naturally miss and
+   refresh the cache, while deletes and table cleanup remove cached entries.
+
+Measured results:
+
+| Mode | workload | batch | throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | 781.45 | 1020 | 2661 | 3748 | 8216 | `vexra-adb/build/adb-benchmark/point_lookup_committed_cache.properties` |
+| `jdbc` | `mixed` | 100 | 981.68 | 612 | 3580 | 5215 | 8341 | `vexra-adb/build/adb-benchmark/jdbc_mixed_point_cache.properties` |
+
+Compared with the previous comparable run, standalone `point_lookup` improved
+only slightly, from about 770 ops/s to about 781 ops/s. This indicates that the
+remaining primary-key lookup cost is still dominated by the H2 executor, JDBC
+`ResultSet`, and row-object boundary. The `mixed` batch-100 workload improved
+from about 500 ops/s to about 982 ops/s, which shows that committed-version
+scans and row decoding become more visible when point lookups are mixed with
+writes and commits. Full `.\gradlew.bat :vexra-adb:test --rerun-tasks` passed,
+including update/delete cache correctness and backup/restore stale-cache
+coverage.
+
+Point lookup reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-committed-cache/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_committed_cache.properties"
+```
+
+Mixed workload reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-point-cache/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_point_cache.properties"
+```
