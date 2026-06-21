@@ -193,6 +193,18 @@ public class TxnMap2 {
     return txnManager.entryIterator(transaction, prefixKey, min, max);
   }
 
+  /**
+   * 统计当前事务快照下指定 rowId 范围内可见的行数。
+   *
+   * @param prefixKey 表 row 前缀
+   * @param min 最小 rowId，null 表示无下界
+   * @param max 最大 rowId，null 表示无上界
+   * @return 可见且未删除的行数
+   */
+  public long countVisibleRows(PrefixKey prefixKey, Long min, Long max) {
+    return txnManager.countVisibleRows(transaction, prefixKey, min, max);
+  }
+
   public IndexScanCursor indexScanIterator(PrefixKey prefixKey, TableKey min, TableKey max){
     return txnManager.indexScanIterator(transaction, prefixKey, min, max);
   }

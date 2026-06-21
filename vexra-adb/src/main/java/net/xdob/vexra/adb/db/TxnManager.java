@@ -585,6 +585,74 @@ public class TxnManager {
     //return new TableScanCursor(store, txn, prefixKey , min, max, false);
   }
 
+  /**
+   * 统计指定 rowId 范围内对当前事务可见的行数。
+   *
+   * <p>该路径服务于 {@code COUNT(*) WHERE primary_key BETWEEN ? AND ?}。
+   * 与通用 {@link TableScanCursor} 不同，它只解码 RowValue 头部元数据，不复制 payload；
+   * 同时在扫描结束后叠加当前事务尚未落到 store 的本地 write-set，保证本地 insert/delete
+   * 和回滚语义与通用执行路径一致。</p>
+   *
+   * @param txn 当前事务
+   * @param prefixKey 表 row 前缀
+   * @param min 最小 rowId，null 表示无下界
+   * @param max 最大 rowId，null 表示无上界
+   * @return 当前事务快照下可见且未删除的行数
+   */
+  public long countVisibleRows(Transaction2 txn, PrefixKey prefixKey, Long min,
+      Long max) {
+    routeRangeRead(txn,
+        tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
+
+    byte[] tablePrefix = prefixKey.toBytes();
+    Set<DataKey> localRowsCoveredByStoreScan = new HashSet<>();
+    long count = 0L;
+
+    try (VersionScanSource scan =
+        store.openVersionScanSource(ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
+          tableScanEndKey(prefixKey, max));
+
+      while (scan.isValid() && TableScanCursor.startsWith(scan.key(),
+          tablePrefix)) {
+        VersionKey versionKey = VersionKey.fromBytes(scan.key());
+        DataKey dataKey = versionKey.toDataKey();
+        byte[] rowPrefix = dataKey.toBytes();
+        long rowId = dataKey.getRowId();
+
+        if (!inRowIdRange(rowId, min, max)) {
+          if (max != null && rowId > max) {
+            break;
+          }
+          skipCurrentLogicalRow(scan, tablePrefix, rowPrefix);
+          continue;
+        }
+
+        RowValue local = txn.getLocalWrite(dataKey);
+        if (local != null) {
+          localRowsCoveredByStoreScan.add(dataKey);
+          skipCurrentLogicalRow(scan, tablePrefix, rowPrefix);
+          if (isCountable(local)) {
+            count++;
+          }
+          continue;
+        }
+
+        if (resolveVisibleCountableInCurrentLogicalRow(scan, rowPrefix,
+            txn.getStartTs())) {
+          count++;
+        }
+      }
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+
+    return count + countLocalRowsMissingFromStore(txn, tablePrefix, min, max,
+        localRowsCoveredByStoreScan);
+  }
+
 
   public RowValue getVisibleCommitted(Transaction2 txn, DataKey key) throws SQLException {
     VersionResolver resolver = new DefaultVersionResolver(store);
@@ -913,6 +981,93 @@ public class TxnManager {
     return maxRowId != null ? KeyCodec.prefixEnd(
         buildRowSeekKey(prefixKey, maxRowId))
         : KeyCodec.prefixEnd(prefixKey.toBytes());
+  }
+
+  private static boolean resolveVisibleCountableInCurrentLogicalRow(
+      VersionScanSource scan, byte[] rowPrefix, long startTs) {
+    while (scan.isValid()) {
+      byte[] rawKey = scan.key();
+      if (rawKey == null || !TableScanCursor.startsWith(rawKey, rowPrefix)) {
+        return false;
+      }
+
+      VersionKey versionKey = VersionKey.fromBytes(rawKey);
+      if (!versionKey.isCommited()) {
+        scan.advance();
+        continue;
+      }
+
+      RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
+      if (metadata != null && metadata.commitTs <= startTs) {
+        skipCurrentLogicalRow(scan, null, rowPrefix);
+        return !metadata.deleted && metadata.hasPayload();
+      }
+
+      scan.advance();
+    }
+    return false;
+  }
+
+  private static long countLocalRowsMissingFromStore(Transaction2 txn,
+      byte[] tablePrefix, Long minRowId, Long maxRowId,
+      Set<DataKey> rowsCoveredByStoreScan) {
+    long count = 0L;
+    for (Map.Entry<DataKey, RowValue> entry : txn.getWriteSet().entrySet()) {
+      DataKey key = entry.getKey();
+      if (key == null || !key.isRow()) {
+        continue;
+      }
+      if (!TableScanCursor.startsWith(key.toBytes(), tablePrefix)) {
+        continue;
+      }
+      if (!inRowIdRange(key.getRowId(), minRowId, maxRowId)) {
+        continue;
+      }
+      if (rowsCoveredByStoreScan.contains(key)) {
+        continue;
+      }
+      if (isCountable(entry.getValue())) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private static boolean isCountable(RowValue value) {
+    return value != null
+        && !value.deleted
+        && value.payload != null
+        && value.payload.length > 0;
+  }
+
+  private static boolean inRowIdRange(long rowId, Long minRowId,
+      Long maxRowId) {
+    if (minRowId != null && rowId < minRowId) {
+      return false;
+    }
+    if (maxRowId != null && rowId > maxRowId) {
+      return false;
+    }
+    return true;
+  }
+
+  private static void skipCurrentLogicalRow(VersionScanSource scan,
+      byte[] tablePrefix, byte[] currentRowPrefix) {
+    while (scan.isValid()) {
+      scan.advance();
+      if (!scan.isValid()) {
+        return;
+      }
+
+      byte[] key = scan.key();
+      if (tablePrefix != null
+          && !TableScanCursor.startsWith(key, tablePrefix)) {
+        return;
+      }
+      if (!TableScanCursor.startsWith(key, currentRowPrefix)) {
+        return;
+      }
+    }
   }
 
   private static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {

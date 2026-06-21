@@ -683,6 +683,43 @@ class AdbTableProviderIntegrationTest {
         }
     }
 
+    @Test
+    void preparedRangeCountSeesLocalInsertDeleteAndRollback() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-range-local-write").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (4, 'd')");
+                Assertions.assertEquals(4L, preparedRangeCount(connection, 1L, 4L));
+
+                statement.executeUpdate("DELETE FROM TEST WHERE ID = 2");
+                Assertions.assertEquals(3L, preparedRangeCount(connection, 1L, 4L));
+
+                connection.rollback();
+                connection.setAutoCommit(true);
+                Assertions.assertEquals(3L, preparedRangeCount(connection, 1L, 4L));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_RANGE_COUNT_VISIBLE_COUNT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
     private static String preparedName(PreparedStatement select, long id)
             throws SQLException {
         select.setLong(1, id);
@@ -693,6 +730,21 @@ class AdbTableProviderIntegrationTest {
             String value = resultSet.getString(1);
             Assertions.assertFalse(resultSet.next());
             return value;
+        }
+    }
+
+    private static long preparedRangeCount(Connection connection, long min,
+            long max) throws SQLException {
+        try (PreparedStatement count = connection.prepareStatement(
+                "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN ? AND ?")) {
+            count.setLong(1, min);
+            count.setLong(2, max);
+            try (ResultSet resultSet = count.executeQuery()) {
+                Assertions.assertTrue(resultSet.next());
+                long value = resultSet.getLong(1);
+                Assertions.assertFalse(resultSet.next());
+                return value;
+            }
         }
     }
 

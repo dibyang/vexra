@@ -38,4 +38,44 @@ public class RowValue {
     }
     return value;
   }
+
+  /**
+   * 只解码行值头部元数据，不复制 payload。
+   *
+   * <p>COUNT、可见性判断等只关心提交时间、删除标记和 payload 是否存在的路径可以使用它，
+   * 避免为每一行分配并复制完整 payload 字节数组。</p>
+   */
+  public static Metadata decodeMetadata(byte[] data) {
+    if(data==null||data.length==0){
+      return null;
+    }
+    ByteBuffer buffer = ByteBuffer.wrap(data);
+    Metadata metadata = new Metadata();
+    metadata.txnId = buffer.getLong();
+    metadata.commitTs = buffer.getLong();
+    metadata.deleted = buffer.get() != 0;
+    metadata.payloadLength = buffer.getInt();
+    return metadata;
+  }
+
+  /**
+   * RowValue 的轻量元数据视图。
+   *
+   * <p>该对象不持有 payload 内容，不能用于返回行数据，只能用于可见性和计数类判断。</p>
+   */
+  public static final class Metadata {
+    public long txnId;
+    public long commitTs;
+    public boolean deleted;
+    public int payloadLength;
+
+    /**
+     * 判断该版本是否包含可计数的行 payload。
+     *
+     * @return payload 长度大于 0 时返回 true
+     */
+    public boolean hasPayload() {
+      return payloadLength > 0;
+    }
+  }
 }

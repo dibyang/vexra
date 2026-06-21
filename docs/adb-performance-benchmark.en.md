@@ -806,3 +806,77 @@ Mixed workload reproduction command:
   "-PadbBenchmarkTransactionBatchSize=100" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_point_cache.properties"
 ```
+
+## Fifth Round: Range Count Visible-Row Counting
+
+This round moves the JDBC fast path for
+`SELECT COUNT(*) FROM table WHERE pk BETWEEN ? AND ?` from the general
+`TableScanCursor` path to a count-only scan:
+
+1. `RowValue.decodeMetadata` decodes only `txnId`, `commitTs`, `deleted`, and
+   the payload length, avoiding payload byte-array copies for each visible
+   version.
+2. `TxnManager.countVisibleRows` reuses the existing MVCC visibility boundary
+   and range-read routing, and applies the current transaction's local
+   write-set before committed store versions when a logical row is scanned.
+3. After the store scan, it counts local row writes that are not yet present in
+   the store, fixing prepared range count visibility for same-transaction
+   inserts.
+4. `ADB_RANGE_COUNT_VISIBLE_COUNT` was added as a phase metric so count-only
+   scan cost can be separated from the outer `ADB_TABLE_RANGE_COUNT_FAST`
+   table-engine entry cost.
+
+Verification passed with `.\gradlew.bat :vexra-adb:test --rerun-tasks`. The new
+coverage checks prepared range count visibility across same-transaction insert,
+delete, and rollback.
+
+Reproducible results:
+
+| Mode | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | 3000 | 1149.87 | 740 | 1788 | 2547 | `vexra-adb/build/adb-benchmark/range_count_visible_count_stage.properties` |
+| `jdbc` | `mixed` | 8 | 3000 | 1148.11 | 2175 | 10406 | 15640 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties` |
+
+Diagnostic conclusion:
+
+- In the pure range-count run, `ADB_RANGE_COUNT_VISIBLE_COUNT` averaged about
+  296 us, while `ADB_TABLE_RANGE_COUNT_FAST` averaged about 859 us. The
+  count-only scan reduced internal payload decode work, but the JDBC and
+  table-engine entry boundary still has visible fixed cost.
+- In the 8-thread mixed run, `ADB_RANGE_COUNT_VISIBLE_COUNT` averaged about
+  671 us and `ADB_TABLE_RANGE_COUNT_FAST` averaged about 2776 us. Overall
+  throughput did not improve over the previous mixed result, which indicates
+  that range-count payload decoding is not the main mixed-workload bottleneck.
+- The same mixed report shows the first `ADB_ROW_COUNT_CACHE_MISS` /
+  `ADB_ROW_COUNT_BASE_SCAN` at about 70 ms, with the largest total time in
+  `ADB_TABLE_POINT_LOOKUP_FAST`; `ADB_TABLE_PRIMARY_FIND` and
+  `ADB_TABLE_ADD_ROW` remain high-latency entry points. The next higher-value
+  stage should focus on row-count baseline warmup/persistence, point
+  lookup/primary-find object boundaries, and write-entry batching.
+
+Range-count reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-visible-count-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_visible_count_stage.properties"
+```
+
+Mixed 8-thread reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-count-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties"
+```

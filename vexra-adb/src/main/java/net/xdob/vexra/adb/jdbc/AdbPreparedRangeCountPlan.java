@@ -6,7 +6,6 @@ import java.sql.SQLException;
 import java.util.Collections;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
-import net.xdob.vexra.adb.db.TableScanCursor;
 import net.xdob.vexra.adb.db.TxnMap2;
 import net.xdob.vexra.adb.key.RowPrefix;
 import org.h2.engine.Session;
@@ -140,13 +139,13 @@ final class AdbPreparedRangeCountPlan {
       long max) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
     RowPrefix prefix = RowPrefix.of(map.getTabId(table.getId()));
-    long count = 0L;
-    try (TableScanCursor cursor = map.entryIterator(prefix, min, max)) {
-      while (cursor.next()) {
-        count++;
-      }
+    long started = System.nanoTime();
+    try {
+      return map.countVisibleRows(prefix, min, max);
+    } finally {
+      table.recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT",
+          System.nanoTime() - started);
     }
-    return count;
   }
 
   private boolean isPrimaryKeyRange(AdbTable table) {

@@ -694,3 +694,59 @@ JDBC mixed batch 100：
   "-PadbBenchmarkTransactionBatchSize=100" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_batch100.properties"
 ```
+
+## 第五轮：range count 可见行计数优化
+
+本轮把 `SELECT COUNT(*) FROM table WHERE pk BETWEEN ? AND ?` 的 JDBC fast path
+从通用 `TableScanCursor` 迁移到 count-only 扫描：
+
+1. `RowValue.decodeMetadata` 只解码 `txnId`、`commitTs`、`deleted` 和 payload 长度，不再为每个可见版本复制完整 payload。
+2. `TxnManager.countVisibleRows` 复用原有 MVCC 可见性和 range read 路由，扫描 store 中已有逻辑行时优先应用当前事务本地 write-set。
+3. 扫描结束后补计当前事务中尚未落到 store 的本地 row 写入，修正 prepared range count 对同事务新增行的可见性。
+4. 新增 `ADB_RANGE_COUNT_VISIBLE_COUNT` phase，用于把 count-only 内部扫描耗时从 `ADB_TABLE_RANGE_COUNT_FAST` 入口耗时中拆出来。
+
+本轮验证命令 `.\gradlew.bat :vexra-adb:test --rerun-tasks` 已通过；新增覆盖包括 prepared range count 对同事务 insert、delete 和 rollback 的可见性。
+
+可复现结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | 3000 | 1149.87 | 740 | 1788 | 2547 | `vexra-adb/build/adb-benchmark/range_count_visible_count_stage.properties` |
+| `jdbc` | `mixed` | 8 | 3000 | 1148.11 | 2175 | 10406 | 15640 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties` |
+
+诊断结论：
+
+- 纯 range count 中 `ADB_RANGE_COUNT_VISIBLE_COUNT` 平均约 296 us，而 `ADB_TABLE_RANGE_COUNT_FAST`
+  平均约 859 us，说明 count-only 扫描已经把内部 payload 解码成本压低，但 JDBC/table-engine 入口仍有明显固定开销。
+- mixed 8 线程中 `ADB_RANGE_COUNT_VISIBLE_COUNT` 平均约 671 us，`ADB_TABLE_RANGE_COUNT_FAST`
+  平均约 2776 us；整体吞吐没有改善到上一轮 mixed 结果之上，说明当前 mixed 主瓶颈不在 range count 的 payload 解码。
+- 同一 mixed 报告中 `ADB_ROW_COUNT_CACHE_MISS` / `ADB_ROW_COUNT_BASE_SCAN` 首次扫描约 70 ms，
+  `ADB_TABLE_POINT_LOOKUP_FAST` 总耗时最高，`ADB_TABLE_PRIMARY_FIND` 和 `ADB_TABLE_ADD_ROW` 仍是高延迟入口。
+  下一阶段更有价值的优化应转向 row-count 基线预热/持久化、point lookup/primary find 对象边界，以及写入入口的批量化。
+
+range count 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-visible-count-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_visible_count_stage.properties"
+```
+
+mixed 8 线程复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-count-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties"
+```
