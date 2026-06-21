@@ -2,6 +2,8 @@ package net.xdob.vexra.adb.h2plugin;
 
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
@@ -9,6 +11,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
 import java.sql.Statement;
+import net.xdob.vexra.adb.jdbc.AdbDriver;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.AdbTable;
@@ -71,6 +74,43 @@ class AdbTableProviderIntegrationTest {
             Assertions.assertTrue(snapshot.getOperationStats().containsKey(
                     "ADB_TABLE_ADD_ROW TEST"));
             Assertions.assertTrue(metrics.containsKey("adb_sql_total_sql_count"));
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void preparedMultiValuesInsertUsesAdbDriverBulkPath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-prepared-bulk").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), (?, ?)")) {
+                    insert.setLong(1, 1L);
+                    insert.setString(2, "a");
+                    insert.setLong(3, 2L);
+                    insert.setString(4, "b");
+                    insert.setLong(5, 3L);
+                    insert.setString(6, "c");
+                    Assertions.assertEquals(3, insert.executeUpdate());
+                }
+                Assertions.assertEquals("a,b,c", csv(statement,
+                        "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
         } finally {
             DbStoreEngine.close(databasePath);
             AdbSqlDiagnosticsRegistry.clear();

@@ -141,6 +141,61 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Round 7 Ordinary JDBC Insert Auto-Bulk Result
+
+This round adds `net.xdob.vexra.adb.jdbc.AdbDriver` as a lightweight
+compatibility Driver for `jdbc:adb:*`. The real connection, general SQL
+execution, and non-matching statements are still delegated to h2db. When a
+caller uses `DriverManager` with a parameterized multi-values
+`PreparedStatement`:
+
+```sql
+INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), ...
+```
+
+and the target table is an `AdbTable`, the wrapper converts parameters into H2
+`Row` objects and calls `AdbTable.bulkInsertAppendRows`. It also preserves JDBC
+auto-commit behavior by committing after a successful bulk write when
+`autoCommit=true`. Unsupported SQL forms, non-ADB tables, incomplete
+parameters, and single-row inserts continue to use the original h2db path.
+
+Measured results:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p99 us | Result file | Notes |
+| --- | --- | ---: | --- | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 1000 | on | 43478.26 | 23 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_diag_r2.properties` | Diagnostics confirm a single `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` operation |
+| `jdbc` | `insert` | 3000 | off | 76923.08 | 13 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties` | Ordinary JDBC SQL now auto-routes to the bulk path and exceeds both 3000 and 5000 ops/s |
+| `jdbc` | `mixed` | 100 | on | 1779.36 | 2093 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_bulk.properties` | Mixed regression; previous comparable result was about 1697.79 ops/s |
+
+The new integration test `preparedMultiValuesInsertUsesAdbDriverBulkPath`
+covers the ordinary `DriverManager + jdbc:adb:* + PreparedStatement` usage and
+asserts that diagnostics contain `ADB_TABLE_BULK_ADD_ROW TEST` instead of
+falling back to row-by-row `ADB_TABLE_ADD_ROW TEST`.
+
+JDBC insert auto-bulk reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-driver-bulk-no-diag-r2/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=3000" `
+  "-PadbBenchmarkStatementBatchSize=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties" `
+  "-PadbBenchmarkSqlDiagnostics=false"
+```
+
+Remaining limitations: the automatic bulk path currently covers only
+parameterized multi-values `PreparedStatement` SQL. It does not yet cover
+`Statement.executeUpdate("INSERT ... literal values ...")`, `INSERT ... SELECT`,
+`DEFAULT VALUES`, `ON DUPLICATE KEY`, `RETURNING`, or the full trigger and
+delta-table semantics available inside h2db's native `Insert` executor. A
+future h2db table-level bulk callback is still the cleaner path to full
+transparency; ADB's `bulkInsertAppendRows` can remain the implementation target.
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.
@@ -305,7 +360,7 @@ JDBC bulk insert reproduction command:
 
 | Priority | Target | Verification |
 | --- | --- | --- |
-| P0 | Route ordinary SQL INSERT into the bulk entry point | Requires an h2db table-level bulk insert hook; keep the ADB `bulkInsertAppendRows` entry point ready and verify plain `jdbc` insert > 3000 ops/s after the hook is available |
+| P0 | Route ordinary SQL INSERT into the bulk entry point | Parameterized multi-values `PreparedStatement` now routes through the ADB JDBC compatibility Driver to `bulkInsertAppendRows`; a future h2db table-level hook is still needed for literal `Statement` SQL, triggers, and the full `Insert` grammar |
 | P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |

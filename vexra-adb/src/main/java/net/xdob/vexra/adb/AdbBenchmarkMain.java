@@ -10,6 +10,8 @@ import net.xdob.vexra.adb.db.VersionScanSource;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.AdbSqlOperationStats;
+import net.xdob.vexra.adb.h2plugin.AdbJdbcUrlPrefixProvider;
+import net.xdob.vexra.adb.jdbc.AdbDriver;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.ldb.LdbStore;
@@ -159,7 +161,7 @@ public final class AdbBenchmarkMain {
       boolean sqlDiagnostics)
       throws Exception {
     requireSupportedWorkload(workload);
-    Class.forName("org.h2.Driver");
+    loadJdbcDriver(url);
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(transactionBatchSize <= 1);
@@ -284,7 +286,7 @@ public final class AdbBenchmarkMain {
       throw new IllegalArgumentException(
           "jdbc_bulk mode only supports insert workload: " + workload);
     }
-    Class.forName("org.h2.Driver");
+    loadJdbcDriver(url);
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(false);
@@ -373,6 +375,16 @@ public final class AdbBenchmarkMain {
           + session.getClass().getName());
     }
     return (SessionLocal) session;
+  }
+
+  private static void loadJdbcDriver(String url) throws Exception {
+    if (url != null && url.regionMatches(true, 0,
+        AdbJdbcUrlPrefixProvider.URL_PREFIX, 0,
+        AdbJdbcUrlPrefixProvider.URL_PREFIX.length())) {
+      Class.forName(AdbDriver.class.getName());
+      return;
+    }
+    Class.forName("org.h2.Driver");
   }
 
   private static List<Row> rows(long firstId, int batchSize,
@@ -790,6 +802,7 @@ public final class AdbBenchmarkMain {
   }
 
   private static final class BenchmarkStatements implements AutoCloseable {
+    private final Connection connection;
     private final PreparedStatement insert;
     private final PreparedStatement pointLookup;
     private final PreparedStatement rangeScan;
@@ -797,6 +810,7 @@ public final class AdbBenchmarkMain {
         new HashMap<>();
 
     private BenchmarkStatements(Connection connection) throws Exception {
+      this.connection = connection;
       this.insert = connection.prepareStatement("MERGE INTO " + TABLE_NAME
           + "(ID, NAME) VALUES (?, ?)");
       this.pointLookup = connection.prepareStatement("SELECT NAME FROM "
@@ -836,7 +850,7 @@ public final class AdbBenchmarkMain {
         }
         sql.append("(?, ?)");
       }
-      statement = insert.getConnection().prepareStatement(sql.toString());
+      statement = connection.prepareStatement(sql.toString());
       multiInserts.put(batchSize, statement);
       return statement;
     }
