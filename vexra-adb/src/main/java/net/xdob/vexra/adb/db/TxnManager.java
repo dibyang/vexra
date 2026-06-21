@@ -38,6 +38,8 @@ public class TxnManager {
       new ConcurrentHashMap<>();
   private final Map<TabId, AtomicLong> rowCountCache =
       new ConcurrentHashMap<>();
+  private final Map<TabId, Object> rowCountLoadLocks =
+      new ConcurrentHashMap<>();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -354,14 +356,26 @@ public class TxnManager {
             System.nanoTime() - started);
       }
     }
-    try {
+    Object loadLock = rowCountLoadLocks.computeIfAbsent(tId,
+        ignored -> new Object());
+    synchronized (loadLock) {
+      AtomicLong loadedByPeer = rowCountCache.get(tId);
+      if (loadedByPeer != null) {
+        try {
+          return loadedByPeer.get();
+        } finally {
+          recordSqlPhase("ADB_ROW_COUNT_CACHE_WAIT_HIT",
+              System.nanoTime() - started);
+        }
+      }
       long loaded = getBaseRowCount(RowCountKey.of(tId));
-      AtomicLong previous = rowCountCache.putIfAbsent(tId,
-          new AtomicLong(loaded));
-      return previous == null ? loaded : previous.get();
-    } finally {
-      recordSqlPhase("ADB_ROW_COUNT_CACHE_MISS",
-          System.nanoTime() - started);
+      rowCountCache.put(tId, new AtomicLong(loaded));
+      try {
+        return loaded;
+      } finally {
+        recordSqlPhase("ADB_ROW_COUNT_CACHE_MISS",
+            System.nanoTime() - started);
+      }
     }
   }
 

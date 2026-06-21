@@ -122,6 +122,52 @@ table-engine 边界仍是主要瓶颈。
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## row-count 冷启动 single-flight 优化结果
+
+上一轮 mixed 8 线程报告显示 `ADB_ROW_COUNT_CACHE_MISS` / `ADB_ROW_COUNT_BASE_SCAN`
+在并发冷启动时出现 8 次，每次都扫描同一张表的 row-count 基线和 delta meta。
+本轮将 `TxnManager.getCachedBaseRowCount` 改为按表 single-flight 加载：
+
+1. 同一 `TabId` 首次 miss 时只有一个线程执行 `getBaseRowCount`。
+2. 其它并发线程等待同一张表的加载完成后直接读取缓存，并记录
+   `ADB_ROW_COUNT_CACHE_WAIT_HIT`。
+3. 已有的 commit 后 delta 刷新和 truncate/epoch invalidation 仍复用
+   `rowCountCache`，不改变 row-count 可见性语义。
+
+新增集成测试 `concurrentTableCountLoadsBaseRowCountOnce` 使用 8 个并发 JDBC 连接同时执行
+`SELECT COUNT(*) FROM TEST`，验证全部返回正确行数，并且 `ADB_ROW_COUNT_CACHE_MISS`
+只记录 1 次。
+
+验证与结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1343.48 | 2241 | 10603 | 13751 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_singleflight_threads_8.properties` |
+
+对比上一轮 mixed 8 线程 `1148.11 ops/s`、p99 `15640us`，本轮吞吐提升约 17%，
+p99 降低约 12%。phase 明细中 `ADB_ROW_COUNT_CACHE_MISS` 从 8 次降为 1 次，
+`ADB_ROW_COUNT_CACHE_WAIT_HIT` 记录 7 次，说明冷启动重复扫描已被合并。
+
+剩余瓶颈仍主要集中在：
+
+- `ADB_TABLE_POINT_LOOKUP_FAST`：总耗时最高，下一步应继续压缩 JDBC fast path 到行对象边界的开销。
+- `ADB_TABLE_ADD_ROW` / `ADB_TABLE_PRIMARY_FIND`：写入和主键查找入口仍是 mixed 中的高延迟阶段。
+- `ADB_TABLE_RANGE_COUNT_FAST`：内部 count-only 已优化，但外层 table-engine/JDBC 边界仍有固定开销。
+
+复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowcount-singleflight-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_singleflight_threads_8.properties"
+```
+
 ## 第六轮关键路径阶段诊断
 
 本轮在 SQL 诊断 recorder 中新增 `sqlDiagnostics.phaseStats.*`，与既有

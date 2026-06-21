@@ -141,6 +141,60 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Row-Count Cold-Start Single-Flight Result
+
+The previous 8-thread mixed report showed 8 `ADB_ROW_COUNT_CACHE_MISS` /
+`ADB_ROW_COUNT_BASE_SCAN` events during concurrent cold start. Each thread was
+scanning the same table's row-count baseline and delta metadata. This round
+changes `TxnManager.getCachedBaseRowCount` to use per-table single-flight
+loading:
+
+1. For the first miss of the same `TabId`, only one thread runs
+   `getBaseRowCount`.
+2. Other concurrent threads wait for that table load to finish, then read the
+   cached value and record `ADB_ROW_COUNT_CACHE_WAIT_HIT`.
+3. Existing post-commit delta refresh and truncate/epoch invalidation continue
+   to use `rowCountCache`, so row-count visibility semantics are unchanged.
+
+The new integration test `concurrentTableCountLoadsBaseRowCountOnce` starts 8
+concurrent JDBC connections that all execute `SELECT COUNT(*) FROM TEST`. It
+verifies the returned count and checks that `ADB_ROW_COUNT_CACHE_MISS` is
+recorded only once.
+
+Verification and result:
+
+| Mode | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1343.48 | 2241 | 10603 | 13751 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_singleflight_threads_8.properties` |
+
+Compared with the previous 8-thread mixed result, `1148.11 ops/s` and p99
+`15640us`, throughput improved by about 17% and p99 decreased by about 12%.
+The phase detail confirms that `ADB_ROW_COUNT_CACHE_MISS` dropped from 8
+events to 1 event, while `ADB_ROW_COUNT_CACHE_WAIT_HIT` recorded 7 events.
+
+Remaining bottlenecks are still concentrated in:
+
+- `ADB_TABLE_POINT_LOOKUP_FAST`: highest total time; the next step should keep
+  reducing the JDBC fast path to row-object boundary cost.
+- `ADB_TABLE_ADD_ROW` / `ADB_TABLE_PRIMARY_FIND`: write and primary-find entry
+  paths remain high-latency stages in the mixed workload.
+- `ADB_TABLE_RANGE_COUNT_FAST`: the internal count-only path is optimized, but
+  the outer table-engine/JDBC boundary still has fixed overhead.
+
+Reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowcount-singleflight-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_singleflight_threads_8.properties"
+```
+
 ## Round 7 Ordinary JDBC Insert Auto-Bulk Result
 
 This round adds `net.xdob.vexra.adb.jdbc.AdbDriver` as a lightweight

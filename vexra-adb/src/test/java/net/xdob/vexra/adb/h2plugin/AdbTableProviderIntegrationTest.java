@@ -6,11 +6,19 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.sql.Statement;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import net.xdob.vexra.adb.db.AdbSqlPhaseStats;
 import net.xdob.vexra.adb.jdbc.AdbDriver;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
@@ -412,6 +420,58 @@ class AdbTableProviderIntegrationTest {
             Assertions.assertTrue(snapshot.getOperationStats().containsKey(
                     "ADB_TABLE_TABLE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
         } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void concurrentTableCountLoadsBaseRowCountOnce() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-concurrent-table-count").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        ExecutorService executor = Executors.newFixedThreadPool(8);
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES "
+                        + "(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')");
+            }
+
+            AdbSqlDiagnosticsRegistry.resetAll();
+            CountDownLatch start = new CountDownLatch(1);
+            List<Future<Long>> futures = new ArrayList<>();
+            for (int i = 0; i < 8; i++) {
+                futures.add(executor.submit(() -> {
+                    Assertions.assertTrue(start.await(5, TimeUnit.SECONDS));
+                    try (Connection connection = DriverManager.getConnection(url);
+                         PreparedStatement count = connection.prepareStatement(
+                                 "SELECT COUNT(*) FROM TEST")) {
+                        try (ResultSet resultSet = count.executeQuery()) {
+                            Assertions.assertTrue(resultSet.next());
+                            return resultSet.getLong(1);
+                        }
+                    }
+                }));
+            }
+            start.countDown();
+            for (Future<Long> future : futures) {
+                Assertions.assertEquals(4L, future.get(10, TimeUnit.SECONDS));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertEquals(1L, phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_MISS"),
+                    snapshot.getPhaseStats().toString());
+            Assertions.assertTrue(
+                    phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_HIT")
+                            + phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_WAIT_HIT") >= 7L,
+                    snapshot.getPhaseStats().toString());
+        } finally {
+            executor.shutdownNow();
             DbStoreEngine.close(databasePath);
             AdbSqlDiagnosticsRegistry.clear();
         }
@@ -897,6 +957,11 @@ class AdbTableProviderIntegrationTest {
             resultSet.next();
             return resultSet.getLong(1);
         }
+    }
+
+    private static long phaseCount(AdbSqlDiagnosticSnapshot snapshot, String phase) {
+        AdbSqlPhaseStats stats = snapshot.getPhaseStats().get(phase);
+        return stats == null ? 0L : stats.getCount();
     }
 
     private static String singleString(Statement statement, String sql) throws Exception {
