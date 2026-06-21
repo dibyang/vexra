@@ -309,6 +309,7 @@ Available workloads:
 | --- | --- |
 | `insert` | Single-thread sequential write / upsert |
 | `point_lookup` | Primary-key point lookup |
+| `point_lookup_all` | Primary-key `SELECT *` point lookup |
 | `range_scan` | Primary-key range count scan |
 | `mixed` | About 10% writes, 70% point lookups, and 20% range scans |
 

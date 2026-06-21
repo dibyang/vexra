@@ -186,6 +186,25 @@ class AdbBenchmarkMainTest {
     assertEquals(0L, result.getFailedOperations());
   }
 
+  @Test
+  void shouldRunPointLookupAllBenchmarkAgainstLdbUrl() throws Exception {
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("lookup-all").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "point_lookup_all",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "5",
+        "--output", tempDir.resolve("lookup-all.properties").toString()
+    });
+
+    assertEquals("point_lookup_all", result.getWorkload());
+    assertEquals(5L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+  }
+
   /**
    * 验证不支持的 workload 会被拒绝。
    */

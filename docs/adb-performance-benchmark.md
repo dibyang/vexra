@@ -284,6 +284,38 @@ mixed 回归命令：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties"
 ```
 
+## 第十轮 JDBC `SELECT *` 点查快路径结果
+
+本轮把主键点查快路径扩展到常见的 `SELECT * FROM table WHERE pk = ?`
+SQL 形态。上一轮点查快路径只接受 `SELECT NAME FROM ...` 这类显式列清单，
+因此 ORM 或手写 SQL 中常见的 `SELECT *` 点查仍会回退到 h2db 通用查询执行器。
+新实现会在解析到目标 `AdbTable` 后展开 `*` 为表的全部列，继续保留主键条件校验，
+并直接把当前事务可见的 `RowValue` 解码成全部表列。
+
+验证结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup_all` | 1 | on | 1767.83 | 418 | 1160 | 1554 | 3146 | `vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties` |
+
+正式统计窗口中 diagnostics 只记录 `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH`，
+确认该 `SELECT *` 主键点查形态不再进入 `ADB_TABLE_PRIMARY_FIND`。该结果低于只读取
+单列的 `point_lookup` 是预期现象，因为它会返回并读取全部列；本轮价值在于覆盖更常见的
+应用 SQL 形态，并移除 h2db 通用查询执行边界。
+
+`SELECT *` 点查复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-all-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup_all" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB

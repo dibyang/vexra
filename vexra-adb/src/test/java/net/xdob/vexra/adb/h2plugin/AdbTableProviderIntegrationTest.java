@@ -208,6 +208,16 @@ class AdbTableProviderIntegrationTest {
                         Assertions.assertFalse(resultSet.next());
                     }
                 }
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT * FROM TEST WHERE ID = ?")) {
+                    select.setLong(1, 3L);
+                    try (ResultSet resultSet = select.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(3L, resultSet.getLong("ID"));
+                        Assertions.assertEquals("c", resultSet.getString("NAME"));
+                        Assertions.assertFalse(resultSet.next());
+                    }
+                }
             }
 
             AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry

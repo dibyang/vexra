@@ -145,7 +145,7 @@ public final class AdbBenchmarkMain {
    * 执行一次 JDBC benchmark。
    *
    * @param url JDBC URL，默认和推荐为 `jdbc:adb:ldb:*`
-   * @param workload workload 名称：`insert`、`point_lookup`、`range_scan` 或 `mixed`
+   * @param workload workload 名称：`insert`、`point_lookup`、`point_lookup_all`、`range_scan` 或 `mixed`
    * @param rows 读类 workload 的预置行数
    * @param warmupOperations 预热操作数
    * @param operations 正式统计操作数
@@ -521,6 +521,8 @@ public final class AdbBenchmarkMain {
       statements.insert(id, "insert-" + id);
     } else if ("point_lookup".equals(workload)) {
       statements.pointLookup((index % rows) + 1L);
+    } else if ("point_lookup_all".equals(workload)) {
+      statements.pointLookupAll((index % rows) + 1L);
     } else if ("range_scan".equals(workload)) {
       long start = (index % rows) + 1L;
       statements.rangeScan(start, Math.min(rows, start + rangeSize - 1L));
@@ -612,6 +614,8 @@ public final class AdbBenchmarkMain {
       int id = rows + (countedRun ? 1_000_000 : 100_000) + index;
       store.put(storeKey(id), storeValue(id));
     } else if ("point_lookup".equals(workload)) {
+      store.get(storeKey((index % rows) + 1));
+    } else if ("point_lookup_all".equals(workload)) {
       store.get(storeKey((index % rows) + 1));
     } else if ("range_scan".equals(workload)) {
       scanStoreRange(store, (index % rows) + 1,
@@ -736,6 +740,7 @@ public final class AdbBenchmarkMain {
 
   private static void requireSupportedWorkload(String workload) {
     if (!"insert".equals(workload) && !"point_lookup".equals(workload)
+        && !"point_lookup_all".equals(workload)
         && !"range_scan".equals(workload) && !"mixed".equals(workload)) {
       throw new IllegalArgumentException("Unsupported workload: " + workload);
     }
@@ -805,6 +810,7 @@ public final class AdbBenchmarkMain {
     private final Connection connection;
     private final PreparedStatement insert;
     private final PreparedStatement pointLookup;
+    private final PreparedStatement pointLookupAll;
     private final PreparedStatement rangeScan;
     private final Map<Integer, PreparedStatement> multiInserts =
         new HashMap<>();
@@ -814,6 +820,8 @@ public final class AdbBenchmarkMain {
       this.insert = connection.prepareStatement("MERGE INTO " + TABLE_NAME
           + "(ID, NAME) VALUES (?, ?)");
       this.pointLookup = connection.prepareStatement("SELECT NAME FROM "
+          + TABLE_NAME + " WHERE ID = ?");
+      this.pointLookupAll = connection.prepareStatement("SELECT * FROM "
           + TABLE_NAME + " WHERE ID = ?");
       this.rangeScan = connection.prepareStatement("SELECT COUNT(*) FROM "
           + TABLE_NAME + " WHERE ID BETWEEN ? AND ?");
@@ -864,6 +872,16 @@ public final class AdbBenchmarkMain {
       }
     }
 
+    private void pointLookupAll(long id) throws Exception {
+      pointLookupAll.setLong(1, id);
+      try (ResultSet ignored = pointLookupAll.executeQuery()) {
+        while (ignored.next()) {
+          ignored.getLong(1);
+          ignored.getString(2);
+        }
+      }
+    }
+
     private void rangeScan(long start, long end) throws Exception {
       rangeScan.setLong(1, start);
       rangeScan.setLong(2, end);
@@ -880,6 +898,7 @@ public final class AdbBenchmarkMain {
         statement.close();
       }
       rangeScan.close();
+      pointLookupAll.close();
       pointLookup.close();
       insert.close();
     }

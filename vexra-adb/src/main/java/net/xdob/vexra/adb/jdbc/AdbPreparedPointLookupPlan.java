@@ -35,14 +35,17 @@ final class AdbPreparedPointLookupPlan {
   private final List<String> selectColumns;
   private final String tableName;
   private final String whereColumn;
+  private final boolean selectAllColumns;
   private AdbTable resolvedTable;
+  private List<String> resolvedSelectColumns;
   private int[] resolvedColumnIds;
 
   private AdbPreparedPointLookupPlan(List<String> selectColumns,
-      String tableName, String whereColumn) {
+      String tableName, String whereColumn, boolean selectAllColumns) {
     this.selectColumns = selectColumns;
     this.tableName = tableName;
     this.whereColumn = whereColumn;
+    this.selectAllColumns = selectAllColumns;
   }
 
   /**
@@ -86,12 +89,14 @@ final class AdbPreparedPointLookupPlan {
     if (tablePart.indexOf(' ') >= 0 || left.indexOf(' ') >= 0) {
       return null;
     }
-    List<String> columns = splitColumns(selectPart);
-    if (columns.isEmpty()) {
+    boolean selectAll = "*".equals(selectPart.trim());
+    List<String> columns = selectAll ? java.util.Collections.<String>emptyList()
+        : splitColumns(selectPart);
+    if (!selectAll && columns.isEmpty()) {
       return null;
     }
     return new AdbPreparedPointLookupPlan(columns,
-        normalizeIdentifier(tablePart), normalizeIdentifier(left));
+        normalizeIdentifier(tablePart), normalizeIdentifier(left), selectAll);
   }
 
   /**
@@ -130,7 +135,7 @@ final class AdbPreparedPointLookupPlan {
       RowValue rowValue = visibleRowValue(session, table, rowId);
       Value[] values = rowValue == null ? null
           : RowCodec.decodeColumns(rowValue.payload, resolvedColumnIds);
-      return AdbSimpleResultSet.singleRow(selectColumns, values);
+      return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
     } catch (SQLException e) {
       failure = e;
       throw e;
@@ -151,12 +156,24 @@ final class AdbPreparedPointLookupPlan {
   }
 
   private int[] selectedColumnIds(AdbTable table) {
-    int[] columnIds = new int[selectColumns.size()];
-    for (int i = 0; i < selectColumns.size(); i++) {
-      Column column = table.getColumn(selectColumns.get(i));
+    List<String> columns = selectAllColumns ? allColumnNames(table)
+        : selectColumns;
+    int[] columnIds = new int[columns.size()];
+    for (int i = 0; i < columns.size(); i++) {
+      Column column = table.getColumn(columns.get(i));
       columnIds[i] = column.getColumnId();
     }
+    resolvedSelectColumns = columns;
     return columnIds;
+  }
+
+  private static List<String> allColumnNames(AdbTable table) {
+    Column[] tableColumns = table.getColumns();
+    ArrayList<String> names = new ArrayList<>(tableColumns.length);
+    for (Column column : tableColumns) {
+      names.add(column.getName());
+    }
+    return names;
   }
 
   private AdbTable resolveAdbTable(SessionLocal session) {

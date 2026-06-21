@@ -348,6 +348,42 @@ Mixed regression command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties"
 ```
 
+## Round 10 JDBC `SELECT *` Point-Lookup Fast Path
+
+This round extends the primary-key point-lookup fast path to the common
+`SELECT * FROM table WHERE pk = ?` SQL shape. The previous fast path only
+accepted explicit column lists such as `SELECT NAME FROM ...`, so ORM-style or
+hand-written `SELECT *` point reads still fell back to h2db's generic query
+executor. The wrapper now expands `*` from the resolved `AdbTable` column list,
+keeps the same primary-key safety checks, and decodes the visible `RowValue`
+directly into all table columns.
+
+Measured result:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup_all` | 1 | on | 1767.83 | 418 | 1160 | 1554 | 3146 | `vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties` |
+
+Diagnostics record only `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` for the measured
+window, confirming that `SELECT *` no longer uses `ADB_TABLE_PRIMARY_FIND` for
+this narrow primary-key lookup form. The throughput is lower than the
+single-column `point_lookup` result because the fast path returns and reads all
+columns, but it removes the larger generic h2db executor boundary for a common
+application SQL shape.
+
+`SELECT *` point-lookup reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-all-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup_all" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.
