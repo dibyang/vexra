@@ -113,6 +113,8 @@ class AdbBenchmarkMainTest {
     assertEquals("2", properties.getProperty("concurrency.threads"));
     assertEquals("8", properties.getProperty(
         "concurrency.completedOperations"));
+    assertTrue(Integer.parseInt(properties.getProperty(
+        "sqlDiagnostics.phaseStats.count")) > 0);
   }
 
   /**

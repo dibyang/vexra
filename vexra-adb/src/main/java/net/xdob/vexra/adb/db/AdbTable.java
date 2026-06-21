@@ -227,6 +227,7 @@ public class AdbTable extends TableBase {
         : AdbSqlDiagnosticEvent.failure(now, sqlType, getName(), summary,
             latencyMillis, failure);
     txnManager.recordSqlDiagnostic(event);
+    txnManager.recordSqlPhase(summary, latencyMillis * 1_000_000L);
   }
 
   @Override

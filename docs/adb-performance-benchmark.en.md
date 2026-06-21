@@ -629,6 +629,43 @@ Reproduction example:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## Sixth Round: Key-Path Phase Diagnostics
+
+This round adds `sqlDiagnostics.phaseStats.*` to the SQL diagnostic recorder,
+alongside the existing `operationStats`. Phase statistics store only phase
+name, count, total latency, average latency, and max latency. They do not store
+SQL parameters or row contents. The current coverage includes:
+
+- `ADB_COMMIT_PREPARE`, `ADB_COMMIT_ROW_COUNT_META`, `ADB_COMMIT_WRITE`, and `ADB_COMMIT_POST_REFRESH`
+- `ADB_ROW_COUNT_CACHE_HIT`, `ADB_ROW_COUNT_CACHE_MISS`, and `ADB_ROW_COUNT_BASE_SCAN`
+- `ADB_TABLE_*` table-engine entry phases such as `PRIMARY_FIND`, `ADD_ROW`, `POINT_LOOKUP_FAST`, and `RANGE_COUNT_FAST`
+
+8-thread `mixed` rerun:
+
+| threads | throughput ops/s | p99 us | max us | Result file |
+| ---: | ---: | ---: | ---: | --- |
+| 8 | 1383.76 | 9399 | 15994 | `vexra-adb/build/adb-benchmark/jdbc_mixed_phase_threads_8.properties` |
+
+Key phase summary:
+
+| phase | count | avg us | max us | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2320 | 2581 | 18000 | Highest-frequency read path in the mixed workload |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 648 | 2969 | 12000 | Range count remains a high-latency read path |
+| `ADB_TABLE_PRIMARY_FIND ADB_BENCH` | 332 | 3192 | 45000 | Primary-index path used by lookup/write boundaries, with the highest max latency |
+| `ADB_TABLE_ADD_ROW ADB_BENCH` | 332 | 2768 | 30000 | The table-engine write entry still amplifies under concurrency |
+| `ADB_COMMIT_WRITE` | 40 | 302 | 1422 | Lower-store commit write is not the main cost in this sample |
+| `ADB_COMMIT_PREPARE` | 40 | 844 | 10841 | Prepare has occasional tail latency, but less total cost than table/index paths |
+| `ADB_ROW_COUNT_CACHE_HIT` | 93 | 3 | 233 | Row-count cache hits are negligible |
+| `ADB_ROW_COUNT_CACHE_MISS` | 7 | 1248 | 2111 | Misses appear only in a small initialization/contention window |
+
+Conclusion: the main reason multi-thread throughput does not scale linearly is
+not `ADB_COMMIT_WRITE`; it is the table/index entry path represented by
+`PRIMARY_FIND`, `POINT_LOOKUP_FAST`, `RANGE_COUNT_FAST`, and `ADD_ROW`. The next
+stage should reduce repeated decode/object-boundary work in primary find and
+point lookup, and reduce range-count dependence on cursor scanning and the H2
+`COUNT` path. Commit write is not the top optimization target for now.
+
 ## Next Optimization Targets
 
 | Priority | Target | Verification |
@@ -638,7 +675,7 @@ Reproduction example:
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |
 | P1 | Avoid extra materialization in SQL COUNT range scans | Compare `LdbStore` scan row iteration and object counts with SQL scan |
-| P1 | Split multi-thread key-path timing | Use the `threads` benchmark to separate commit, row-count, primary-key lookup, range count, store write, and lock-wait time |
+| P1 | Optimize primary find and point-lookup object boundaries | Use `phaseStats` to compare avg/max latency and allocation behavior for `PRIMARY_FIND` and `POINT_LOOKUP_FAST` |
 
 ## Reproduction Commands
 

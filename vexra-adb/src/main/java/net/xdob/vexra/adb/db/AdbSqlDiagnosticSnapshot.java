@@ -22,6 +22,7 @@ public final class AdbSqlDiagnosticSnapshot {
   private final List<AdbSqlDiagnosticEvent> recentSlowSql;
   private final List<AdbSqlDiagnosticEvent> recentFailedSql;
   private final Map<String, AdbSqlOperationStats> operationStats;
+  private final Map<String, AdbSqlPhaseStats> phaseStats;
 
   /**
    * 创建 SQL 诊断快照。
@@ -30,7 +31,8 @@ public final class AdbSqlDiagnosticSnapshot {
       long failedSqlCount, long maxLatencyMillis,
       List<AdbSqlDiagnosticEvent> recentSlowSql,
       List<AdbSqlDiagnosticEvent> recentFailedSql,
-      Map<String, AdbSqlOperationStats> operationStats) {
+      Map<String, AdbSqlOperationStats> operationStats,
+      Map<String, AdbSqlPhaseStats> phaseStats) {
     this.totalSqlCount = nonNegative(totalSqlCount, "totalSqlCount");
     this.slowSqlCount = nonNegative(slowSqlCount, "slowSqlCount");
     this.failedSqlCount = nonNegative(failedSqlCount, "failedSqlCount");
@@ -39,6 +41,7 @@ public final class AdbSqlDiagnosticSnapshot {
     this.recentFailedSql = immutableEvents(recentFailedSql,
         "recentFailedSql");
     this.operationStats = immutableOperationStats(operationStats);
+    this.phaseStats = immutablePhaseStats(phaseStats);
   }
 
   public long getTotalSqlCount() {
@@ -69,6 +72,10 @@ public final class AdbSqlDiagnosticSnapshot {
     return operationStats;
   }
 
+  public Map<String, AdbSqlPhaseStats> getPhaseStats() {
+    return phaseStats;
+  }
+
   /**
    * 转换为 diagnostic bundle operations 字段。
    */
@@ -84,6 +91,7 @@ public final class AdbSqlDiagnosticSnapshot {
     putEvents(values, normalized + ".recentFailedSql", recentFailedSql);
     putOperationStats(values, normalized + ".operationStats",
         operationStats);
+    putPhaseStats(values, normalized + ".phaseStats", phaseStats);
     return values;
   }
 
@@ -105,6 +113,15 @@ public final class AdbSqlDiagnosticSnapshot {
           + "_avg_latency_micros", stats.getAverageLatencyMicros());
       values.put(normalized + "_operation_" + operation
           + "_max_latency_millis", stats.getMaxLatencyMillis());
+    }
+    for (AdbSqlPhaseStats stats : phaseStats.values()) {
+      String phase = sanitizeMetricName(stats.getPhase());
+      values.put(normalized + "_phase_" + phase + "_count",
+          stats.getCount());
+      values.put(normalized + "_phase_" + phase
+          + "_avg_latency_micros", stats.getAverageLatencyMicros());
+      values.put(normalized + "_phase_" + phase
+          + "_max_latency_micros", stats.getMaxLatencyMicros());
     }
     return values;
   }
@@ -137,6 +154,24 @@ public final class AdbSqlDiagnosticSnapshot {
     }
   }
 
+  private static void putPhaseStats(Map<String, String> target,
+      String prefix, Map<String, AdbSqlPhaseStats> stats) {
+    target.put(prefix + ".count", String.valueOf(stats.size()));
+    int index = 0;
+    for (AdbSqlPhaseStats item : stats.values()) {
+      String itemPrefix = prefix + "." + index;
+      target.put(itemPrefix + ".phase", item.getPhase());
+      target.put(itemPrefix + ".count", String.valueOf(item.getCount()));
+      target.put(itemPrefix + ".totalLatencyMicros",
+          String.valueOf(item.getTotalLatencyMicros()));
+      target.put(itemPrefix + ".avgLatencyMicros",
+          String.valueOf(item.getAverageLatencyMicros()));
+      target.put(itemPrefix + ".maxLatencyMicros",
+          String.valueOf(item.getMaxLatencyMicros()));
+      index++;
+    }
+  }
+
   private static List<AdbSqlDiagnosticEvent> immutableEvents(
       List<AdbSqlDiagnosticEvent> source, String fieldName) {
     Objects.requireNonNull(source, fieldName + " == null");
@@ -146,6 +181,12 @@ public final class AdbSqlDiagnosticSnapshot {
   private static Map<String, AdbSqlOperationStats> immutableOperationStats(
       Map<String, AdbSqlOperationStats> source) {
     Objects.requireNonNull(source, "operationStats == null");
+    return Collections.unmodifiableMap(new LinkedHashMap<>(source));
+  }
+
+  private static Map<String, AdbSqlPhaseStats> immutablePhaseStats(
+      Map<String, AdbSqlPhaseStats> source) {
+    Objects.requireNonNull(source, "phaseStats == null");
     return Collections.unmodifiableMap(new LinkedHashMap<>(source));
   }
 

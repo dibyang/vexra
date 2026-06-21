@@ -10,6 +10,7 @@ import net.xdob.vexra.adb.db.VersionScanSource;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.AdbSqlOperationStats;
+import net.xdob.vexra.adb.db.AdbSqlPhaseStats;
 import net.xdob.vexra.adb.h2plugin.AdbJdbcUrlPrefixProvider;
 import net.xdob.vexra.adb.jdbc.AdbDriver;
 import net.xdob.vexra.adb.key.RowKey;
@@ -819,6 +820,8 @@ public final class AdbBenchmarkMain {
     long maxLatencyMillis = 0L;
     LinkedHashMap<String, AdbSqlOperationStats> merged =
         new LinkedHashMap<>();
+    LinkedHashMap<String, AdbSqlPhaseStats> mergedPhases =
+        new LinkedHashMap<>();
     for (AdbSqlDiagnosticSnapshot snapshot : snapshots.values()) {
       totalSqlCount += snapshot.getTotalSqlCount();
       failedSqlCount += snapshot.getFailedSqlCount();
@@ -838,6 +841,20 @@ public final class AdbBenchmarkMain {
                   + stats.getTotalLatencyMillis(),
               Math.max(previous.getMaxLatencyMillis(),
                   stats.getMaxLatencyMillis())));
+        }
+      }
+      for (AdbSqlPhaseStats stats : snapshot.getPhaseStats().values()) {
+        AdbSqlPhaseStats previous = mergedPhases.get(stats.getPhase());
+        if (previous == null) {
+          mergedPhases.put(stats.getPhase(), stats);
+        } else {
+          mergedPhases.put(stats.getPhase(), new AdbSqlPhaseStats(
+              stats.getPhase(),
+              previous.getCount() + stats.getCount(),
+              previous.getTotalLatencyMicros()
+                  + stats.getTotalLatencyMicros(),
+              Math.max(previous.getMaxLatencyMicros(),
+                  stats.getMaxLatencyMicros())));
         }
       }
     }
@@ -862,6 +879,21 @@ public final class AdbBenchmarkMain {
           String.valueOf(stats.getAverageLatencyMicros()));
       details.put(prefix + ".maxLatencyMillis",
           String.valueOf(stats.getMaxLatencyMillis()));
+      index++;
+    }
+    details.put("sqlDiagnostics.phaseStats.count",
+        String.valueOf(mergedPhases.size()));
+    index = 0;
+    for (AdbSqlPhaseStats stats : mergedPhases.values()) {
+      String prefix = "sqlDiagnostics.phaseStats." + index;
+      details.put(prefix + ".phase", stats.getPhase());
+      details.put(prefix + ".count", String.valueOf(stats.getCount()));
+      details.put(prefix + ".totalLatencyMicros",
+          String.valueOf(stats.getTotalLatencyMicros()));
+      details.put(prefix + ".avgLatencyMicros",
+          String.valueOf(stats.getAverageLatencyMicros()));
+      details.put(prefix + ".maxLatencyMicros",
+          String.valueOf(stats.getMaxLatencyMicros()));
       index++;
     }
     return details;

@@ -122,12 +122,46 @@ table-engine 边界仍是主要瓶颈。
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## 第六轮关键路径阶段诊断
+
+本轮在 SQL 诊断 recorder 中新增 `sqlDiagnostics.phaseStats.*`，与既有
+`operationStats` 并列输出。阶段统计只保存阶段名、次数、总耗时、平均耗时和最大耗时，
+不保存 SQL 参数或行内容。当前已覆盖：
+
+- `ADB_COMMIT_PREPARE`、`ADB_COMMIT_ROW_COUNT_META`、`ADB_COMMIT_WRITE`、`ADB_COMMIT_POST_REFRESH`
+- `ADB_ROW_COUNT_CACHE_HIT`、`ADB_ROW_COUNT_CACHE_MISS`、`ADB_ROW_COUNT_BASE_SCAN`
+- `ADB_TABLE_*` 表层入口阶段，例如 `PRIMARY_FIND`、`ADD_ROW`、`POINT_LOOKUP_FAST`、`RANGE_COUNT_FAST`
+
+8 线程 `mixed` 复测结果：
+
+| threads | throughput ops/s | p99 us | max us | 结果文件 |
+| ---: | ---: | ---: | ---: | --- |
+| 8 | 1383.76 | 9399 | 15994 | `vexra-adb/build/adb-benchmark/jdbc_mixed_phase_threads_8.properties` |
+
+关键阶段摘要：
+
+| phase | count | avg us | max us | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2320 | 2581 | 18000 | mixed 中最高频读路径 |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 648 | 2969 | 12000 | range count 仍是高延迟读路径 |
+| `ADB_TABLE_PRIMARY_FIND ADB_BENCH` | 332 | 3192 | 45000 | 写入/查找会经过的主键索引路径，最大延迟最高 |
+| `ADB_TABLE_ADD_ROW ADB_BENCH` | 332 | 2768 | 30000 | table-engine 写入入口仍有明显并发放大 |
+| `ADB_COMMIT_WRITE` | 40 | 302 | 1422 | 本轮样本中底层 commit 写入不是主要耗时 |
+| `ADB_COMMIT_PREPARE` | 40 | 844 | 10841 | prepare 阶段偶发长尾，但总量低于表/索引路径 |
+| `ADB_ROW_COUNT_CACHE_HIT` | 93 | 3 | 233 | row-count cache 命中成本可以忽略 |
+| `ADB_ROW_COUNT_CACHE_MISS` | 7 | 1248 | 2111 | miss 只出现在少量初始化/竞争窗口 |
+
+结论：上一轮“多线程不线性扩展”的主要矛盾不在 `ADB_COMMIT_WRITE`，而在
+`PRIMARY_FIND`、`POINT_LOOKUP_FAST`、`RANGE_COUNT_FAST` 和 `ADD_ROW` 这些表/索引入口。
+下一阶段最值得做的是减少 primary find 与 point lookup 的重复解码/对象边界，以及降低 range
+count 对 cursor 扫描和 H2 `COUNT` 路径的依赖；commit 写入暂时不应作为首要优化点。
+
 ## 后续优化靶点
 
 | 优先级 | 靶点 | 验证方式 |
 | --- | --- | --- |
 | P0 | 普通 SQL INSERT 自动命中 bulk 入口 | 已通过 ADB JDBC 兼容 Driver 包装参数化多值 `PreparedStatement` 和简单 literal 多值 `Statement`，将 `INSERT INTO ... VALUES ...` 路由到 `bulkInsertAppendRows`；后续仍需 h2db 原生表级 bulk hook 覆盖表达式、触发器和更完整语法 |
-| P0 | 细化 commit 阶段耗时统计 | 区分 txn ref 扫描、intent 读取、committed version 写入、meta 写入和底层 write batch |
+| P0 | 优化主键查找和点查对象边界 | 基于 `phaseStats` 对比 `PRIMARY_FIND`、`POINT_LOOKUP_FAST` 的 avg/max 耗时和对象分配 |
 | P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
 | P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
 | P1 | range scan 避免 SQL COUNT 路径上的额外 materialization | 对比 `LdbStore` scan 与 SQL scan 的行迭代次数、对象创建数 |

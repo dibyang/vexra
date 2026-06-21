@@ -78,6 +78,8 @@ class AdbSqlDiagnosticRecorderTest {
     AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(50, 3);
     recorder.record(AdbSqlDiagnosticEvent.failure(1, "DELETE", "T",
         "delete from T", 60, new SQLException("write conflict", "40001")));
+    recorder.recordPhase("ADB_COMMIT_WRITE", 12_345L);
+    recorder.recordPhase("ADB_COMMIT_WRITE", 2_000L);
 
     AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
     Map<String, String> operations = snapshot.toOperations("sql");
@@ -94,5 +96,11 @@ class AdbSqlDiagnosticRecorderTest {
         operations.get("sql.operationStats.0.operation"));
     assertEquals(1L,
         metrics.get("adb_sql_operation_delete_from_t_count"));
+    assertEquals("1", operations.get("sql.phaseStats.count"));
+    assertEquals("ADB_COMMIT_WRITE",
+        operations.get("sql.phaseStats.0.phase"));
+    assertEquals("7", operations.get("sql.phaseStats.0.avgLatencyMicros"));
+    assertEquals(2L,
+        metrics.get("adb_sql_phase_adb_commit_write_count"));
   }
 }

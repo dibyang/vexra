@@ -210,6 +210,26 @@ public class TxnManager {
     }
   }
 
+  /**
+   * 记录 SQL/table-engine 内部关键阶段耗时。
+   *
+   * <p>该方法与 SQL 事件诊断一样是 best-effort，任何 recorder 异常都不会反向影响事务、
+   * 锁或底层存储结果。</p>
+   *
+   * @param phase 阶段名
+   * @param latencyNanos 阶段耗时，纳秒
+   */
+  public void recordSqlPhase(String phase, long latencyNanos) {
+    AdbSqlDiagnosticRecorder recorder = sqlDiagnosticRecorder;
+    if (recorder != null && phase != null) {
+      try {
+        recorder.recordPhase(phase, latencyNanos);
+      } catch (RuntimeException ignored) {
+        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果。
+      }
+    }
+  }
+
   public AdbTimestampProvider getTimestampProvider() {
     return timestampProvider;
   }
@@ -324,14 +344,25 @@ public class TxnManager {
   }
 
   private long getCachedBaseRowCount(TabId tId) throws SQLException {
+    long started = System.nanoTime();
     AtomicLong cached = rowCountCache.get(tId);
     if (cached != null) {
-      return cached.get();
+      try {
+        return cached.get();
+      } finally {
+        recordSqlPhase("ADB_ROW_COUNT_CACHE_HIT",
+            System.nanoTime() - started);
+      }
     }
-    long loaded = getBaseRowCount(RowCountKey.of(tId));
-    AtomicLong previous = rowCountCache.putIfAbsent(tId,
-        new AtomicLong(loaded));
-    return previous == null ? loaded : previous.get();
+    try {
+      long loaded = getBaseRowCount(RowCountKey.of(tId));
+      AtomicLong previous = rowCountCache.putIfAbsent(tId,
+          new AtomicLong(loaded));
+      return previous == null ? loaded : previous.get();
+    } finally {
+      recordSqlPhase("ADB_ROW_COUNT_CACHE_MISS",
+          System.nanoTime() - started);
+    }
   }
 
   public RowValue getVisibleBaseRowCount(RowCountKey key) throws SQLException {
@@ -366,40 +397,51 @@ public class TxnManager {
   }
 
   public long getBaseRowCount(RowCountKey key) throws SQLException {
-    long rowCount = 0;
-    RowValue visible = getVisibleBaseRowCount(key);
-    long baseCommitTs = 0;
+    long started = System.nanoTime();
+    try {
+      long rowCount = 0;
+      RowValue visible = getVisibleBaseRowCount(key);
+      long baseCommitTs = 0;
 
-    if (visible != null && !visible.deleted && visible.payload != null) {
-      rowCount = RowCodec.decode(visible.payload).getLong();
-      baseCommitTs = visible.commitTs;
-    }
-
-    RowCountDeltaKey rowCountDeltaKey = RowCountDeltaKey.of(key.getTabKey());
-    VersionRowCountDeltaKey startDeltaKey =
-        VersionRowCountDeltaKey.of(key.getTabKey(), baseCommitTs);
-
-    byte[] prefix = rowCountDeltaKey.toBytes();
-    byte[] start = startDeltaKey.toBytes();
-    byte[] end = KeyCodec.prefixEnd(prefix);
-
-    try (VersionScanSource scan = store.openVersionScanSource(CF.META.getCfId(), ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(start, end);
-
-      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
-        VersionRowCountDeltaKey deltaKey = VersionRowCountDeltaKey.fromBytes(scan.key());
-        if (deltaKey.getCommitTs() > baseCommitTs) {
-          RowValue val = RowValue.decodeValue(scan.value());
-          if (!val.deleted && val.payload != null) {
-            rowCount += RowCodec.decode(val.payload).getLong();
-          }
-        }
-        scan.advance();
+      if (visible != null && !visible.deleted && visible.payload != null) {
+        rowCount = RowCodec.decode(visible.payload).getLong();
+        baseCommitTs = visible.commitTs;
       }
-      return rowCount;
+
+      RowCountDeltaKey rowCountDeltaKey = RowCountDeltaKey.of(
+          key.getTabKey());
+      VersionRowCountDeltaKey startDeltaKey =
+          VersionRowCountDeltaKey.of(key.getTabKey(), baseCommitTs);
+
+      byte[] prefix = rowCountDeltaKey.toBytes();
+      byte[] start = startDeltaKey.toBytes();
+      byte[] end = KeyCodec.prefixEnd(prefix);
+
+      try (VersionScanSource scan = store.openVersionScanSource(
+          CF.META.getCfId(), ScanDirection.FORWARD)) {
+        scan.seekToRangeStart(start, end);
+
+        while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+          VersionRowCountDeltaKey deltaKey =
+              VersionRowCountDeltaKey.fromBytes(scan.key());
+          if (deltaKey.getCommitTs() > baseCommitTs) {
+            RowValue val = RowValue.decodeValue(scan.value());
+            if (!val.deleted && val.payload != null) {
+              rowCount += RowCodec.decode(val.payload).getLong();
+            }
+          }
+          scan.advance();
+        }
+        return rowCount;
+      }
     } catch (Exception e) {
-      if (e instanceof SQLException) throw (SQLException) e;
+      if (e instanceof SQLException) {
+        throw (SQLException) e;
+      }
       throw new SQLException("Failed to resolve base row count", e);
+    } finally {
+      recordSqlPhase("ADB_ROW_COUNT_BASE_SCAN",
+          System.nanoTime() - started);
     }
   }
 
@@ -671,12 +713,18 @@ public class TxnManager {
         throw new SQLException("Transaction has been aborted: " + txn.getTxnId());
       }
 
-      validate(txn);
-      writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
-      validateLocalProductionCommit(writeKeys);
-      regionWriteGate.beforeCommit(txn, writeKeys);
-      commitTs = nextCommitTs();
-      txn.setState(TxnState.COMMITTING);
+      long prepareStarted = System.nanoTime();
+      try {
+        validate(txn);
+        writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
+        validateLocalProductionCommit(writeKeys);
+        regionWriteGate.beforeCommit(txn, writeKeys);
+        commitTs = nextCommitTs();
+        txn.setState(TxnState.COMMITTING);
+      } finally {
+        recordSqlPhase("ADB_COMMIT_PREPARE",
+            System.nanoTime() - prepareStarted);
+      }
 
       rowCountDeltas = new LinkedHashMap<>();
       for (RowCountDeltaKey key : txn.getRowCountDeltaKeySet()) {
@@ -694,6 +742,7 @@ public class TxnManager {
 
     try {
       List<Meta> metas = new ArrayList<>();
+      long rowCountMetaStarted = System.nanoTime();
       for (Map.Entry<RowCountDeltaKey, Long> entry : rowCountDeltas.entrySet()) {
         RowCountDeltaKey key = entry.getKey();
         long rowCountDelta = entry.getValue();
@@ -714,13 +763,25 @@ public class TxnManager {
         TableEpochKey tableEpochKey = TableEpochKey.of(entry.getKey());
         metas.add(Meta.of(tableEpochKey.toBytes(), Utils.encodeLong(entry.getValue())));
       }
-      commitLocalOrRemote(txn, commitTs, writeKeys, metas);
+      recordSqlPhase("ADB_COMMIT_ROW_COUNT_META",
+          System.nanoTime() - rowCountMetaStarted);
 
+      long writeStarted = System.nanoTime();
+      try {
+        commitLocalOrRemote(txn, commitTs, writeKeys, metas);
+      } finally {
+        recordSqlPhase("ADB_COMMIT_WRITE",
+            System.nanoTime() - writeStarted);
+      }
+
+      long postCommitStarted = System.nanoTime();
       refreshCommittedRowCache(txn, commitTs, writeKeys);
       refreshRowCountCache(rowCountDeltas, tableEpochUpdates.keySet());
       txn.afterCommitSuccess(commitTs);
       recordRowIdHints(writeKeys);
       activeTransactions.remove(txn.getTxnId());
+      recordSqlPhase("ADB_COMMIT_POST_REFRESH",
+          System.nanoTime() - postCommitStarted);
     } catch (CompletionException e) {
       Throwable cause = unwrapCompletionException(e);
 

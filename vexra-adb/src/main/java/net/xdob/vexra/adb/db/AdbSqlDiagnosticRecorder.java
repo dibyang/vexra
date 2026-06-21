@@ -27,6 +27,8 @@ public final class AdbSqlDiagnosticRecorder {
   private long maxLatencyMillis;
   private final LinkedHashMap<String, MutableOperationStats> operationStats =
       new LinkedHashMap<>();
+  private final LinkedHashMap<String, MutablePhaseStats> phaseStats =
+      new LinkedHashMap<>();
 
   /**
    * 创建 SQL 诊断记录器。
@@ -69,6 +71,26 @@ public final class AdbSqlDiagnosticRecorder {
   }
 
   /**
+   * 记录一次关键阶段耗时。
+   *
+   * <p>阶段统计用于定位 SQL/table-engine 内部热点，例如 commit 写入、row-count 元数据、
+   * 主键查找和 range count。调用方传入的耗时单位是纳秒，recorder 内部按微秒聚合。</p>
+   *
+   * @param phase 阶段名
+   * @param latencyNanos 阶段耗时，纳秒
+   */
+  public synchronized void recordPhase(String phase, long latencyNanos) {
+    String normalized = requireText(phase, "phase");
+    long micros = Math.max(0L, latencyNanos / 1_000L);
+    MutablePhaseStats stats = phaseStats.get(normalized);
+    if (stats == null) {
+      stats = new MutablePhaseStats(normalized);
+      phaseStats.put(normalized, stats);
+    }
+    stats.record(micros);
+  }
+
+  /**
    * 生成当前 SQL 诊断快照。
    *
    * @return 不可变快照
@@ -76,7 +98,8 @@ public final class AdbSqlDiagnosticRecorder {
   public synchronized AdbSqlDiagnosticSnapshot snapshot() {
     return new AdbSqlDiagnosticSnapshot(totalSqlCount, slowSqlCount,
         failedSqlCount, maxLatencyMillis, new ArrayList<>(recentSlowSql),
-        new ArrayList<>(recentFailedSql), snapshotOperationStats());
+        new ArrayList<>(recentFailedSql), snapshotOperationStats(),
+        snapshotPhaseStats());
   }
 
   /**
@@ -93,6 +116,7 @@ public final class AdbSqlDiagnosticRecorder {
     failedSqlCount = 0L;
     maxLatencyMillis = 0L;
     operationStats.clear();
+    phaseStats.clear();
   }
 
   private void appendBounded(Deque<AdbSqlDiagnosticEvent> target,
@@ -127,6 +151,22 @@ public final class AdbSqlDiagnosticRecorder {
     return snapshot;
   }
 
+  private Map<String, AdbSqlPhaseStats> snapshotPhaseStats() {
+    LinkedHashMap<String, AdbSqlPhaseStats> snapshot =
+        new LinkedHashMap<>();
+    for (Map.Entry<String, MutablePhaseStats> entry : phaseStats.entrySet()) {
+      snapshot.put(entry.getKey(), entry.getValue().snapshot());
+    }
+    return snapshot;
+  }
+
+  private static String requireText(String value, String fieldName) {
+    if (value == null || value.trim().isEmpty()) {
+      throw new IllegalArgumentException(fieldName + " is empty");
+    }
+    return value.trim();
+  }
+
   private static final class MutableOperationStats {
     private final String operation;
     private long count;
@@ -150,6 +190,28 @@ public final class AdbSqlDiagnosticRecorder {
     private AdbSqlOperationStats snapshot() {
       return new AdbSqlOperationStats(operation, count, failedCount,
           totalLatencyMillis, maxLatencyMillis);
+    }
+  }
+
+  private static final class MutablePhaseStats {
+    private final String phase;
+    private long count;
+    private long totalLatencyMicros;
+    private long maxLatencyMicros;
+
+    private MutablePhaseStats(String phase) {
+      this.phase = phase;
+    }
+
+    private void record(long latencyMicros) {
+      count++;
+      totalLatencyMicros += latencyMicros;
+      maxLatencyMicros = Math.max(maxLatencyMicros, latencyMicros);
+    }
+
+    private AdbSqlPhaseStats snapshot() {
+      return new AdbSqlPhaseStats(phase, count, totalLatencyMicros,
+          maxLatencyMicros);
     }
   }
 }

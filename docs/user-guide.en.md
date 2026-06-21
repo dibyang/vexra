@@ -341,7 +341,10 @@ The output properties include at least `mode`, `workload`, `url`, `operations`,
 `p50LatencyMicros`, `p95LatencyMicros`, `p99LatencyMicros`,
 `maxLatencyMicros`, `passed`, `concurrency.threads`, and
 `concurrency.perThreadThroughputPerSecond`. When `threads > 1`, the report also
-includes `concurrency.completedOperations`. These results can feed release evidence or a
+includes `concurrency.completedOperations`. When SQL diagnostics are enabled,
+the report also includes `sqlDiagnostics.operationStats.*` and
+`sqlDiagnostics.phaseStats.*` for table-engine entry points and key stages such
+as commit, row-count, and index lookup. These results can feed release evidence or a
 future long-running stress platform, but a short single-node run is not a
 replacement for multi-hour / multi-node stress testing.
 
