@@ -156,6 +156,39 @@ table-engine 边界仍是主要瓶颈。
 下一阶段最值得做的是减少 primary find 与 point lookup 的重复解码/对象边界，以及降低 range
 count 对 cursor 扫描和 H2 `COUNT` 路径的依赖；commit 写入暂时不应作为首要优化点。
 
+## 第七轮 prepared 点查列值缓存
+
+本轮针对 `AdbPreparedPointLookupPlan` 增加按 `rowId + commitTs` 校验的列值缓存：
+
+1. 命中时复用已解码的 `Value[]`，但返回给 `AdbSimpleResultSet` 前仍复制数组，避免结果集共享可变数组。
+2. 只缓存 `commitTs > 0` 的已提交版本；同一事务内未提交版本不进入缓存，避免 `commitTs=0` 下读到旧值。
+3. 查不到行时移除对应 rowId 的缓存；update/delete 后 commitTs 或可见性变化会自动失效。
+4. 新增 `ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS` 阶段诊断，并用集成测试覆盖同一 prepared statement 下重复查询、更新和删除。
+
+验证结果：
+
+| workload | threads | throughput ops/s | p99 us | max us | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1654.72 | 1606 | 2632 | `vexra-adb/build/adb-benchmark/point_lookup_decode_cache_stage.properties` |
+| `mixed` | 8 | 1474.93 | 8060 | 10721 | `vexra-adb/build/adb-benchmark/jdbc_mixed_decode_cache_threads_8.properties` |
+
+阶段摘要：
+
+| workload | phase | count | avg us | max us |
+| --- | --- | ---: | ---: | ---: |
+| `point_lookup` | `ADB_POINT_LOOKUP_DECODE_CACHE_HIT` | 300 | 0 | 10 |
+| `point_lookup` | `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2700 | 4 | 418 |
+| `point_lookup` | `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 3000 | 599 | 3000 |
+| `mixed` | `ADB_POINT_LOOKUP_DECODE_CACHE_HIT` | 28 | 7 | 142 |
+| `mixed` | `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2292 | 10 | 1587 |
+| `mixed` | `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2320 | 2530 | 15000 |
+
+结论：该缓存对有热点 key 的 prepared 点查有正向价值，但当前 benchmark key 分布较散，
+命中率不高；`decodeColumns` 本身平均只有个位数微秒，因此 mixed 的剩余瓶颈仍在
+`PRIMARY_FIND`、`RANGE_COUNT_FAST` 和 `ADD_ROW` 这些表/索引入口整体，而不是单独的列值解码。
+下一阶段应优先降低 range count cursor 扫描成本，或进一步拆分 `PRIMARY_FIND` 内部的
+`getVisible`、cache lookup 和 Row/ResultSet 对象创建耗时。
+
 ## 后续优化靶点
 
 | 优先级 | 靶点 | 验证方式 |
@@ -163,7 +196,7 @@ count 对 cursor 扫描和 H2 `COUNT` 路径的依赖；commit 写入暂时不�
 | P0 | 普通 SQL INSERT 自动命中 bulk 入口 | 已通过 ADB JDBC 兼容 Driver 包装参数化多值 `PreparedStatement` 和简单 literal 多值 `Statement`，将 `INSERT INTO ... VALUES ...` 路由到 `bulkInsertAppendRows`；后续仍需 h2db 原生表级 bulk hook 覆盖表达式、触发器和更完整语法 |
 | P0 | 优化主键查找和点查对象边界 | 基于 `phaseStats` 对比 `PRIMARY_FIND`、`POINT_LOOKUP_FAST` 的 avg/max 耗时和对象分配 |
 | P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
-| P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
+| P1 | 拆分 primary find 内部阶段 | 区分 `getVisible`、decoded row cache、Row 对象创建和 H2 cursor/result 边界耗时 |
 | P1 | range scan 避免 SQL COUNT 路径上的额外 materialization | 对比 `LdbStore` scan 与 SQL scan 的行迭代次数、对象创建数 |
 | P1 | 细化多线程关键路径耗时 | 基于 `threads` benchmark 区分 commit、row-count、主键查找、range count、store 写入和锁等待 |
 

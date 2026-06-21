@@ -666,14 +666,56 @@ stage should reduce repeated decode/object-boundary work in primary find and
 point lookup, and reduce range-count dependence on cursor scanning and the H2
 `COUNT` path. Commit write is not the top optimization target for now.
 
+## Seventh Round: Prepared Point-Lookup Decoded-Column Cache
+
+This round adds a decoded-column cache to `AdbPreparedPointLookupPlan`, guarded
+by `rowId + commitTs`:
+
+1. Cache hits reuse decoded `Value[]` entries, but still copy the array before
+   handing it to `AdbSimpleResultSet`, so result sets do not share a mutable
+   array.
+2. Only committed versions with `commitTs > 0` are cached; uncommitted
+   same-transaction versions are decoded directly to avoid stale reads under
+   `commitTs=0`.
+3. Missing rows remove the rowId cache entry. Committed updates and deletes
+   naturally invalidate through changed commitTs or visibility.
+4. The benchmark now reports `ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS`, and an
+   integration test covers repeated lookup, committed update, and delete through
+   the same prepared statement.
+
+Measured results:
+
+| workload | threads | throughput ops/s | p99 us | max us | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1654.72 | 1606 | 2632 | `vexra-adb/build/adb-benchmark/point_lookup_decode_cache_stage.properties` |
+| `mixed` | 8 | 1474.93 | 8060 | 10721 | `vexra-adb/build/adb-benchmark/jdbc_mixed_decode_cache_threads_8.properties` |
+
+Phase summary:
+
+| workload | phase | count | avg us | max us |
+| --- | --- | ---: | ---: | ---: |
+| `point_lookup` | `ADB_POINT_LOOKUP_DECODE_CACHE_HIT` | 300 | 0 | 10 |
+| `point_lookup` | `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2700 | 4 | 418 |
+| `point_lookup` | `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 3000 | 599 | 3000 |
+| `mixed` | `ADB_POINT_LOOKUP_DECODE_CACHE_HIT` | 28 | 7 | 142 |
+| `mixed` | `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2292 | 10 | 1587 |
+| `mixed` | `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2320 | 2530 | 15000 |
+
+Conclusion: this cache helps prepared point lookups when there is key locality,
+but the current benchmark spreads keys widely, so hit rate is low. Because
+`decodeColumns` itself averages only single-digit microseconds, the remaining
+mixed-workload bottleneck is still the broader table/index entry path:
+`PRIMARY_FIND`, `RANGE_COUNT_FAST`, and `ADD_ROW`. The next stage should reduce
+range-count cursor scanning cost, or split `PRIMARY_FIND` into `getVisible`,
+cache lookup, Row creation, and H2 cursor/result-boundary timing.
+
 ## Next Optimization Targets
 
 | Priority | Target | Verification |
 | --- | --- | --- |
 | P0 | Route ordinary SQL INSERT into the bulk entry point | Parameterized multi-values `PreparedStatement` and simple literal multi-values `Statement` now route through the ADB JDBC compatibility Driver to `bulkInsertAppendRows`; a future h2db table-level hook is still needed for expressions, triggers, and the full `Insert` grammar |
-| P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
-| P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |
+| P1 | Split primary-find internal stages | Separate `getVisible`, decoded-row cache, Row creation, and H2 cursor/result-boundary timing |
 | P1 | Avoid extra materialization in SQL COUNT range scans | Compare `LdbStore` scan row iteration and object counts with SQL scan |
 | P1 | Optimize primary find and point-lookup object boundaries | Use `phaseStats` to compare avg/max latency and allocation behavior for `PRIMARY_FIND` and `POINT_LOOKUP_FAST` |
 

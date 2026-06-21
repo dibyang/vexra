@@ -230,6 +230,16 @@ public class AdbTable extends TableBase {
     txnManager.recordSqlPhase(summary, latencyMillis * 1_000_000L);
   }
 
+  /**
+   * 记录 SQL/table-engine 关键阶段耗时。
+   *
+   * @param phase 阶段名
+   * @param latencyNanos 阶段耗时，纳秒
+   */
+  public void recordSqlPhase(String phase, long latencyNanos) {
+    txnManager.recordSqlPhase(phase, latencyNanos);
+  }
+
   @Override
   public long getRowCount(SessionLocal session){
     long startMillis = System.currentTimeMillis();

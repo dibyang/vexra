@@ -344,7 +344,10 @@ The output properties include at least `mode`, `workload`, `url`, `operations`,
 includes `concurrency.completedOperations`. When SQL diagnostics are enabled,
 the report also includes `sqlDiagnostics.operationStats.*` and
 `sqlDiagnostics.phaseStats.*` for table-engine entry points and key stages such
-as commit, row-count, and index lookup. These results can feed release evidence or a
+as commit, row-count, and index lookup. Prepared primary-key lookups also record
+`ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS` to expose decoded-column cache
+behavior; the cache limit can be tuned with
+`-Dadb.pointLookup.fastDecodedColumnCacheLimit`. These results can feed release evidence or a
 future long-running stress platform, but a short single-node run is not a
 replacement for multi-hour / multi-node stress testing.
 

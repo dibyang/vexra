@@ -4,8 +4,10 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
@@ -28,6 +30,9 @@ import org.h2.value.Value;
  */
 final class AdbPreparedPointLookupPlan {
 
+  private static final int DECODED_COLUMN_CACHE_LIMIT =
+      Integer.getInteger("adb.pointLookup.fastDecodedColumnCacheLimit",
+          16_384);
   private static final String SELECT = "SELECT";
   private static final String FROM = " FROM ";
   private static final String WHERE = " WHERE ";
@@ -39,6 +44,8 @@ final class AdbPreparedPointLookupPlan {
   private AdbTable resolvedTable;
   private List<String> resolvedSelectColumns;
   private int[] resolvedColumnIds;
+  private final ConcurrentHashMap<Long, CachedColumnValues> decodedColumnCache =
+      new ConcurrentHashMap<>();
 
   private AdbPreparedPointLookupPlan(List<String> selectColumns,
       String tableName, String whereColumn, boolean selectAllColumns) {
@@ -133,8 +140,11 @@ final class AdbPreparedPointLookupPlan {
     try {
       long rowId = toLong(parameters[1]);
       RowValue rowValue = visibleRowValue(session, table, rowId);
+      if (rowValue == null) {
+        decodedColumnCache.remove(Long.valueOf(rowId));
+      }
       Value[] values = rowValue == null ? null
-          : RowCodec.decodeColumns(rowValue.payload, resolvedColumnIds);
+          : decodedValues(table, rowId, rowValue);
       return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
     } catch (SQLException e) {
       failure = e;
@@ -201,6 +211,46 @@ final class AdbPreparedPointLookupPlan {
     return rowValue;
   }
 
+  private Value[] decodedValues(AdbTable table, long rowId,
+      RowValue rowValue) {
+    long started = System.nanoTime();
+    if (rowValue.commitTs <= 0L) {
+      try {
+        return RowCodec.decodeColumns(rowValue.payload, resolvedColumnIds);
+      } finally {
+        table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+            System.nanoTime() - started);
+      }
+    }
+    CachedColumnValues cached = decodedColumnCache.get(rowId);
+    if (cached != null && cached.commitTs == rowValue.commitTs) {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_HIT",
+          System.nanoTime() - started);
+      return cached.copyValues();
+    }
+    try {
+      Value[] values = RowCodec.decodeColumns(rowValue.payload,
+          resolvedColumnIds);
+      cacheDecodedValues(rowId, rowValue.commitTs, values);
+      return Arrays.copyOf(values, values.length);
+    } finally {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+          System.nanoTime() - started);
+    }
+  }
+
+  private void cacheDecodedValues(long rowId, long commitTs, Value[] values) {
+    if (DECODED_COLUMN_CACHE_LIMIT <= 0) {
+      return;
+    }
+    if (decodedColumnCache.size() >= DECODED_COLUMN_CACHE_LIMIT) {
+      decodedColumnCache.clear();
+    }
+    decodedColumnCache.put(Long.valueOf(rowId),
+        new CachedColumnValues(commitTs, Arrays.copyOf(values,
+            values.length)));
+  }
+
   private AdbTable adbTable(SessionLocal session) {
     Schema schema = session.getDatabase().getSchema(
         session.getCurrentSchemaName());
@@ -254,5 +304,19 @@ final class AdbPreparedPointLookupPlan {
       return value.substring(1, value.length() - 1);
     }
     return value.toUpperCase(Locale.ROOT);
+  }
+
+  private static final class CachedColumnValues {
+    private final long commitTs;
+    private final Value[] values;
+
+    private CachedColumnValues(long commitTs, Value[] values) {
+      this.commitTs = commitTs;
+      this.values = values;
+    }
+
+    private Value[] copyValues() {
+      return Arrays.copyOf(values, values.length);
+    }
   }
 }

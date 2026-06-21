@@ -337,7 +337,9 @@ runtime 包也包含 `bin/adb-benchmark.bat` / `bin/adb-benchmark`，参数与 m
 `concurrency.perThreadThroughputPerSecond`。当 `threads > 1` 时，还会包含
 `concurrency.completedOperations`。启用 SQL 诊断时，还会输出
 `sqlDiagnostics.operationStats.*` 和 `sqlDiagnostics.phaseStats.*`，分别用于观察
-table-engine 入口和 commit / row-count / 索引查找等关键阶段耗时。这些结果可以作为 release evidence
+table-engine 入口和 commit / row-count / 索引查找等关键阶段耗时。prepared 主键点查还会记录
+`ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS`，用于观察列值解码缓存命中情况；缓存上限可通过
+`-Dadb.pointLookup.fastDecodedColumnCacheLimit` 调整。这些结果可以作为 release evidence
 或后续长稳平台的输入，但单机短跑不能替代多小时/多节点压测。
 
 当前本地基线和优化判断见 [ADB 性能基线报告](adb-performance-benchmark.md)。

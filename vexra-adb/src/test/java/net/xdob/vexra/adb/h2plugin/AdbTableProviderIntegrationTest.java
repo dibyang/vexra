@@ -621,6 +621,45 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedPointLookupDecodeCacheSeesCommittedUpdateAndDelete() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-point-cache").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'first')");
+                AdbSqlDiagnosticsRegistry.resetAll();
+
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT NAME FROM TEST WHERE ID = ?")) {
+                    Assertions.assertEquals("first", preparedName(select, 1L));
+                    Assertions.assertEquals("first", preparedName(select, 1L));
+
+                    statement.executeUpdate("UPDATE TEST SET NAME = 'second' WHERE ID = 1");
+                    Assertions.assertEquals("second", preparedName(select, 1L));
+
+                    statement.executeUpdate("DELETE FROM TEST WHERE ID = 1");
+                    Assertions.assertEquals(null, preparedName(select, 1L));
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_POINT_LOOKUP_DECODE_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_POINT_LOOKUP_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void rangeCountSeesLocalDeleteAndRollback() throws Exception {
         String databasePath = tempDir.resolve("adb-range-local-delete").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
@@ -641,6 +680,19 @@ class AdbTableProviderIntegrationTest {
             }
         } finally {
             DbStoreEngine.close(databasePath);
+        }
+    }
+
+    private static String preparedName(PreparedStatement select, long id)
+            throws SQLException {
+        select.setLong(1, id);
+        try (ResultSet resultSet = select.executeQuery()) {
+            if (!resultSet.next()) {
+                return null;
+            }
+            String value = resultSet.getString(1);
+            Assertions.assertFalse(resultSet.next());
+            return value;
         }
     }
 
