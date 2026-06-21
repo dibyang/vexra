@@ -36,15 +36,20 @@ public class TxnMap2 {
     txnManager.put(transaction, key, value);
   }
 
+  private void put(DataKey key, RowValue value, RowValue oldValue)
+      throws SQLException {
+    txnManager.put(transaction, key, value, oldValue);
+  }
+
   public RowValue put(DataKey rowKey, Value row) throws SQLException {
 
     RowValue oldRowValue = getVisible(rowKey);
-    RowValue rowValue = oldRowValue!=null?oldRowValue:new RowValue();
+    RowValue rowValue = new RowValue();
     rowValue.txnId = transaction.getTxnId();
     rowValue.commitTs = 0;
     rowValue.deleted = false;
     rowValue.payload = RowCodec.encode(row);
-    this.put(rowKey, rowValue);
+    this.put(rowKey, rowValue, oldRowValue);
     return oldRowValue;
   }
 
@@ -57,7 +62,7 @@ public class TxnMap2 {
       value.commitTs = 0;
       value.deleted = false;
       value.payload = RowCodec.encode(row);
-      this.put(dataKey, value);
+      this.put(dataKey, value, old);
       return null;
     }
     return old;

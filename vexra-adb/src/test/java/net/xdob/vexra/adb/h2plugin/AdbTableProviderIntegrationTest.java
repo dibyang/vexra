@@ -55,6 +55,9 @@ class AdbTableProviderIntegrationTest {
             Assertions.assertTrue(snapshot.getTotalSqlCount() >= 3,
                     "expected table engine operations to be recorded");
             Assertions.assertTrue(snapshot.getMaxLatencyMillis() >= 0);
+            Assertions.assertFalse(snapshot.getOperationStats().isEmpty());
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"));
             Assertions.assertTrue(metrics.containsKey("adb_sql_total_sql_count"));
         } finally {
             DbStoreEngine.close(databasePath);

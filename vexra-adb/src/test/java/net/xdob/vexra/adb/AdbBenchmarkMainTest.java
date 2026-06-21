@@ -50,6 +50,10 @@ class AdbBenchmarkMainTest {
     assertEquals("jdbc", properties.getProperty("mode"));
     assertEquals("true", properties.getProperty("passed"));
     assertEquals("10", properties.getProperty("operations"));
+    assertTrue(Long.parseLong(properties.getProperty(
+        "sqlDiagnostics.totalSqlCount")) > 0L);
+    assertTrue(Integer.parseInt(properties.getProperty(
+        "sqlDiagnostics.operationStats.count")) > 0);
     assertFalse(url.startsWith("jdbc:adb:mem:"));
   }
 
@@ -103,6 +107,7 @@ class AdbBenchmarkMainTest {
     assertEquals(0L, result.getFailedOperations());
     assertEquals("store", properties.getProperty("mode"));
     assertEquals(storeDir.toString(), properties.getProperty("url"));
+    assertEquals(null, properties.getProperty("sqlDiagnostics.totalSqlCount"));
   }
 
   /**

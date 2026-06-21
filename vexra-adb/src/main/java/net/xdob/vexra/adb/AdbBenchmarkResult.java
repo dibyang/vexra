@@ -1,5 +1,8 @@
 package net.xdob.vexra.adb;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Properties;
 
 /**
@@ -21,6 +24,7 @@ public final class AdbBenchmarkResult {
   private final long p95LatencyMicros;
   private final long p99LatencyMicros;
   private final long maxLatencyMicros;
+  private final Map<String, String> details;
 
   /**
    * 创建 benchmark 结果。
@@ -43,6 +47,22 @@ public final class AdbBenchmarkResult {
       long durationMillis, double throughputPerSecond,
       long p50LatencyMicros, long p95LatencyMicros, long p99LatencyMicros,
       long maxLatencyMicros) {
+    this(mode, workload, url, warmupOperations, operations, failedOperations,
+        durationMillis, throughputPerSecond, p50LatencyMicros,
+        p95LatencyMicros, p99LatencyMicros, maxLatencyMicros,
+        Collections.<String, String>emptyMap());
+  }
+
+  /**
+   * 创建带扩展明细的 benchmark 结果。
+   *
+   * @param details 扩展明细，写入 properties 时会保留原始 key
+   */
+  public AdbBenchmarkResult(String mode, String workload, String url,
+      long warmupOperations, long operations, long failedOperations,
+      long durationMillis, double throughputPerSecond,
+      long p50LatencyMicros, long p95LatencyMicros, long p99LatencyMicros,
+      long maxLatencyMicros, Map<String, String> details) {
     this.mode = requireText(mode, "mode");
     this.workload = requireText(workload, "workload");
     this.url = requireText(url, "url");
@@ -68,6 +88,7 @@ public final class AdbBenchmarkResult {
         "p99LatencyMicros");
     this.maxLatencyMicros = nonNegative(maxLatencyMicros,
         "maxLatencyMicros");
+    this.details = immutableDetails(details);
   }
 
   public String getMode() {
@@ -118,6 +139,10 @@ public final class AdbBenchmarkResult {
     return maxLatencyMicros;
   }
 
+  public Map<String, String> getDetails() {
+    return details;
+  }
+
   /**
    * 转换为 properties 输出。
    *
@@ -146,6 +171,9 @@ public final class AdbBenchmarkResult {
         String.valueOf(maxLatencyMicros));
     properties.setProperty("passed",
         String.valueOf(failedOperations == 0));
+    for (Map.Entry<String, String> entry : details.entrySet()) {
+      properties.setProperty(entry.getKey(), entry.getValue());
+    }
     return properties;
   }
 
@@ -161,5 +189,19 @@ public final class AdbBenchmarkResult {
       throw new IllegalArgumentException(fieldName + " is negative");
     }
     return value;
+  }
+
+  private static Map<String, String> immutableDetails(
+      Map<String, String> source) {
+    if (source == null || source.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    LinkedHashMap<String, String> copy = new LinkedHashMap<>();
+    for (Map.Entry<String, String> entry : source.entrySet()) {
+      String key = requireText(entry.getKey(), "detail key");
+      String value = entry.getValue() == null ? "" : entry.getValue();
+      copy.put(key, value);
+    }
+    return Collections.unmodifiableMap(copy);
   }
 }

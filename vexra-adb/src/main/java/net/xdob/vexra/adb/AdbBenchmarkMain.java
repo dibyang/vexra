@@ -2,6 +2,9 @@ package net.xdob.vexra.adb;
 
 import net.xdob.vexra.adb.db.ScanDirection;
 import net.xdob.vexra.adb.db.VersionScanSource;
+import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
+import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
+import net.xdob.vexra.adb.db.AdbSqlOperationStats;
 import net.xdob.vexra.adb.ldb.LdbStore;
 
 import java.io.IOException;
@@ -17,6 +20,7 @@ import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
 
@@ -135,6 +139,7 @@ public final class AdbBenchmarkMain {
           commitIfNeeded(connection, transactionBatchSize, i + 1);
         }
         commitRemaining(connection, transactionBatchSize, warmupOperations);
+        AdbSqlDiagnosticsRegistry.resetAll();
         long[] latencies = new long[operations];
         long failed = 0;
         int pendingBatchOperations = 0;
@@ -167,7 +172,8 @@ public final class AdbBenchmarkMain {
         return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
             operations, failed, durationMillis, throughput,
             percentile(latencies, 0.50D), percentile(latencies, 0.95D),
-            percentile(latencies, 0.99D), latencies[latencies.length - 1]);
+            percentile(latencies, 0.99D), latencies[latencies.length - 1],
+            collectSqlDiagnostics());
       }
     }
   }
@@ -345,6 +351,63 @@ public final class AdbBenchmarkMain {
     try (OutputStream out = Files.newOutputStream(output)) {
       result.toProperties().store(out, "ADB benchmark result");
     }
+  }
+
+  private static Map<String, String> collectSqlDiagnostics() {
+    Map<String, AdbSqlDiagnosticSnapshot> snapshots =
+        AdbSqlDiagnosticsRegistry.snapshotAll();
+    LinkedHashMap<String, String> details = new LinkedHashMap<>();
+    long totalSqlCount = 0L;
+    long failedSqlCount = 0L;
+    long maxLatencyMillis = 0L;
+    LinkedHashMap<String, AdbSqlOperationStats> merged =
+        new LinkedHashMap<>();
+    for (AdbSqlDiagnosticSnapshot snapshot : snapshots.values()) {
+      totalSqlCount += snapshot.getTotalSqlCount();
+      failedSqlCount += snapshot.getFailedSqlCount();
+      maxLatencyMillis = Math.max(maxLatencyMillis,
+          snapshot.getMaxLatencyMillis());
+      for (AdbSqlOperationStats stats : snapshot.getOperationStats()
+          .values()) {
+        AdbSqlOperationStats previous = merged.get(stats.getOperation());
+        if (previous == null) {
+          merged.put(stats.getOperation(), stats);
+        } else {
+          merged.put(stats.getOperation(), new AdbSqlOperationStats(
+              stats.getOperation(),
+              previous.getCount() + stats.getCount(),
+              previous.getFailedCount() + stats.getFailedCount(),
+              previous.getTotalLatencyMillis()
+                  + stats.getTotalLatencyMillis(),
+              Math.max(previous.getMaxLatencyMillis(),
+                  stats.getMaxLatencyMillis())));
+        }
+      }
+    }
+    details.put("sqlDiagnostics.totalSqlCount",
+        String.valueOf(totalSqlCount));
+    details.put("sqlDiagnostics.failedSqlCount",
+        String.valueOf(failedSqlCount));
+    details.put("sqlDiagnostics.maxLatencyMillis",
+        String.valueOf(maxLatencyMillis));
+    details.put("sqlDiagnostics.operationStats.count",
+        String.valueOf(merged.size()));
+    int index = 0;
+    for (AdbSqlOperationStats stats : merged.values()) {
+      String prefix = "sqlDiagnostics.operationStats." + index;
+      details.put(prefix + ".operation", stats.getOperation());
+      details.put(prefix + ".count", String.valueOf(stats.getCount()));
+      details.put(prefix + ".failedCount",
+          String.valueOf(stats.getFailedCount()));
+      details.put(prefix + ".totalLatencyMillis",
+          String.valueOf(stats.getTotalLatencyMillis()));
+      details.put(prefix + ".avgLatencyMicros",
+          String.valueOf(stats.getAverageLatencyMicros()));
+      details.put(prefix + ".maxLatencyMillis",
+          String.valueOf(stats.getMaxLatencyMillis()));
+      index++;
+    }
+    return details;
   }
 
   private static long percentile(long[] sortedValues, double percentile) {

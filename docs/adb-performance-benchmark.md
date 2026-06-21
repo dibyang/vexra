@@ -43,6 +43,8 @@
 | `jdbc` | `mixed` | 1 | 154.35 | 4376 | 19425 | 24190 | 43916 | `vexra-adb/build/adb-benchmark/mixed.properties` |
 | `jdbc` | `insert` | 100 | 189.12 | 4245 | 8380 | 15551 | 102062 | `vexra-adb/build/adb-benchmark/jdbc_insert_batch100.properties` |
 | `jdbc` | `mixed` | 100 | 470.15 | 699 | 8619 | 11639 | 19240 | `vexra-adb/build/adb-benchmark/jdbc_mixed_batch100.properties` |
+| `jdbc` | `insert` | 100，优化后 | 242.99 | 3135 | 5829 | 9776 | 123811 | `vexra-adb/build/adb-benchmark/jdbc_insert_batch100_opt1.properties` |
+| `jdbc` | `mixed` | 100，优化后 | 500.08 | 702 | 7923 | 12301 | 23370 | `vexra-adb/build/adb-benchmark/jdbc_mixed_batch100_opt1.properties` |
 | `store` | `insert` | 不适用 | 130434.78 | 5 | 18 | 41 | 706 | `vexra-adb/build/adb-benchmark/store_insert.properties` |
 | `store` | `point_lookup` | 不适用 | 200000.00 | 3 | 9 | 28 | 388 | `vexra-adb/build/adb-benchmark/store_point_lookup.properties` |
 | `store` | `range_scan` | 不适用 | 2439.02 | 322 | 772 | 1480 | 7223 | `vexra-adb/build/adb-benchmark/store_range_scan.properties` |
@@ -59,12 +61,37 @@
 4. 下一轮优化应优先定位 ADB table engine 的每行执行成本、MVCC/index 更新成本、
    事务时间戳与锁路径成本，而不是先优化 ldb。
 
+## 第一轮优化结果
+
+第一轮优化做了两个低风险改动：
+
+1. benchmark 接入 SQL/table-engine 诊断聚合，输出 `sqlDiagnostics.*` 字段。
+2. `TxnMap2.put/putIfAbsent/delete` 复用 table/index 层已经读取过的旧可见版本，避免进入
+   `Transaction2.put/delete` 后再重复打开版本扫描器。
+
+前后对比：
+
+| workload | 优化前 throughput ops/s | 优化后 throughput ops/s | 变化 |
+| --- | ---: | ---: | ---: |
+| `insert` batch 100 | 189.12 | 242.99 | +28.5% |
+| `mixed` batch 100 | 470.15 | 500.08 | +6.4% |
+
+新的 `sqlDiagnostics.operationStats.*` 显示，`mixed` batch 100 正式窗口中主要入口为：
+
+| 操作 | 次数 | 平均耗时 us | 总耗时 ms |
+| --- | ---: | ---: | ---: |
+| `ADB_TABLE_PRIMARY_FIND ADB_BENCH` | 3000 | 699 | 2098 |
+| `ADB_TABLE_ADD_ROW ADB_BENCH` | 300 | 2213 | 664 |
+
+该结果说明重复 scan 优化对写入有效，但 SQL/JDBC、H2 执行、commit 扫描 txn ref 和
+table-engine 边界仍是主要瓶颈。
+
 ## 后续优化靶点
 
 | 优先级 | 靶点 | 验证方式 |
 | --- | --- | --- |
-| P0 | 给 JDBC/table engine 路径加分段耗时统计 | 在 insert / point lookup / range scan 中输出 parser、planner、table engine、store、commit 阶段耗时 |
-| P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row commitTs、index、row-count 重复成本 |
+| P0 | 细化 commit 阶段耗时统计 | 区分 txn ref 扫描、intent 读取、committed version 写入、meta 写入和底层 write batch |
+| P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
 | P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
 | P1 | range scan 避免 SQL COUNT 路径上的额外 materialization | 对比 `LdbStore` scan 与 SQL scan 的行迭代次数、对象创建数 |
 | P1 | 增加多线程压测模式 | 验证单线程优化后是否出现锁竞争或 store 写放大 |

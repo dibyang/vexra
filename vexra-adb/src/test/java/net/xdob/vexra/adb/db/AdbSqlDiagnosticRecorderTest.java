@@ -41,6 +41,11 @@ class AdbSqlDiagnosticRecorderTest {
     assertEquals(150, snapshot.getMaxLatencyMillis());
     assertEquals(2, snapshot.getRecentSlowSql().size());
     assertEquals(2, snapshot.getRecentFailedSql().size());
+    assertEquals(4, snapshot.getOperationStats().size());
+    assertEquals(1, snapshot.getOperationStats().get("select * from T")
+        .getCount());
+    assertEquals(20_000, snapshot.getOperationStats().get("select * from T")
+        .getAverageLatencyMicros());
     assertTrue(snapshot.getRecentFailedSql().get(0).renderSummary()
         .contains("duplicate key"));
   }
@@ -84,5 +89,10 @@ class AdbSqlDiagnosticRecorderTest {
         .contains("write conflict"));
     assertEquals(1L, metrics.get("adb_sql_total_sql_count"));
     assertEquals(1L, metrics.get("adb_sql_failed_sql_count"));
+    assertEquals("1", operations.get("sql.operationStats.count"));
+    assertEquals("delete from T",
+        operations.get("sql.operationStats.0.operation"));
+    assertEquals(1L,
+        metrics.get("adb_sql_operation_delete_from_t_count"));
   }
 }

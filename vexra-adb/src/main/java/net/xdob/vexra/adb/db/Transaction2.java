@@ -112,6 +112,18 @@ public class Transaction2 {
 
   public void put(AdbWriteBatch batch, DataKey key, RowValue value) throws SQLException {
     RowValue oldValue = getVisible(batch, key);
+    put(batch, key, value, oldValue);
+  }
+
+  /**
+   * 写入当前事务 intent，并复用调用方已经读取过的旧可见版本。
+   *
+   * <p>SQL table/index 层在唯一性判断、更新判断或删除判断时通常已经读取过旧值；
+   * 继续在这里重复扫描 store 会让每行写入多一次版本查找。调用方必须保证 oldValue 来自同一
+   * 事务快照。</p>
+   */
+  public void put(AdbWriteBatch batch, DataKey key, RowValue value,
+      RowValue oldValue) throws SQLException {
     value.txnId = txnId;
     value.deleted = false;
 
@@ -138,6 +150,16 @@ public class Transaction2 {
 
   public void delete(AdbWriteBatch batch, DataKey key) throws SQLException {
     RowValue oldValue = getVisible(batch, key);
+    delete(batch, key, oldValue);
+  }
+
+  /**
+   * 写入删除 intent，并复用调用方已经读取过的旧可见版本。
+   *
+   * @param oldValue 同一事务快照下的旧可见版本；不存在时为 null
+   */
+  public void delete(AdbWriteBatch batch, DataKey key, RowValue oldValue)
+      throws SQLException {
     RowValue value = new RowValue();
     value.txnId = this.getTxnId();
     value.deleted = true;

@@ -267,6 +267,19 @@ public class TxnManager {
     });
   }
 
+  /**
+   * 写入当前事务 intent，并复用 table/index 层已读到的旧可见版本。
+   *
+   * <p>该路径避免每次 SQL 写入重复打开版本扫描器；oldValue 必须来自同一事务快照，
+   * 以保持 row-count delta、undo log 和冲突检测语义不变。</p>
+   */
+  public void put(Transaction2 txn, DataKey key, RowValue value,
+      RowValue oldValue) throws SQLException {
+    store.writeBatch(s -> {
+      txn.put(s, key, value, oldValue);
+    });
+  }
+
   public IndexBuildState getIndexBuildState(TabId tId, int indexId) throws SQLException {
 
     IndexStatusKey indexMetaKey = IndexStatusKey.of(tId, indexId);
@@ -366,7 +379,7 @@ public class TxnManager {
     RowValue result = getVisible(txn, key);
     if(result!=null) {
       store.writeBatch(s -> {
-        txn.delete(s, key);
+        txn.delete(s, key, result);
       });
       return result;
     }

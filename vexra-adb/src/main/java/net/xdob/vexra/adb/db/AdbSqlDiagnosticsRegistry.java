@@ -73,6 +73,18 @@ public final class AdbSqlDiagnosticsRegistry {
   }
 
   /**
+   * 重置所有已注册 recorder 的累计状态。
+   *
+   * <p>该方法保留 recorder 实例，适合 benchmark 在预热后清空统计窗口；已持有 recorder
+   * 的 `TxnManager` 不需要重新绑定。</p>
+   */
+  public static void resetAll() {
+    for (AdbSqlDiagnosticRecorder recorder : RECORDERS.values()) {
+      recorder.clear();
+    }
+  }
+
+  /**
    * 清空所有进程内 SQL 诊断状态。
    *
    * <p>该方法面向测试和嵌入式 runtime 重置，不会关闭数据库或修改持久化数据。</p>
