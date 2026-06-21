@@ -303,6 +303,30 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rangeCountSeesLocalDeleteAndRollback() throws Exception {
+        String databasePath = tempDir.resolve("adb-range-local-delete").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("DELETE FROM TEST WHERE ID = 2");
+                Assertions.assertEquals(2L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN 1 AND 3"));
+                connection.rollback();
+
+                Assertions.assertEquals(3L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN 1 AND 3"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void executesDistributedSqlPlanThroughJdbcWhenTableOptsIn() throws Exception {
         String databasePath = tempDir.resolve("adb-distributed-sql").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

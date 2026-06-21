@@ -72,11 +72,10 @@ public final class TableScanCursor implements AutoCloseable {
         continue;
       }
 
-      RowValue visible = visibleResolver.getVisible(txn, dataKey);
+      RowValue visible = resolveVisibleInCurrentLogicalRow(dataKey,
+          rowPrefix);
 
       // 鏃犺鍙涓嶅彲瑙侊紝閮借烦杩囧綋鍓嶉€昏緫琛屾墍鏈夌増鏈?
-      skipCurrentLogicalRow(rowPrefix);
-
       // 鍙繑鍥炵湡姝ｅ彲璇汇€佸彲瑙ｇ爜鐨勮
       if (visible == null) {
         continue;
@@ -94,6 +93,48 @@ public final class TableScanCursor implements AutoCloseable {
 
     close();
     return false;
+  }
+
+  private RowValue resolveVisibleInCurrentLogicalRow(DataKey dataKey,
+      byte[] rowPrefix) {
+    RowValue local = txn.getLocalWrite(dataKey);
+    if (local != null) {
+      skipCurrentLogicalRow(rowPrefix);
+      return local.deleted ? null : copyWithRowKey(local, dataKey.getRowId());
+    }
+
+    while (scanSource.isValid()) {
+      byte[] rawKey = scanSource.key();
+      if (rawKey == null || !startsWith(rawKey, rowPrefix)) {
+        return null;
+      }
+      VersionKey versionKey = VersionKey.fromBytes(rawKey);
+      if (!versionKey.isCommited()) {
+        scanSource.advance();
+        continue;
+      }
+      RowValue rowValue = RowValue.decodeValue(scanSource.value());
+      if (rowValue.commitTs <= txn.getStartTs()) {
+        skipCurrentLogicalRow(rowPrefix);
+        if (rowValue.deleted) {
+          return null;
+        }
+        rowValue.rowKey = dataKey.getRowId();
+        return rowValue;
+      }
+      scanSource.advance();
+    }
+    return null;
+  }
+
+  private static RowValue copyWithRowKey(RowValue src, long rowId) {
+    RowValue copy = new RowValue();
+    copy.deleted = src.deleted;
+    copy.payload = src.payload;
+    copy.txnId = src.txnId;
+    copy.commitTs = src.commitTs;
+    copy.rowKey = rowId;
+    return copy;
   }
 
   public RowValue get() {

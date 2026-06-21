@@ -141,6 +141,59 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Fifth Round: Range Scan / Count Optimization
+
+This round optimizes table range-scan visibility resolution. The old
+`TableScanCursor` was already positioned on the current logical row in the main
+scan source, but still called `DefaultVisibleRowResolver`, which opened another
+committed-version scan for the same row. `SELECT COUNT(*) ... WHERE ID BETWEEN
+? AND ?` paid this extra scan once for every row in the range. The new cursor
+resolves the visible version directly from the current `VersionScanSource`,
+while preserving current-transaction write-set priority, `startTs` snapshot
+visibility, deleted-row filtering, and rowId propagation.
+
+Measured results:
+
+| Mode | workload | batch | throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | 551.98 | 1470 | 3554 | 4613 | 8419 | `vexra-adb/build/adb-benchmark/range_scan_inline_visible.properties` |
+| `jdbc` | `mixed` | 100 | 1538.46 | 453 | 1626 | 2686 | 7788 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_inline_visible.properties` |
+
+Compared with the initial baseline, `range_scan` improved from about 72.80
+ops/s to about 551.98 ops/s. Compared with the previous mixed result, `mixed`
+batch 100 improved from about 981.68 ops/s to about 1538.46 ops/s. This
+confirms that repeated per-row visibility scans were a major range/count
+bottleneck, not the lower ldb store itself. Full
+`.\gradlew.bat :vexra-adb:test --rerun-tasks` passed, with an added integration
+test covering range COUNT visibility for a local delete and rollback.
+
+Range reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-inline-visible/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_scan_inline_visible.properties"
+```
+
+Mixed workload reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-inline-visible/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_inline_visible.properties"
+```
+
 ## Third JDBC Bulk Insert Result
 
 The third round adds a JDBC-connection bulk insert path. The benchmark still

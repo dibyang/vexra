@@ -112,6 +112,54 @@ store mixed 基线：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/store_mixed.properties"
 ```
 
+## 第五轮 range scan / count 优化结果
+
+本轮优化 `TableScanCursor` 的范围扫描可见性解析路径。旧实现已经在主扫描器上定位到当前
+logical row，但仍会调用 `DefaultVisibleRowResolver` 为同一个 row 再打开一次 committed version
+扫描；`SELECT COUNT(*) ... WHERE ID BETWEEN ? AND ?` 会为范围内每一行重复这笔开销。新实现直接
+在当前 `VersionScanSource` 上解析同一 logical row 的可见版本，同时保留当前事务本地 write set
+优先、`startTs` 快照可见性、deleted 过滤和 rowId 回填语义。
+
+验证结果：
+
+| 模式 | workload | batch | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | 551.98 | 1470 | 3554 | 4613 | 8419 | `vexra-adb/build/adb-benchmark/range_scan_inline_visible.properties` |
+| `jdbc` | `mixed` | 100 | 1538.46 | 453 | 1626 | 2686 | 7788 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_inline_visible.properties` |
+
+与初始基线相比，`range_scan` 从约 72.80 ops/s 提升到约 551.98 ops/s；与上一轮 mixed
+可比结果相比，`mixed` batch 100 从约 981.68 ops/s 提升到约 1538.46 ops/s。该结果说明
+range/count 的主要瓶颈之一确实是每行重复打开可见性扫描器，而不是底层 ldb 本体。本轮完整执行
+`.\gradlew.bat :vexra-adb:test --rerun-tasks` 通过，并新增范围 COUNT 在同一事务内看到本地 delete、
+rollback 后恢复的集成测试。
+
+range 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-inline-visible/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_scan_inline_visible.properties"
+```
+
+mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-inline-visible/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_inline_visible.properties"
+```
+
 ## 第四轮点查优化结果
 
 本轮围绕 JDBC 主键点查和 mixed workload 中的点查比例做了两项低风险快路径：
