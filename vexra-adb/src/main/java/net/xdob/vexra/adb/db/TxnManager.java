@@ -427,6 +427,28 @@ public class TxnManager {
         .accumulateAndGet(key.getRowId(), Math::max);
   }
 
+  private void recordRowIdHints(Collection<DataKey> keys) {
+    if (keys == null || keys.isEmpty()) {
+      return;
+    }
+    Map<TabId, Long> maxByTable = new HashMap<>();
+    for (DataKey key : keys) {
+      if (key == null || !key.isRow()) {
+        continue;
+      }
+      TabId tabId = key.getTabID();
+      Long previous = maxByTable.get(tabId);
+      if (previous == null || key.getRowId() > previous) {
+        maxByTable.put(tabId, key.getRowId());
+      }
+    }
+    for (Map.Entry<TabId, Long> entry : maxByTable.entrySet()) {
+      maxRowIdHints.computeIfAbsent(entry.getKey(),
+          ignored -> new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE))
+          .accumulateAndGet(entry.getValue(), Math::max);
+    }
+  }
+
   /**
    * 批量写入已经完成回填或 rebuild 的索引项。
    *
@@ -652,9 +674,7 @@ public class TxnManager {
 
       refreshCommittedRowCache(txn, commitTs, writeKeys);
       txn.afterCommitSuccess(commitTs);
-      for (DataKey key : writeKeys) {
-        recordRowIdHint(key);
-      }
+      recordRowIdHints(writeKeys);
       activeTransactions.remove(txn.getTxnId());
     } catch (CompletionException e) {
       Throwable cause = unwrapCompletionException(e);

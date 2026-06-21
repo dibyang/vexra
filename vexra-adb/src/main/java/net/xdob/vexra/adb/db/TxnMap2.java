@@ -10,13 +10,17 @@ import org.slf4j.LoggerFactory;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class TxnMap2 {
   static final Logger LOG = LoggerFactory.getLogger(TxnMap2.class);
   private  final TxnManager txnManager;
   private final Transaction2 transaction;
   private final List<AutoCloseable> resources = new ArrayList<>();
+  private final Map<Integer, TabId> tabIdCache = new HashMap<>();
+  private final Map<TabId, Long> appendHighWater = new HashMap<>();
 
 
   public  TxnMap2(TxnManager txnManager, Transaction2 transaction) {
@@ -75,6 +79,7 @@ public class TxnMap2 {
       value.deleted = false;
       value.payload = RowCodec.encode(row);
       this.put(dataKey, value, null);
+      recordAppendHighWater(dataKey);
       return null;
     }
 
@@ -86,6 +91,7 @@ public class TxnMap2 {
       value.deleted = false;
       value.payload = RowCodec.encode(row);
       this.put(dataKey, value, old);
+      recordAppendHighWater(dataKey);
       return null;
     }
     return old;
@@ -140,8 +146,30 @@ public class TxnMap2 {
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
    */
   public boolean canSkipAppendUniqueCheck(DataKey dataKey) {
+    if (canSkipByLocalAppendHighWater(dataKey)) {
+      return true;
+    }
     return txnManager.canSkipAppendUniqueCheck(dataKey)
         && transaction.getLocalWrite(dataKey) == null;
+  }
+
+  private boolean canSkipByLocalAppendHighWater(DataKey dataKey) {
+    if (dataKey == null || !dataKey.isRow()) {
+      return false;
+    }
+    Long highWater = appendHighWater.get(dataKey.getTabID());
+    return highWater != null && dataKey.getRowId() > highWater;
+  }
+
+  private void recordAppendHighWater(DataKey dataKey) {
+    if (dataKey == null || !dataKey.isRow()) {
+      return;
+    }
+    TabId tabId = dataKey.getTabID();
+    Long highWater = appendHighWater.get(tabId);
+    if (highWater == null || dataKey.getRowId() > highWater) {
+      appendHighWater.put(tabId, dataKey.getRowId());
+    }
   }
 
   public void markStatementStart(){
@@ -218,6 +246,8 @@ public class TxnMap2 {
       if (!success) {
         LOG.warn("txn commit failed, txnId={}", transaction.getTxnId());
       }
+      tabIdCache.clear();
+      appendHighWater.clear();
       txnManager.getLockManager().unlockAll(transaction.getTxnId());
     }
   }
@@ -229,6 +259,7 @@ public class TxnMap2 {
   public void rollbackTo(long savepointId)  {
     try {
       txnManager.rollback(transaction, savepointId);
+      appendHighWater.clear();
     } catch (SQLException e) {
       throw new RuntimeException(e);
     }
@@ -240,6 +271,8 @@ public class TxnMap2 {
     } catch (SQLException e) {
       throw new RuntimeException(e);
     } finally {
+      tabIdCache.clear();
+      appendHighWater.clear();
       txnManager.getLockManager().unlockAll(transaction.getTxnId());
     }
   }
@@ -270,9 +303,10 @@ public class TxnMap2 {
   }
 
   public Row lock(int tableId, long key, int timeoutMillis) throws SQLException {
-    RowLockKey rowLockKey = new RowLockKey(getTabId(tableId), key);
+    TabId tabId = getTabId(tableId);
+    RowLockKey rowLockKey = new RowLockKey(tabId, key);
     txnManager.getLockManager().lock(transaction.getTxnId(), rowLockKey, timeoutMillis);
-    RowValue visible = getVisible(RowKey.of(getTabId(tableId), key));
+    RowValue visible = getVisible(RowKey.of(tabId, key));
     if(visible!=null){
       return RowCodec.decode(key,visible.payload);
     }
@@ -289,7 +323,13 @@ public class TxnMap2 {
 
   public TabId getTabId(int tableId) {
     long epoch = transaction.getEpoch(tableId,k->getEpoch(tableId));
-    return TabId.of(tableId, epoch);
+    TabId cached = tabIdCache.get(tableId);
+    if (cached != null && cached.epoch == epoch) {
+      return cached;
+    }
+    TabId tabId = TabId.of(tableId, epoch);
+    tabIdCache.put(tableId, tabId);
+    return tabId;
   }
 
   private long getEpoch(int tableId) {
@@ -304,6 +344,8 @@ public class TxnMap2 {
 
   public void truncate(int tableId){
     transaction.truncate(tableId, k->getEpoch(tableId));
+    tabIdCache.remove(tableId);
+    appendHighWater.clear();
   }
 
 

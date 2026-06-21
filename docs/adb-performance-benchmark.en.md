@@ -141,6 +141,60 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Round 6 Ordinary JDBC Insert Micro-Optimization
+
+This round does not claim that ordinary SQL already reaches the ADB bulk path.
+With h2db 2.3.0, `Insert` still calls `Table.addRow(SessionLocal, Row)` row by
+row and `Table` does not expose a table-level bulk insert callback. Therefore
+this round only reduces ADB's own ordinary `Table.addRow` hot-path cost:
+
+1. `TxnMap2` caches the `TabId` for the same table within the same transaction,
+   reducing repeated epoch wrapping and object allocation before `RowKey`
+   construction.
+2. `TxnMap2` adds an in-transaction append high-water mark. After one row key
+   has passed the conservative append uniqueness check, later larger row ids in
+   the same transaction can skip the global rowId hint lookup and local write-set
+   lookup. Out-of-order keys, duplicate keys, rollback/savepoint, and truncate
+   still fall back to the conservative path.
+3. `TxnManager` aggregates rowId hints by table after a successful commit, so a
+   large insert batch updates `ConcurrentHashMap + AtomicLong` once per table
+   instead of once per row.
+4. A new integration test covers duplicate primary keys inside one ordinary
+   multi-values insert under an explicit transaction, followed by rollback.
+
+Current reproducible results:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p99 us | Result file | Notes |
+| --- | --- | ---: | --- | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 3000 | off | 2245.51 | 445 | `vexra-adb/build/adb-benchmark/jdbc_insert_no_diag_current.properties` | Current-code baseline before this round, with diagnostics disabled |
+| `jdbc` | `insert` | 3000 | off | 2631.58 | 380 | `vexra-adb/build/adb-benchmark/jdbc_insert_commit_hint_batch_no_diag_r2.properties` | After this round, isolated rerun |
+| `jdbc` | `mixed` | 100 | on | 1697.79 | 2195 | `vexra-adb/build/adb-benchmark/jdbc_mixed_append_highwater.properties` | Mixed regression; previous comparable result was about 1538.46 ops/s |
+
+Conclusion: ADB-side ordinary `addRow` micro-optimizations improve real SQL
+insert and mixed workload behavior, but they do not yet stabilize ordinary JDBC
+insert above `3000 ops/s`, and they are still far from the desired `5000 ops/s`
+headroom. Completing "ordinary `INSERT INTO ... VALUES (...), (...)`
+automatically hits the bulk path" still requires h2db to expose a table-level
+bulk insert SPI in the `Insert` layer while preserving trigger, constraint,
+generated column, delta table, and `ON DUPLICATE KEY` semantics. ADB's existing
+`bulkInsertAppendRows` remains the target implementation for that SPI.
+
+JDBC insert reproduction command with diagnostics disabled:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-commit-hint-batch-no-diag-r2/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=3000" `
+  "-PadbBenchmarkStatementBatchSize=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_commit_hint_batch_no_diag_r2.properties" `
+  "-PadbBenchmarkSqlDiagnostics=false"
+```
+
 ## Fifth Round: Range Scan / Count Optimization
 
 This round optimizes table range-scan visibility resolution. The old

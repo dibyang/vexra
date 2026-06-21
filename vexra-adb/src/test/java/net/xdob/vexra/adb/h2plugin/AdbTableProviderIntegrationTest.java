@@ -78,6 +78,28 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rejectsDuplicatePrimaryKeyWithinOneMultiValuesInsert() throws Exception {
+        String databasePath = tempDir.resolve("adb-multi-values-duplicate").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                        + "ENGINE \"adb_table\" WITH \"adb.sql.diagnostics=false\"");
+
+                connection.setAutoCommit(false);
+                Assertions.assertThrows(SQLException.class,
+                        () -> statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES "
+                                + "(1, 'a'), (2, 'b'), (2, 'duplicate')"));
+                connection.rollback();
+                Assertions.assertEquals(0L, countRows(statement));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void canDisableSqlDiagnosticsThroughTableEngineParams() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         String databasePath = tempDir.resolve("adb-sql-diagnostics-disabled").toAbsolutePath().toString().replace('\\', '/');

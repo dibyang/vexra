@@ -112,6 +112,52 @@ store mixed 基线：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/store_mixed.properties"
 ```
 
+## 第六轮普通 JDBC insert 微优化结果
+
+本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB
+自身普通 `Table.addRow` 热路径：
+
+1. `TxnMap2` 缓存同一事务内同一表的 `TabId`，减少每行 `RowKey` 构造前的重复
+   epoch 包装和对象分配。
+2. `TxnMap2` 增加事务内 append 高水位。某个 row key 已经通过保守 append
+   唯一性检查后，后续同一事务内更大的 rowId 可以跳过全局 rowId hint 查询和
+   本地 write-set 查询；乱序、重复、rollback/savepoint 和 truncate 会回到保守路径。
+3. `TxnManager` 在 commit 成功后按表聚合 rowId hint，只对每张表更新一次
+   `ConcurrentHashMap + AtomicLong` 上界，避免大批量 insert 提交后逐行更新 hint。
+4. 新增普通多 values insert 在显式事务内遇到重复主键后可 rollback 清空的集成测试，
+   防止 append 高水位误吞同一语句内重复 key。
+
+当前可复现结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p99 us | 结果文件 | 说明 |
+| --- | --- | ---: | --- | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 3000 | off | 2245.51 | 445 | `vexra-adb/build/adb-benchmark/jdbc_insert_no_diag_current.properties` | 本轮优化前、关闭诊断的当前代码基线 |
+| `jdbc` | `insert` | 3000 | off | 2631.58 | 380 | `vexra-adb/build/adb-benchmark/jdbc_insert_commit_hint_batch_no_diag_r2.properties` | 本轮优化后、单独重跑结果 |
+| `jdbc` | `mixed` | 100 | on | 1697.79 | 2195 | `vexra-adb/build/adb-benchmark/jdbc_mixed_append_highwater.properties` | mixed 回归；上一轮可比结果约 1538.46 ops/s |
+
+结论：ADB 侧普通 `addRow` 微优化能改善真实 SQL insert 和 mixed，但还不能稳定达到
+`>3000 ops/s`，更不能接近 `>5000 ops/s`。真正完成“普通
+`INSERT INTO ... VALUES (...), (...)` 自动命中 bulk path”仍需要 h2db 在
+`Insert` 层提供保留 trigger、constraint、generated column、delta table 和
+`ON DUPLICATE KEY` 语义的表级 bulk insert SPI；ADB 当前保留的
+`bulkInsertAppendRows` 已可作为该 SPI 的落点。
+
+JDBC insert 关闭诊断复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-commit-hint-batch-no-diag-r2/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=3000" `
+  "-PadbBenchmarkStatementBatchSize=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_commit_hint_batch_no_diag_r2.properties" `
+  "-PadbBenchmarkSqlDiagnostics=false"
+```
+
 ## 第五轮 range scan / count 优化结果
 
 本轮优化 `TableScanCursor` 的范围扫描可见性解析路径。旧实现已经在主扫描器上定位到当前
