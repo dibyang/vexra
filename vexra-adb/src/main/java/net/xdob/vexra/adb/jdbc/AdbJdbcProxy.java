@@ -58,9 +58,12 @@ final class AdbJdbcProxy {
             (String) args[0]);
         AdbPreparedPointLookupPlan pointLookupPlan =
             AdbPreparedPointLookupPlan.parse((String) args[0]);
-        if (insertPlan != null || pointLookupPlan != null) {
+        AdbPreparedRangeCountPlan rangeCountPlan =
+            AdbPreparedRangeCountPlan.parse((String) args[0]);
+        if (insertPlan != null || pointLookupPlan != null
+            || rangeCountPlan != null) {
           return AdbPreparedStatementProxy.wrap(delegate, statement,
-              insertPlan, pointLookupPlan);
+              insertPlan, pointLookupPlan, rangeCountPlan);
         }
         return statement;
       }

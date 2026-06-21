@@ -281,6 +281,73 @@ Mixed regression command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties"
 ```
 
+## Round 9 JDBC Range/Count Fast Path
+
+This round adds a parameterized primary-key range COUNT fast path in the
+`jdbc:adb:*` compatibility Driver. It recognizes the narrow SQL shape:
+
+```sql
+SELECT COUNT(*) FROM table WHERE pk BETWEEN ? AND ?
+```
+
+The target table must be an `AdbTable`, the `WHERE` column must be the table
+primary-key column or ROWID, and the aggregate must be a simple `COUNT(*)`.
+Matching statements bypass the generic h2db query executor and aggregate path.
+The wrapper counts rows directly through the current session's
+`TxnMap2.entryIterator` / `TableScanCursor`, preserving transaction visibility
+without creating H2 `Row` objects for the COUNT. Non-primary-key ranges,
+secondary-index ranges, expressions, aliases, and other SQL forms continue to
+use the original h2db path.
+
+Measured results:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | on | 1388.89 | 668 | 1312 | 1750 | 7718 | `vexra-adb/build/adb-benchmark/range_count_fast_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 1651.07 | 474 | 1177 | 2002 | 7973 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties` |
+
+The new integration tests
+`preparedPrimaryKeyRangeCountUsesAdbDriverFastPath` and
+`preparedNonPrimaryRangeCountFallsBackToH2Path` cover the primary-key BETWEEN
+COUNT fast path and the non-primary range fallback boundary. Diagnostics show
+that the pure range window records only `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH`;
+in the mixed workload, `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` is recorded 600
+times, so the range/count portion of the benchmark is using the fast path.
+
+Conclusion: pure `range_scan` improved from the previous SQL-path result of
+about 551.98 ops/s to about 1388.89 ops/s, with p99 reduced from about 4613us to
+1750us. `mixed` improved modestly from the previous safe-default result of about
+1623.38 ops/s to about 1651.07 ops/s, with p99 reduced from about 2230us to
+2002us. The mixed workload is now more likely bottlenecked by point-lookup
+committed-cache validation, commit cost, and remaining h2db executor boundaries.
+
+Range/count reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_fast_stage.properties"
+```
+
+Mixed regression command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-count-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

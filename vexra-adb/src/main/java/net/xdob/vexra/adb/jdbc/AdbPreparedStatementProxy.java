@@ -28,11 +28,13 @@ final class AdbPreparedStatementProxy {
    */
   static PreparedStatement wrap(Connection connection, PreparedStatement statement,
       AdbPreparedInsertPlan insertPlan,
-      AdbPreparedPointLookupPlan pointLookupPlan) {
+      AdbPreparedPointLookupPlan pointLookupPlan,
+      AdbPreparedRangeCountPlan rangeCountPlan) {
     return (PreparedStatement) Proxy.newProxyInstance(
         statement.getClass().getClassLoader(),
         new Class<?>[]{PreparedStatement.class},
-        new Handler(connection, statement, insertPlan, pointLookupPlan));
+        new Handler(connection, statement, insertPlan, pointLookupPlan,
+            rangeCountPlan));
   }
 
   private static final class Handler implements InvocationHandler {
@@ -41,19 +43,23 @@ final class AdbPreparedStatementProxy {
     private final PreparedStatement delegate;
     private final AdbPreparedInsertPlan insertPlan;
     private final AdbPreparedPointLookupPlan pointLookupPlan;
+    private final AdbPreparedRangeCountPlan rangeCountPlan;
     private final Object[] parameters;
     private final boolean[] parameterSet;
     private int lastUpdateCount = -1;
 
     private Handler(Connection connection, PreparedStatement delegate,
         AdbPreparedInsertPlan insertPlan,
-        AdbPreparedPointLookupPlan pointLookupPlan) {
+        AdbPreparedPointLookupPlan pointLookupPlan,
+        AdbPreparedRangeCountPlan rangeCountPlan) {
       this.connection = connection;
       this.delegate = delegate;
       this.insertPlan = insertPlan;
       this.pointLookupPlan = pointLookupPlan;
+      this.rangeCountPlan = rangeCountPlan;
       int parameterCount = Math.max(parameterCount(insertPlan),
           parameterCount(pointLookupPlan));
+      parameterCount = Math.max(parameterCount, parameterCount(rangeCountPlan));
       this.parameters = new Object[parameterCount + 1];
       this.parameterSet = new boolean[parameterCount + 1];
     }
@@ -80,6 +86,14 @@ final class AdbPreparedStatementProxy {
       if ("executeQuery".equals(name) && noSqlArgument(args)
           && pointLookupPlan != null) {
         ResultSet resultSet = pointLookupPlan.tryExecuteQuery(connection,
+            parameters, parameterSet);
+        if (resultSet != null) {
+          return resultSet;
+        }
+      }
+      if ("executeQuery".equals(name) && noSqlArgument(args)
+          && rangeCountPlan != null) {
+        ResultSet resultSet = rangeCountPlan.tryExecuteQuery(connection,
             parameters, parameterSet);
         if (resultSet != null) {
           return resultSet;
@@ -143,6 +157,10 @@ final class AdbPreparedStatementProxy {
     }
 
     private static int parameterCount(AdbPreparedPointLookupPlan plan) {
+      return plan == null ? 0 : plan.parameterCount();
+    }
+
+    private static int parameterCount(AdbPreparedRangeCountPlan plan) {
       return plan == null ? 0 : plan.parameterCount();
     }
 

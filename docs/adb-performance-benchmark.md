@@ -227,6 +227,63 @@ mixed 回归命令：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties"
 ```
 
+## 第九轮 JDBC range/count 快路径结果
+
+本轮在 `jdbc:adb:*` 兼容 Driver 层增加参数化主键范围 COUNT 快路径，识别窄 SQL 形态：
+
+```sql
+SELECT COUNT(*) FROM table WHERE pk BETWEEN ? AND ?
+```
+
+命中条件包括：目标表必须是 `AdbTable`，`WHERE` 列必须是表主键列或 ROWID，聚合必须是简单
+`COUNT(*)`。命中后不再进入 h2db 通用查询执行器和聚合链路，而是直接复用当前 session 的
+`TxnMap2.entryIterator` / `TableScanCursor` 在事务快照内计数，避免为 COUNT 构造 H2 `Row`
+和聚合对象。非主键范围、二级索引范围、表达式、别名和其他 SQL 继续回退 h2db 原路径。
+
+验证结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1 | on | 1388.89 | 668 | 1312 | 1750 | 7718 | `vexra-adb/build/adb-benchmark/range_count_fast_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 1651.07 | 474 | 1177 | 2002 | 7973 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties` |
+
+本轮新增集成测试 `preparedPrimaryKeyRangeCountUsesAdbDriverFastPath` 和
+`preparedNonPrimaryRangeCountFallsBackToH2Path`，覆盖主键 BETWEEN COUNT 快路径和非主键范围回退边界。
+diagnostics 可见纯 range 正式窗口只记录 `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH`；
+mixed 中 `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` 记录 600 次，说明 benchmark 的 range/count 部分已命中快路径。
+
+结论：纯 `range_scan` 从上一轮 SQL 路径约 551.98 ops/s 提升到约 1388.89 ops/s，p99 从约
+4613us 降到 1750us；`mixed` 从上一轮安全默认约 1623.38 ops/s 小幅提升到约 1651.07 ops/s，
+p99 从约 2230us 降到 2002us。mixed 仍未大幅提升，说明后续瓶颈更可能在点查 committed cache 校验、
+事务提交、以及混合负载中的剩余 H2 执行器边界。
+
+range/count 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_fast_stage.properties"
+```
+
+mixed 回归命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-count-fast-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_count_fast_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB

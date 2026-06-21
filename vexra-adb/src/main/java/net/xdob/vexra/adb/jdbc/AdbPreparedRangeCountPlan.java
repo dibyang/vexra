@@ -1,0 +1,212 @@
+package net.xdob.vexra.adb.jdbc;
+
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collections;
+import java.util.Locale;
+import net.xdob.vexra.adb.db.AdbTable;
+import net.xdob.vexra.adb.db.TableScanCursor;
+import net.xdob.vexra.adb.db.TxnMap2;
+import net.xdob.vexra.adb.key.RowPrefix;
+import org.h2.engine.Session;
+import org.h2.engine.SessionLocal;
+import org.h2.jdbc.JdbcConnection;
+import org.h2.result.SearchRow;
+import org.h2.schema.Schema;
+import org.h2.table.Column;
+import org.h2.table.Table;
+import org.h2.value.Value;
+import org.h2.value.ValueBigint;
+
+/**
+ * 参数化主键范围 COUNT 的 ADB 快路径计划。
+ *
+ * <p>当前只识别 {@code SELECT COUNT(*) FROM table WHERE pk BETWEEN ? AND ?}。
+ * 命中后直接复用 ADB 当前事务快照上的 {@link TableScanCursor} 计数，避免 h2db 通用执行器、
+ * Row materialization 和聚合对象开销。其他 SQL 继续回退 h2db。</p>
+ */
+final class AdbPreparedRangeCountPlan {
+
+  private static final String SELECT_COUNT = "SELECT COUNT(*)";
+  private static final String FROM = " FROM ";
+  private static final String WHERE = " WHERE ";
+  private static final String BETWEEN = " BETWEEN ";
+  private static final String PARAM_AND_PARAM = "? AND ?";
+
+  private final String tableName;
+  private final String whereColumn;
+  private AdbTable resolvedTable;
+
+  private AdbPreparedRangeCountPlan(String tableName, String whereColumn) {
+    this.tableName = tableName;
+    this.whereColumn = whereColumn;
+  }
+
+  /**
+   * 解析可走范围 COUNT 快路径的 PreparedStatement SQL。
+   *
+   * @param sql PreparedStatement SQL
+   * @return 命中计划；不支持时返回 {@code null}
+   */
+  static AdbPreparedRangeCountPlan parse(String sql) {
+    if (sql == null) {
+      return null;
+    }
+    String trimmed = sql.trim();
+    if (trimmed.endsWith(";")) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+    }
+    String upper = trimmed.toUpperCase(Locale.ROOT);
+    if (!upper.startsWith(SELECT_COUNT + " ")) {
+      return null;
+    }
+    int from = upper.indexOf(FROM);
+    int where = upper.indexOf(WHERE);
+    if (from < SELECT_COUNT.length() || where <= from) {
+      return null;
+    }
+    String tablePart = trimmed.substring(from + FROM.length(), where).trim();
+    String wherePart = trimmed.substring(where + WHERE.length()).trim();
+    String upperWhere = wherePart.toUpperCase(Locale.ROOT);
+    int between = upperWhere.indexOf(BETWEEN);
+    if (between <= 0) {
+      return null;
+    }
+    String left = wherePart.substring(0, between).trim();
+    String right = wherePart.substring(between + BETWEEN.length()).trim();
+    if (!PARAM_AND_PARAM.equals(right.toUpperCase(Locale.ROOT))) {
+      return null;
+    }
+    if (tablePart.indexOf(' ') >= 0 || left.indexOf(' ') >= 0) {
+      return null;
+    }
+    return new AdbPreparedRangeCountPlan(normalizeIdentifier(tablePart),
+        normalizeIdentifier(left));
+  }
+
+  /**
+   * 返回该计划需要记录的 JDBC 参数数量。
+   *
+   * @return 参数数量
+   */
+  int parameterCount() {
+    return 2;
+  }
+
+  /**
+   * 尝试执行主键范围 COUNT。
+   *
+   * @param connection h2db 原始连接
+   * @param parameters 当前 PreparedStatement 参数
+   * @param parameterSet 参数是否已设置
+   * @return 命中时返回单行 ResultSet；不安全命中时返回 {@code null}
+   * @throws SQLException 查询失败时抛出
+   */
+  ResultSet tryExecuteQuery(Connection connection, Object[] parameters,
+      boolean[] parameterSet) throws SQLException {
+    if (parameters == null || parameterSet == null || parameters.length <= 2
+        || parameterSet.length <= 2 || !parameterSet[1]
+        || !parameterSet[2]) {
+      return null;
+    }
+    SessionLocal session = session(connection);
+    AdbTable table = resolveAdbTable(session);
+    if (table == null) {
+      return null;
+    }
+    long startMillis = System.currentTimeMillis();
+    Throwable failure = null;
+    try {
+      long min = toLong(parameters[1]);
+      long max = toLong(parameters[2]);
+      long count = min > max ? 0L : countVisibleRows(session, table, min, max);
+      Value[] values = new Value[]{ValueBigint.get(count)};
+      return AdbSimpleResultSet.singleRow(Collections.singletonList("COUNT(*)"),
+          values);
+    } catch (SQLException e) {
+      failure = e;
+      throw e;
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      table.recordSqlDiagnostic("SELECT", "RANGE_COUNT_FAST", startMillis,
+          failure);
+    }
+  }
+
+  private long countVisibleRows(SessionLocal session, AdbTable table, long min,
+      long max) throws SQLException {
+    TxnMap2 map = table.getTxnMap(session);
+    RowPrefix prefix = RowPrefix.of(map.getTabId(table.getId()));
+    long count = 0L;
+    try (TableScanCursor cursor = map.entryIterator(prefix, min, max)) {
+      while (cursor.next()) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private boolean isPrimaryKeyRange(AdbTable table) {
+    Column column = table.getColumn(whereColumn);
+    int mainIndexColumn = table.getMainIndexColumn();
+    return mainIndexColumn == SearchRow.ROWID_INDEX
+        || column.getColumnId() == mainIndexColumn;
+  }
+
+  private AdbTable resolveAdbTable(SessionLocal session) {
+    if (resolvedTable != null) {
+      return resolvedTable;
+    }
+    AdbTable table = adbTable(session);
+    if (table == null || !isPrimaryKeyRange(table)) {
+      return null;
+    }
+    resolvedTable = table;
+    return table;
+  }
+
+  private AdbTable adbTable(SessionLocal session) {
+    Schema schema = session.getDatabase().getSchema(
+        session.getCurrentSchemaName());
+    String localTableName = tableName;
+    int dot = tableName.indexOf('.');
+    if (dot > 0) {
+      schema = session.getDatabase().getSchema(tableName.substring(0, dot));
+      localTableName = tableName.substring(dot + 1);
+    }
+    Table table = schema.findTableOrView(session, localTableName);
+    return table instanceof AdbTable ? (AdbTable) table : null;
+  }
+
+  private static SessionLocal session(Connection connection) throws SQLException {
+    Session session = connection.unwrap(JdbcConnection.class).getSession();
+    if (!(session instanceof SessionLocal)) {
+      throw new SQLException("Unsupported H2 session type: "
+          + session.getClass().getName());
+    }
+    return (SessionLocal) session;
+  }
+
+  private static long toLong(Object value) throws SQLException {
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    try {
+      return Long.parseLong(String.valueOf(value));
+    } catch (NumberFormatException e) {
+      throw new SQLException("Range count key is not numeric: " + value, e);
+    }
+  }
+
+  private static String normalizeIdentifier(String identifier) {
+    String value = identifier.trim();
+    if (value.startsWith("\"") && value.endsWith("\"")
+        && value.length() >= 2) {
+      return value.substring(1, value.length() - 1);
+    }
+    return value.toUpperCase(Locale.ROOT);
+  }
+}

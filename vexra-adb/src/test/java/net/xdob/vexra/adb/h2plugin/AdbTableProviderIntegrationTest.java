@@ -268,6 +268,83 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedPrimaryKeyRangeCountUsesAdbDriverFastPath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-range-count").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                Assertions.assertEquals(5, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES "
+                                + "(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd'), (5, 'e')"));
+
+                AdbSqlDiagnosticsRegistry.resetAll();
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN ? AND ?")) {
+                    count.setLong(1, 2L);
+                    count.setLong(2, 4L);
+                    try (ResultSet resultSet = count.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(3L, resultSet.getLong(1));
+                        Assertions.assertFalse(resultSet.next());
+                    }
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_PRIMARY_FIND TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void preparedNonPrimaryRangeCountFallsBackToH2Path() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-range-count-fallback").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.execute("CREATE INDEX IDX_TEST_NAME ON TEST(NAME)");
+                Assertions.assertEquals(3, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')"));
+
+                AdbSqlDiagnosticsRegistry.resetAll();
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST WHERE NAME BETWEEN ? AND ?")) {
+                    count.setString(1, "a");
+                    count.setString(2, "b");
+                    try (ResultSet resultSet = count.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(2L, resultSet.getLong(1));
+                    }
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void rejectsDuplicatePrimaryKeyThroughBulkInsertPath() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-duplicate").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
