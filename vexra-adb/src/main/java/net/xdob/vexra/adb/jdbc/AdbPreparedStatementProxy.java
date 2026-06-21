@@ -5,6 +5,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 
 /**
  * ADB PreparedStatement 包装代理。
@@ -26,29 +27,35 @@ final class AdbPreparedStatementProxy {
    * @return 包装后的 PreparedStatement
    */
   static PreparedStatement wrap(Connection connection, PreparedStatement statement,
-      AdbPreparedInsertPlan plan) {
+      AdbPreparedInsertPlan insertPlan,
+      AdbPreparedPointLookupPlan pointLookupPlan) {
     return (PreparedStatement) Proxy.newProxyInstance(
         statement.getClass().getClassLoader(),
         new Class<?>[]{PreparedStatement.class},
-        new Handler(connection, statement, plan));
+        new Handler(connection, statement, insertPlan, pointLookupPlan));
   }
 
   private static final class Handler implements InvocationHandler {
 
     private final Connection connection;
     private final PreparedStatement delegate;
-    private final AdbPreparedInsertPlan plan;
+    private final AdbPreparedInsertPlan insertPlan;
+    private final AdbPreparedPointLookupPlan pointLookupPlan;
     private final Object[] parameters;
     private final boolean[] parameterSet;
     private int lastUpdateCount = -1;
 
     private Handler(Connection connection, PreparedStatement delegate,
-        AdbPreparedInsertPlan plan) {
+        AdbPreparedInsertPlan insertPlan,
+        AdbPreparedPointLookupPlan pointLookupPlan) {
       this.connection = connection;
       this.delegate = delegate;
-      this.plan = plan;
-      this.parameters = new Object[plan.parameterCount() + 1];
-      this.parameterSet = new boolean[plan.parameterCount() + 1];
+      this.insertPlan = insertPlan;
+      this.pointLookupPlan = pointLookupPlan;
+      int parameterCount = Math.max(parameterCount(insertPlan),
+          parameterCount(pointLookupPlan));
+      this.parameters = new Object[parameterCount + 1];
+      this.parameterSet = new boolean[parameterCount + 1];
     }
 
     @Override
@@ -70,22 +77,30 @@ final class AdbPreparedStatementProxy {
         java.util.Arrays.fill(parameterSet, false);
         return invokeDelegate(method, args);
       }
+      if ("executeQuery".equals(name) && noSqlArgument(args)
+          && pointLookupPlan != null) {
+        ResultSet resultSet = pointLookupPlan.tryExecuteQuery(connection,
+            parameters, parameterSet);
+        if (resultSet != null) {
+          return resultSet;
+        }
+      }
       if ("executeUpdate".equals(name) && noSqlArgument(args)) {
-        Integer count = plan.tryExecute(connection, parameters, parameterSet);
+        Integer count = tryExecuteInsert();
         if (count != null) {
           lastUpdateCount = count.intValue();
           return count;
         }
       }
       if ("executeLargeUpdate".equals(name) && noSqlArgument(args)) {
-        Integer count = plan.tryExecute(connection, parameters, parameterSet);
+        Integer count = tryExecuteInsert();
         if (count != null) {
           lastUpdateCount = count.intValue();
           return Long.valueOf(count.longValue());
         }
       }
       if ("execute".equals(name) && noSqlArgument(args)) {
-        Integer count = plan.tryExecute(connection, parameters, parameterSet);
+        Integer count = tryExecuteInsert();
         if (count != null) {
           lastUpdateCount = count.intValue();
           return Boolean.FALSE;
@@ -116,6 +131,19 @@ final class AdbPreparedStatementProxy {
       } catch (java.lang.reflect.InvocationTargetException e) {
         throw e.getCause();
       }
+    }
+
+    private Integer tryExecuteInsert() throws java.sql.SQLException {
+      return insertPlan == null ? null
+          : insertPlan.tryExecute(connection, parameters, parameterSet);
+    }
+
+    private static int parameterCount(AdbPreparedInsertPlan plan) {
+      return plan == null ? 0 : plan.parameterCount();
+    }
+
+    private static int parameterCount(AdbPreparedPointLookupPlan plan) {
+      return plan == null ? 0 : plan.parameterCount();
     }
 
     private static boolean noSqlArgument(Object[] args) {

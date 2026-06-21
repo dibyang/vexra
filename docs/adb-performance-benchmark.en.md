@@ -208,6 +208,79 @@ executor. A
 future h2db table-level bulk callback is still the cleaner path to full
 transparency; ADB's `bulkInsertAppendRows` can remain the implementation target.
 
+## Round 8 JDBC Primary-Key Point-Lookup Fast Path
+
+This round adds a parameterized primary-key lookup fast path in the
+`jdbc:adb:*` compatibility Driver. It recognizes the narrow SQL shape:
+
+```sql
+SELECT col[, ...] FROM table WHERE pk = ?
+```
+
+The target table must be an `AdbTable`, the `WHERE` column must be the table
+primary-key column or ROWID, and projected expressions must be simple column
+names. Matching statements bypass the generic h2db query executor and
+`AdbPrimaryIndex.find`; the wrapper reads the visible `RowValue` through the
+current session's `TxnMap2` and uses `RowCodec.decodeColumns` to decode only the
+projected columns. Other SQL forms, non-primary-key predicates, projected
+expressions, missing parameters, and non-ADB tables continue to use the original
+h2db path.
+
+`TxnManager` still validates by default that the physical committed version
+exists before using a committed-row cache entry. This protects reads after a
+restore from returning stale in-memory cache data. Pure local benchmarks can
+explicitly skip the check with
+`-Dvexra.adb.rowCache.trustCommitted=true` to measure the shortest point-read
+path.
+
+Measured results:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | on | 2664.30 | 325 | 688 | 1065 | 2274 | `vexra-adb/build/adb-benchmark/point_lookup_driver_safe_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 1623.38 | 477 | 1403 | 2230 | 7069 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties` |
+
+The new integration test
+`preparedPrimaryKeyLookupUsesAdbDriverFastPath` covers
+`DriverManager + jdbc:adb:* + PreparedStatement` primary-key lookup. It asserts
+the returned value and verifies diagnostics contain
+`ADB_TABLE_POINT_LOOKUP_FAST TEST` instead of `ADB_TABLE_PRIMARY_FIND TEST`.
+
+Conclusion: ordinary JDBC primary-key lookup improved from the initial
+228.80 ops/s and the previous SQL-path range of about 770-780 ops/s to about
+2664.30 ops/s. The mixed workload did not improve further because it still
+contains range/count work that records 900 `ADB_TABLE_PRIMARY_FIND ADB_BENCH`
+operations, and transaction commit plus range-scan cost still compete for total
+latency. The next highest-value optimization should target the SQL range/count
+fast path or mixed-workload commit cost.
+
+Point-lookup reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-driver-safe-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_driver_safe_stage.properties"
+```
+
+Mixed regression command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-driver-point-safe-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

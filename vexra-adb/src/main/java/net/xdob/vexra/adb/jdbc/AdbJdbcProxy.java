@@ -54,10 +54,13 @@ final class AdbJdbcProxy {
         } catch (java.lang.reflect.InvocationTargetException e) {
           throw e.getCause();
         }
-        AdbPreparedInsertPlan plan = AdbPreparedInsertPlan.parse(
+        AdbPreparedInsertPlan insertPlan = AdbPreparedInsertPlan.parse(
             (String) args[0]);
-        if (plan != null) {
-          return AdbPreparedStatementProxy.wrap(delegate, statement, plan);
+        AdbPreparedPointLookupPlan pointLookupPlan =
+            AdbPreparedPointLookupPlan.parse((String) args[0]);
+        if (insertPlan != null || pointLookupPlan != null) {
+          return AdbPreparedStatementProxy.wrap(delegate, statement,
+              insertPlan, pointLookupPlan);
         }
         return statement;
       }

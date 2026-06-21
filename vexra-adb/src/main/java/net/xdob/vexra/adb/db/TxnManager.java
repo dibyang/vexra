@@ -16,6 +16,13 @@ import java.util.concurrent.CompletionException;
 
 public class TxnManager {
 
+  /**
+   * committed row cache 默认校验底层 committed version 仍然存在，保护 restore 后读取不返回旧缓存。
+   * 如需在纯本地压测中评估最短点查路径，可通过系统属性显式信任本进程提交后刷入的缓存项。
+   */
+  private static final boolean TRUST_COMMITTED_ROW_CACHE =
+      Boolean.getBoolean("vexra.adb.rowCache.trustCommitted");
+
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
   private DbStore store;
@@ -542,13 +549,14 @@ public class TxnManager {
     if (cached == null || cached.commitTs > txn.getStartTs()) {
       return null;
     }
-    if (!cachedCommittedVersionExists(rowKey, cached.commitTs)) {
+    if (!TRUST_COMMITTED_ROW_CACHE
+        && !cachedCommittedVersionExists(rowKey, cached.commitTs)) {
       committedRowCache.remove(rowKey, cached);
       return null;
     }
     txn.recordRead(rowKey, cached.commitTs);
-    if (cached.deleted) {
-      return copyWithRowKey(cached, rowKey.getRowId());
+    if (cached.rowKey == rowKey.getRowId()) {
+      return cached;
     }
     return copyWithRowKey(cached, rowKey.getRowId());
   }
@@ -774,7 +782,9 @@ public class TxnManager {
       if (value == null) {
         continue;
       }
-      committedRowCache.put(key, copyForCommit(value, commitTs));
+      RowValue committed = copyForCommit(value, commitTs);
+      committed.rowKey = key.getRowId();
+      committedRowCache.put(key, committed);
     }
   }
 

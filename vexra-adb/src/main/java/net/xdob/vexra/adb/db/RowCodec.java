@@ -283,6 +283,70 @@ public interface RowCodec {
     return safeDecode(buf);
   }
 
+  /**
+   * 只解码指定列，供主键点查这类投影查询跳过完整 Row 构造。
+   *
+   * @param bytes 行 payload
+   * @param columnIndexes 需要解码的列号
+   * @return 与 columnIndexes 一一对应的列值
+   */
+  static Value[] decodeColumns(byte[] bytes, int[] columnIndexes) {
+    if (bytes == null) {
+      throw new IllegalArgumentException("decode bytes is null ");
+    }
+    if (bytes.length == 0) {
+      throw new IllegalArgumentException("decode bytes is empty");
+    }
+    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    int type = buf.getInt();
+    if (type != ROW) {
+      Value value = safeDecode(ByteBuffer.wrap(bytes));
+      Value[] single = new Value[columnIndexes.length];
+      for (int i = 0; i < columnIndexes.length; i++) {
+        single[i] = columnIndexes[i] == 0 ? value : ValueNull.INSTANCE;
+      }
+      return single;
+    }
+
+    int size = buf.getInt();
+    Value[] values = new Value[columnIndexes.length];
+    for (int rowColumn = 0; rowColumn < size; rowColumn++) {
+      int len = buf.getInt();
+      if (isSelectedColumn(columnIndexes, rowColumn)) {
+        byte[] valueBytes = new byte[len];
+        buf.get(valueBytes);
+        Value value = safeDecode(ByteBuffer.wrap(valueBytes));
+        fillSelectedColumn(values, columnIndexes, rowColumn, value);
+      } else {
+        buf.position(buf.position() + len);
+      }
+    }
+    for (int i = 0; i < values.length; i++) {
+      if (values[i] == null) {
+        values[i] = ValueNull.INSTANCE;
+      }
+    }
+    return values;
+  }
+
+  static boolean isSelectedColumn(int[] columnIndexes, int rowColumn) {
+    for (int i = 0; i < columnIndexes.length; i++) {
+      if (columnIndexes[i] == rowColumn) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static void fillSelectedColumn(Value[] values, int[] columnIndexes,
+      int rowColumn, Value value) {
+    for (int i = 0; i < columnIndexes.length; i++) {
+      if (columnIndexes[i] == rowColumn) {
+        values[i] = value;
+      }
+    }
+  }
+
   static Row decode(long rowId, byte[] bytes){
     if (bytes == null) {
       throw new IllegalArgumentException("decode bytes is null ");

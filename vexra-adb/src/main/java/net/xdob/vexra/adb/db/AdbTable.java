@@ -213,7 +213,7 @@ public class AdbTable extends TableBase {
    * @param startMillis 操作开始时间
    * @param failure 失败异常；成功时为 null
    */
-  void recordSqlDiagnostic(String sqlType, String operation, long startMillis,
+  public void recordSqlDiagnostic(String sqlType, String operation, long startMillis,
       Throwable failure) {
     if (txnManager.getSqlDiagnosticRecorder() == null) {
       return;

@@ -176,6 +176,54 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedPrimaryKeyLookupUsesAdbDriverFastPath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-point-lookup").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                Assertions.assertEquals(3, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')"));
+
+                AdbSqlDiagnosticsRegistry.resetAll();
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT NAME FROM TEST WHERE ID = ?")) {
+                    select.setLong(1, 2L);
+                    try (ResultSet resultSet = select.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals("b", resultSet.getString(1));
+                        Assertions.assertFalse(resultSet.next());
+                    }
+                }
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT NAME, NAME FROM TEST WHERE ID = ?")) {
+                    select.setLong(1, 2L);
+                    try (ResultSet resultSet = select.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals("b", resultSet.getString(1));
+                        Assertions.assertEquals("b", resultSet.getString(2));
+                        Assertions.assertFalse(resultSet.next());
+                    }
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_POINT_LOOKUP_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_PRIMARY_FIND TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void rejectsDuplicatePrimaryKeyWithinOneMultiValuesInsert() throws Exception {
         String databasePath = tempDir.resolve("adb-multi-values-duplicate").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

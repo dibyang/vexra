@@ -169,6 +169,64 @@ JDBC insert 自动 bulk 复现命令：
 `ON DUPLICATE KEY`、`RETURNING` 等语法。要做到完全透明，仍建议
 h2db 在 `Insert` 执行层提供表级 bulk 回调，ADB 的 `bulkInsertAppendRows` 可继续作为落点。
 
+## 第八轮 JDBC 主键点查快路径结果
+
+本轮在 `jdbc:adb:*` 兼容 Driver 层增加参数化主键点查快路径，识别窄 SQL 形态：
+
+```sql
+SELECT col[, ...] FROM table WHERE pk = ?
+```
+
+命中条件包括：目标表必须是 `AdbTable`，`WHERE` 列必须是表主键列或 ROWID，投影列必须是简单列名。命中后不再进入 h2db
+通用查询执行器和 `AdbPrimaryIndex.find`，而是直接通过当前 session 的 `TxnMap2` 读取可见 `RowValue`，并用
+`RowCodec.decodeColumns` 只解码投影列。其他 SQL、非主键条件、表达式投影、未设置参数或非 ADB 表继续回退 h2db 原路径。
+
+同时，`TxnManager` 的 committed row cache 默认仍会用 `VersionKey` 校验底层 committed version 存在，保护
+restore 后读取不返回旧缓存；如需在纯本地压测中评估最短点查路径，可通过
+`-Dvexra.adb.rowCache.trustCommitted=true` 显式跳过该校验。
+
+验证结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | on | 2664.30 | 325 | 688 | 1065 | 2274 | `vexra-adb/build/adb-benchmark/point_lookup_driver_safe_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 1623.38 | 477 | 1403 | 2230 | 7069 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties` |
+
+本轮新增集成测试 `preparedPrimaryKeyLookupUsesAdbDriverFastPath`，覆盖 `DriverManager + jdbc:adb:* + PreparedStatement`
+主键点查，断言结果正确，并通过 diagnostics 确认命中 `ADB_TABLE_POINT_LOOKUP_FAST TEST`，不再进入
+`ADB_TABLE_PRIMARY_FIND TEST`。
+
+结论：普通 JDBC 主键点查从早期约 228.80 ops/s、上一轮 SQL 路径约 770-780 ops/s，提升到约 2664.30 ops/s；
+但 mixed 未继续提升，主要因为 mixed 中仍有 range/count 路径产生 900 次 `ADB_TABLE_PRIMARY_FIND ADB_BENCH`，
+且事务提交与范围扫描仍在竞争总耗时。下一轮最有价值的优化应继续围绕 range/count 的 SQL 快路径或 mixed 中的事务提交成本。
+
+点查复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-driver-safe-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_driver_safe_stage.properties"
+```
+
+mixed 回归命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-driver-point-safe-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_driver_point_safe_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB
