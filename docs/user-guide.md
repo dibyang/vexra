@@ -307,6 +307,7 @@ vexra-adb/build/adb-benchmark/adb-benchmark.properties
 | `insert` | 单线程顺序写入 / upsert |
 | `point_lookup` | 主键点查 |
 | `point_lookup_all` | 主键 `SELECT *` 点查 |
+| `table_count` | 使用 ADB row-count 元数据的全表 `COUNT(*)` |
 | `range_scan` | 主键范围计数扫描 |
 | `mixed` | 约 10% 写入、70% 点查、20% 范围扫描 |
 

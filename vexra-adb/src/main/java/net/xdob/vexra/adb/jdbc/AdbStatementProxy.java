@@ -4,6 +4,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 
 /**
@@ -46,6 +47,17 @@ final class AdbStatementProxy {
     public Object invoke(Object proxy, Method method, Object[] args)
         throws Throwable {
       String name = method.getName();
+      if ("executeQuery".equals(name) && args != null && args.length == 1
+          && args[0] instanceof String) {
+        AdbTableCountPlan countPlan = AdbTableCountPlan.parse(
+            (String) args[0]);
+        if (countPlan != null) {
+          ResultSet resultSet = countPlan.tryExecuteQuery(connection);
+          if (resultSet != null) {
+            return resultSet;
+          }
+        }
+      }
       if (isSqlExecution(name, args)) {
         AdbPreparedInsertPlan plan = AdbPreparedInsertPlan.parseLiteral(
             (String) args[0]);

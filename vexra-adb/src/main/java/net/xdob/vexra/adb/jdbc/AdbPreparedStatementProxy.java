@@ -29,12 +29,13 @@ final class AdbPreparedStatementProxy {
   static PreparedStatement wrap(Connection connection, PreparedStatement statement,
       AdbPreparedInsertPlan insertPlan,
       AdbPreparedPointLookupPlan pointLookupPlan,
-      AdbPreparedRangeCountPlan rangeCountPlan) {
+      AdbPreparedRangeCountPlan rangeCountPlan,
+      AdbTableCountPlan tableCountPlan) {
     return (PreparedStatement) Proxy.newProxyInstance(
         statement.getClass().getClassLoader(),
         new Class<?>[]{PreparedStatement.class},
         new Handler(connection, statement, insertPlan, pointLookupPlan,
-            rangeCountPlan));
+            rangeCountPlan, tableCountPlan));
   }
 
   private static final class Handler implements InvocationHandler {
@@ -44,6 +45,7 @@ final class AdbPreparedStatementProxy {
     private final AdbPreparedInsertPlan insertPlan;
     private final AdbPreparedPointLookupPlan pointLookupPlan;
     private final AdbPreparedRangeCountPlan rangeCountPlan;
+    private final AdbTableCountPlan tableCountPlan;
     private final Object[] parameters;
     private final boolean[] parameterSet;
     private int lastUpdateCount = -1;
@@ -51,15 +53,18 @@ final class AdbPreparedStatementProxy {
     private Handler(Connection connection, PreparedStatement delegate,
         AdbPreparedInsertPlan insertPlan,
         AdbPreparedPointLookupPlan pointLookupPlan,
-        AdbPreparedRangeCountPlan rangeCountPlan) {
+        AdbPreparedRangeCountPlan rangeCountPlan,
+        AdbTableCountPlan tableCountPlan) {
       this.connection = connection;
       this.delegate = delegate;
       this.insertPlan = insertPlan;
       this.pointLookupPlan = pointLookupPlan;
       this.rangeCountPlan = rangeCountPlan;
+      this.tableCountPlan = tableCountPlan;
       int parameterCount = Math.max(parameterCount(insertPlan),
           parameterCount(pointLookupPlan));
       parameterCount = Math.max(parameterCount, parameterCount(rangeCountPlan));
+      parameterCount = Math.max(parameterCount, parameterCount(tableCountPlan));
       this.parameters = new Object[parameterCount + 1];
       this.parameterSet = new boolean[parameterCount + 1];
     }
@@ -82,6 +87,13 @@ final class AdbPreparedStatementProxy {
         java.util.Arrays.fill(parameters, null);
         java.util.Arrays.fill(parameterSet, false);
         return invokeDelegate(method, args);
+      }
+      if ("executeQuery".equals(name) && noSqlArgument(args)
+          && tableCountPlan != null) {
+        ResultSet resultSet = tableCountPlan.tryExecuteQuery(connection);
+        if (resultSet != null) {
+          return resultSet;
+        }
       }
       if ("executeQuery".equals(name) && noSqlArgument(args)
           && pointLookupPlan != null) {
@@ -161,6 +173,10 @@ final class AdbPreparedStatementProxy {
     }
 
     private static int parameterCount(AdbPreparedRangeCountPlan plan) {
+      return plan == null ? 0 : plan.parameterCount();
+    }
+
+    private static int parameterCount(AdbTableCountPlan plan) {
       return plan == null ? 0 : plan.parameterCount();
     }
 

@@ -13,6 +13,8 @@ import org.h2.value.ValueNull;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class TxnManager {
 
@@ -29,11 +31,13 @@ public class TxnManager {
   private final LockManager lockManager = new LockManager();
   private final Object commitMutex = new Object();
   private final Map<Long, Transaction2> activeTransactions =
-      new java.util.concurrent.ConcurrentHashMap<>();
-  private final Map<TabId, java.util.concurrent.atomic.AtomicLong> maxRowIdHints =
-      new java.util.concurrent.ConcurrentHashMap<>();
+      new ConcurrentHashMap<>();
+  private final Map<TabId, AtomicLong> maxRowIdHints =
+      new ConcurrentHashMap<>();
   private final Map<DataKey, RowValue> committedRowCache =
-      new java.util.concurrent.ConcurrentHashMap<>();
+      new ConcurrentHashMap<>();
+  private final Map<TabId, AtomicLong> rowCountCache =
+      new ConcurrentHashMap<>();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -314,9 +318,20 @@ public class TxnManager {
   }
 
   public long getRowCount(Transaction2 txn, TabId tId) throws SQLException {
-    long baseRowCount = getBaseRowCount(RowCountKey.of(tId));
+    long baseRowCount = getCachedBaseRowCount(tId);
     long rowCountDelta = txn.getRowCountDelta(RowCountDeltaKey.of(tId));
     return baseRowCount + rowCountDelta;
+  }
+
+  private long getCachedBaseRowCount(TabId tId) throws SQLException {
+    AtomicLong cached = rowCountCache.get(tId);
+    if (cached != null) {
+      return cached.get();
+    }
+    long loaded = getBaseRowCount(RowCountKey.of(tId));
+    AtomicLong previous = rowCountCache.putIfAbsent(tId,
+        new AtomicLong(loaded));
+    return previous == null ? loaded : previous.get();
   }
 
   public RowValue getVisibleBaseRowCount(RowCountKey key) throws SQLException {
@@ -430,7 +445,7 @@ public class TxnManager {
       return;
     }
     maxRowIdHints.computeIfAbsent(key.getTabID(),
-        ignored -> new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE))
+        ignored -> new AtomicLong(Long.MIN_VALUE))
         .accumulateAndGet(key.getRowId(), Math::max);
   }
 
@@ -451,8 +466,29 @@ public class TxnManager {
     }
     for (Map.Entry<TabId, Long> entry : maxByTable.entrySet()) {
       maxRowIdHints.computeIfAbsent(entry.getKey(),
-          ignored -> new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE))
+          ignored -> new AtomicLong(Long.MIN_VALUE))
           .accumulateAndGet(entry.getValue(), Math::max);
+    }
+  }
+
+  private void refreshRowCountCache(Map<RowCountDeltaKey, Long> deltas,
+      Collection<Integer> invalidatedTableIds) {
+    if (invalidatedTableIds != null && !invalidatedTableIds.isEmpty()) {
+      rowCountCache.keySet().removeIf(
+          tabId -> invalidatedTableIds.contains(tabId.id));
+    }
+    if (deltas == null || deltas.isEmpty()) {
+      return;
+    }
+    for (Map.Entry<RowCountDeltaKey, Long> entry : deltas.entrySet()) {
+      long delta = entry.getValue() == null ? 0L : entry.getValue();
+      if (delta == 0L) {
+        continue;
+      }
+      AtomicLong cached = rowCountCache.get(entry.getKey().getTabKey());
+      if (cached != null) {
+        cached.addAndGet(delta);
+      }
     }
   }
 
@@ -681,6 +717,7 @@ public class TxnManager {
       commitLocalOrRemote(txn, commitTs, writeKeys, metas);
 
       refreshCommittedRowCache(txn, commitTs, writeKeys);
+      refreshRowCountCache(rowCountDeltas, tableEpochUpdates.keySet());
       txn.afterCommitSuccess(commitTs);
       recordRowIdHints(writeKeys);
       activeTransactions.remove(txn.getTxnId());

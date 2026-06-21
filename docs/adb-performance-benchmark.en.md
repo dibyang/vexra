@@ -384,6 +384,52 @@ application SQL shape.
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties"
 ```
 
+## Round 11 JDBC Table COUNT Fast Path and Row-Count Cache
+
+This round adds a fast path for the narrow SQL shape:
+
+```sql
+SELECT COUNT(*) FROM table
+```
+
+`PreparedStatement.executeQuery()` and `Statement.executeQuery(sql)` can now
+return the count directly from ADB row-count metadata plus the current
+transaction's local row-count delta. Other aggregate forms, `WHERE` predicates,
+aliases, and expressions continue to use h2db's original execution path.
+
+The first implementation only bypassed h2db aggregation and still read the
+committed row-count base by scanning persisted row-count deltas. That measured
+about 761.61 ops/s with p99 2785us, proving the next bottleneck was row-count
+metadata resolution itself. This round therefore also adds a conservative
+in-process committed row-count cache: the first lookup still loads from META,
+successful commits update cached table counts by their durable row-count delta,
+and truncate/table-epoch updates invalidate cached entries for that table. A
+restart or restore starts with an empty cache and falls back to the existing
+durable scan.
+
+Measured result after the cache:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `table_count` | 1 | on | 2577.32 | 351 | 657 | 1115 | 2005 | `vexra-adb/build/adb-benchmark/table_count_cache_stage.properties` |
+
+Diagnostics record `ADB_TABLE_TABLE_COUNT_FAST ADB_BENCH` for the measured
+window. The integration test also verifies that the fast path sees uncommitted
+local row-count delta and returns to the committed count after rollback.
+
+Table-count reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-cache-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=table_count" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_cache_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

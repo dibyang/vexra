@@ -316,6 +316,46 @@ SQL 形态。上一轮点查快路径只接受 `SELECT NAME FROM ...` 这类显�
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_all_fast_stage.properties"
 ```
 
+## 第十一轮 JDBC 全表 COUNT 快路径与 row-count 缓存结果
+
+本轮新增窄 SQL 形态的快路径：
+
+```sql
+SELECT COUNT(*) FROM table
+```
+
+`PreparedStatement.executeQuery()` 和 `Statement.executeQuery(sql)` 现在可以直接从
+ADB row-count 元数据叠加当前事务本地 row-count delta 得到结果。其他聚合形态、`WHERE`
+条件、别名和表达式继续回退到 h2db 原执行路径。
+
+第一版只绕过 h2db 聚合，但读取 committed row-count 基值时仍会扫描持久化 row-count
+delta，实测约 761.61 ops/s、p99 2785us，说明瓶颈转移到了 row-count 元数据解析本身。
+因此本轮同时加入保守的进程内 committed row-count 缓存：第一次读取仍从 META 加载，
+提交成功后按已经落盘的 row-count delta 增量更新缓存，truncate/table epoch 更新会清理该表缓存。
+进程重启或 restore 后缓存为空，会回到已有持久化扫描路径，不改变磁盘格式。
+
+缓存后验证结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `table_count` | 1 | on | 2577.32 | 351 | 657 | 1115 | 2005 | `vexra-adb/build/adb-benchmark/table_count_cache_stage.properties` |
+
+正式统计窗口中 diagnostics 记录 `ADB_TABLE_TABLE_COUNT_FAST ADB_BENCH`。新增集成测试还覆盖了
+快路径能看到未提交本地 row-count delta，并在 rollback 后恢复到已提交计数。
+
+全表 count 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-cache-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=table_count" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_cache_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB

@@ -355,6 +355,69 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void tableCountUsesAdbDriverFastPathAndSeesLocalDelta() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-table-count").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                Assertions.assertEquals(3, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')"));
+
+                AdbSqlDiagnosticsRegistry.resetAll();
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST")) {
+                    try (ResultSet resultSet = count.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(3L, resultSet.getLong(1));
+                        Assertions.assertFalse(resultSet.next());
+                    }
+                }
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (4, 'd')");
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST")) {
+                    try (ResultSet resultSet = count.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(4L, resultSet.getLong(1));
+                    }
+                }
+                connection.rollback();
+                connection.setAutoCommit(true);
+
+                try (ResultSet resultSet = statement.executeQuery(
+                        "SELECT COUNT(*) FROM TEST")) {
+                    Assertions.assertTrue(resultSet.next());
+                    Assertions.assertEquals(3L, resultSet.getLong(1));
+                    Assertions.assertFalse(resultSet.next());
+                }
+
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (4, 'committed')");
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST")) {
+                    try (ResultSet resultSet = count.executeQuery()) {
+                        Assertions.assertTrue(resultSet.next());
+                        Assertions.assertEquals(4L, resultSet.getLong(1));
+                    }
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_TABLE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void rejectsDuplicatePrimaryKeyThroughBulkInsertPath() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-duplicate").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

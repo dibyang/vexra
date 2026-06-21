@@ -205,6 +205,25 @@ class AdbBenchmarkMainTest {
     assertEquals(0L, result.getFailedOperations());
   }
 
+  @Test
+  void shouldRunTableCountBenchmarkAgainstLdbUrl() throws Exception {
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("table-count").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "table_count",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "5",
+        "--output", tempDir.resolve("table-count.properties").toString()
+    });
+
+    assertEquals("table_count", result.getWorkload());
+    assertEquals(5L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+  }
+
   /**
    * 验证不支持的 workload 会被拒绝。
    */
