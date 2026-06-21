@@ -43,14 +43,14 @@ class AdbRuntimeDiagnosticCollectorTest {
           new InMemoryAdbControlPlaneClient(Arrays.asList(
               region("r1", new byte[0], new byte[] {50}, "node-a"),
               region("r2", new byte[] {50}, new byte[0], "")), 100),
-          "0.6.0-test");
+          "0.10.0-test");
 
       AdbRuntimeDiagnosticCollector.Snapshot snapshot =
           new AdbRuntimeDiagnosticCollector(bridge).collect(true);
 
       assertEquals(ClusterHealthStatus.DEGRADED.name(),
           snapshot.getOperations().get("runtime.health_status"));
-      assertEquals("0.6.0-test",
+      assertEquals("0.10.0-test",
           snapshot.getOperations().get("runtime.cluster_version"));
       assertEquals(1,
           snapshot.getMetrics().get("vexra_cluster_ddl_running"));

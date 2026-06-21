@@ -246,7 +246,92 @@ SELECT NAME FROM TEST;
 
 门禁要求长稳压测报告、故障注入矩阵、commit crash-injection gate、recovery drill gate、SQL/region 读写 smoke、恢复演练和滚动升级演练全部满足验收。真实长时间压测平台可以按 `AdbEndToEndClusterStressReport` 的结构接入。
 
-## 9. 故障排查
+## 9. 性能基准
+
+ADB 提供最小 benchmark 入口，用来生成可归档的本地性能基线。默认 `jdbc` 模式使用
+`jdbc:adb:ldb:` 文件库，不使用 `mem` 模式；如果要测试 SQL Server 或分布式 SQL，可显式传入
+`jdbc:adb:tcp://...` URL。需要判断瓶颈是否来自 SQL / table engine / JDBC auto-commit 时，可以用
+`store` 模式绕过 SQL 层，直接测试本地 `LdbStore` 封装基线。
+
+默认 ldb benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark
+```
+
+默认输出：
+
+```text
+vexra-adb/build/adb-benchmark/adb-benchmark.properties
+```
+
+常用参数：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=jdbc `
+  -PadbBenchmarkWorkload=mixed `
+  -PadbBenchmarkRows=10000 `
+  -PadbBenchmarkWarmupOperations=1000 `
+  -PadbBenchmarkOperations=10000 `
+  -PadbBenchmarkRangeSize=64 `
+  -PadbBenchmarkTransactionBatchSize=1
+```
+
+`jdbc` 模式的 `-PadbBenchmarkTransactionBatchSize=1` 表示每条 SQL 自动提交。写入吞吐偏低时，
+可以把它调大（例如 `100` 或 `1000`）测批量事务口径：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=jdbc `
+  -PadbBenchmarkWorkload=insert `
+  -PadbBenchmarkTransactionBatchSize=100 `
+  -PadbBenchmarkOperations=10000
+```
+
+本地 store 基线：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=store `
+  -PadbBenchmarkStoreDir=vexra-adb/build/adb-benchmark/store-baseline `
+  -PadbBenchmarkWorkload=mixed `
+  -PadbBenchmarkRows=10000 `
+  -PadbBenchmarkOperations=10000
+```
+
+可选 workload：
+
+| workload | 说明 |
+| --- | --- |
+| `insert` | 单线程顺序写入 / upsert |
+| `point_lookup` | 主键点查 |
+| `range_scan` | 主键范围计数扫描 |
+| `mixed` | 约 10% 写入、70% 点查、20% 范围扫描 |
+
+测试 SQL Server 或远端分布式路径：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkUrl=jdbc:adb:tcp://127.0.0.1:9123/bench`;DB_CLOSE_DELAY=0 `
+  -PadbBenchmarkWorkload=point_lookup `
+  -PadbBenchmarkOperations=5000
+```
+
+runtime 包也包含 `bin/adb-benchmark.bat` / `bin/adb-benchmark`，参数与 main class 一致：
+
+```powershell
+.\bin\adb-benchmark.bat --url "jdbc:adb:ldb:.\work\bench\adb-benchmark;DB_CLOSE_DELAY=0" --workload mixed --rows 10000 --operations 10000 --output .\run\adb-benchmark.properties
+```
+
+输出 properties 至少包含：`mode`、`workload`、`url`、`operations`、`failedOperations`、
+`durationMillis`、`throughputPerSecond`、`p50LatencyMicros`、`p95LatencyMicros`、
+`p99LatencyMicros`、`maxLatencyMicros` 和 `passed`。这些结果可以作为 release evidence
+或后续长稳平台的输入，但单机短跑不能替代多小时/多节点压测。
+
+当前本地基线和优化判断见 [ADB 性能基线报告](adb-performance-benchmark.md)。
+
+## 10. 故障排查
 
 | 现象 | 可能原因 | 排查方式 |
 | --- | --- | --- |
@@ -256,7 +341,7 @@ SELECT NAME FROM TEST;
 | 建表进入普通 h2db 表 | URL 覆盖了 `DEFAULT_TABLE_ENGINE` 或未指定 `ENGINE "adb_table"` | 使用 `jdbc:adb:*` 默认入口，或显式指定 `ENGINE "adb_table"` |
 | 参数未生效 | `WITH` 参数拼写错误 | 参数 key 大小写不敏感，但建议按本文写法复制 |
 
-## 10. 当前边界
+## 11. 当前边界
 
 - 当前默认能力适合本地开发、集成测试和分布式读写链路 smoke。
 - SQL 到 region 的 catalog/TSO 原型已支持 properties 快照，但集群配置、节点发现和 region 编排仍需后续阶段补齐。

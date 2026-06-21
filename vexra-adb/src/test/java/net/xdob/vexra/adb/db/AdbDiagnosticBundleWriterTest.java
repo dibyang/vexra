@@ -49,7 +49,7 @@ class AdbDiagnosticBundleWriterTest {
         "timestampMillis=1,sqlType=SELECT,table=T,latencyMillis=120");
     operations.put("worker.gc.deletedVersions", "2");
     AdbDiagnosticBundle bundle = new AdbDiagnosticBundle("bundle-1", 123L,
-        "0.1", "2.3.0", "0.6.0",
+        "0.1", "2.3.0", "0.10.0",
         AdbDiagnosticBundleWriter.redact(properties),
         operations,
         metrics,

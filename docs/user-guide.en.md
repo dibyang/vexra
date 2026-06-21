@@ -246,7 +246,99 @@ End-to-end cluster stress gate model:
 
 The gate requires the long-running stress report, fault-injection matrix, commit crash-injection gate, recovery drill gate, SQL/region read/write smoke, recovery drill, and rolling-upgrade drill to all pass. A real long-duration stress platform can feed data into the `AdbEndToEndClusterStressReport` shape.
 
-## 9. Troubleshooting
+## 9. Performance Benchmark
+
+ADB provides a minimal benchmark entry point for creating an archivable local
+performance baseline. The default `jdbc` mode uses a file-backed
+`jdbc:adb:ldb:` database and does not use `mem` mode. To test SQL Server or
+distributed SQL, pass an explicit `jdbc:adb:tcp://...` URL. When you need to
+separate SQL / table engine / JDBC auto-commit overhead from the local store
+cost, use `store` mode to bypass SQL and measure the local `LdbStore` wrapper.
+
+Default ldb benchmark:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark
+```
+
+Default output:
+
+```text
+vexra-adb/build/adb-benchmark/adb-benchmark.properties
+```
+
+Common parameters:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=jdbc `
+  -PadbBenchmarkWorkload=mixed `
+  -PadbBenchmarkRows=10000 `
+  -PadbBenchmarkWarmupOperations=1000 `
+  -PadbBenchmarkOperations=10000 `
+  -PadbBenchmarkRangeSize=64 `
+  -PadbBenchmarkTransactionBatchSize=1
+```
+
+In `jdbc` mode, `-PadbBenchmarkTransactionBatchSize=1` means one SQL statement
+per auto-commit transaction. If write throughput looks low, increase it (for
+example to `100` or `1000`) to measure batched transaction behavior:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=jdbc `
+  -PadbBenchmarkWorkload=insert `
+  -PadbBenchmarkTransactionBatchSize=100 `
+  -PadbBenchmarkOperations=10000
+```
+
+Local store baseline:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkMode=store `
+  -PadbBenchmarkStoreDir=vexra-adb/build/adb-benchmark/store-baseline `
+  -PadbBenchmarkWorkload=mixed `
+  -PadbBenchmarkRows=10000 `
+  -PadbBenchmarkOperations=10000
+```
+
+Available workloads:
+
+| workload | Description |
+| --- | --- |
+| `insert` | Single-thread sequential write / upsert |
+| `point_lookup` | Primary-key point lookup |
+| `range_scan` | Primary-key range count scan |
+| `mixed` | About 10% writes, 70% point lookups, and 20% range scans |
+
+Test SQL Server or the remote distributed path:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  -PadbBenchmarkUrl=jdbc:adb:tcp://127.0.0.1:9123/bench`;DB_CLOSE_DELAY=0 `
+  -PadbBenchmarkWorkload=point_lookup `
+  -PadbBenchmarkOperations=5000
+```
+
+The runtime package also includes `bin/adb-benchmark.bat` /
+`bin/adb-benchmark`, with the same main-class parameters:
+
+```powershell
+.\bin\adb-benchmark.bat --url "jdbc:adb:ldb:.\work\bench\adb-benchmark;DB_CLOSE_DELAY=0" --workload mixed --rows 10000 --operations 10000 --output .\run\adb-benchmark.properties
+```
+
+The output properties include at least `mode`, `workload`, `url`, `operations`,
+`failedOperations`, `durationMillis`, `throughputPerSecond`,
+`p50LatencyMicros`, `p95LatencyMicros`, `p99LatencyMicros`,
+`maxLatencyMicros`, and `passed`. These results can feed release evidence or a
+future long-running stress platform, but a short single-node run is not a
+replacement for multi-hour / multi-node stress testing.
+
+For the current local baseline and optimization conclusions, see
+[ADB Performance Baseline Report](adb-performance-benchmark.en.md).
+
+## 10. Troubleshooting
 
 | Symptom | Possible Cause | Check |
 | --- | --- | --- |
@@ -256,7 +348,7 @@ The gate requires the long-running stress report, fault-injection matrix, commit
 | Table is created as a regular h2db table | URL overrides `DEFAULT_TABLE_ENGINE` or `ENGINE "adb_table"` is missing | Use the default `jdbc:adb:*` entry or specify `ENGINE "adb_table"` explicitly |
 | Parameter has no effect | A `WITH` parameter is misspelled | Parameter keys are case-insensitive, but copying the guide spelling is recommended |
 
-## 10. Current Boundaries
+## 11. Current Boundaries
 
 - The current default capability is suitable for local development, integration tests, and distributed read/write path smoke checks.
 - The SQL-to-region catalog/TSO prototype now supports a properties snapshot, but cluster configuration, service discovery, and region orchestration still need later phases.

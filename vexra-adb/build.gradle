@@ -121,6 +121,16 @@ tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks
     exitEnvironmentVar = 'ADB_RELEASE_PROFILE_EXIT_CONSOLE'
 }
 
+tasks.register('adbBenchmarkStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-benchmark'
+    mainClassName = 'net.xdob.vexra.adb.AdbBenchmarkMain'
+    classpath = adbRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/benchmark').get().asFile
+    optsEnvironmentVar = 'ADB_BENCHMARK_OPTS'
+    exitEnvironmentVar = 'ADB_BENCHMARK_EXIT_CONSOLE'
+}
+
 tasks.register('adbReleaseProfile', JavaExec) {
     dependsOn tasks.named('classes')
     group = 'verification'
@@ -144,6 +154,31 @@ tasks.register('adbReleaseProfile', JavaExec) {
         '--trialNotes', (findProperty('adbTrialNotes') ?: '').toString()
 }
 
+tasks.register('adbBenchmark', JavaExec) {
+    dependsOn tasks.named('classes')
+    group = 'verification'
+    description = 'Runs an ADB benchmark and writes a properties report.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'net.xdob.vexra.adb.AdbBenchmarkMain'
+    def output = findProperty('adbBenchmarkOutput')
+        ? rootProject.file(findProperty('adbBenchmarkOutput').toString()).absolutePath
+        : layout.buildDirectory.file('adb-benchmark/adb-benchmark.properties').get().asFile.absolutePath
+    def url = findProperty('adbBenchmarkUrl')
+        ?: "jdbc:adb:ldb:${layout.buildDirectory.dir('adb-benchmark/db/adb-benchmark').get().asFile.absolutePath};DB_CLOSE_DELAY=0"
+    args '--url', url.toString(),
+        '--mode', (findProperty('adbBenchmarkMode') ?: 'jdbc').toString(),
+        '--storeDir', (findProperty('adbBenchmarkStoreDir')
+            ?: layout.buildDirectory.dir('adb-benchmark/store').get().asFile.absolutePath).toString(),
+        '--workload', (findProperty('adbBenchmarkWorkload') ?: 'mixed').toString(),
+        '--rows', (findProperty('adbBenchmarkRows') ?: '1000').toString(),
+        '--warmupOperations', (findProperty('adbBenchmarkWarmupOperations') ?: '100').toString(),
+        '--operations', (findProperty('adbBenchmarkOperations') ?: '1000').toString(),
+        '--rangeSize', (findProperty('adbBenchmarkRangeSize') ?: '32').toString(),
+        '--transactionBatchSize', (findProperty('adbBenchmarkTransactionBatchSize') ?: '1').toString(),
+        '--dropTable', (findProperty('adbBenchmarkDropTable') ?: 'true').toString(),
+        '--output', output.toString()
+}
+
 tasks.register('adbRuntimeDist', Zip) {
     dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
         tasks.named('adbRegionNodeStartScripts'),
@@ -153,7 +188,8 @@ tasks.register('adbRuntimeDist', Zip) {
         tasks.named('adbRestoreStartScripts'),
         tasks.named('adbUpgradePlanStartScripts'),
         tasks.named('adbDoctorStartScripts'),
-        tasks.named('adbReleaseProfileStartScripts')
+        tasks.named('adbReleaseProfileStartScripts'),
+        tasks.named('adbBenchmarkStartScripts')
     archiveClassifier = 'runtime'
 
     into('lib') {
@@ -170,6 +206,7 @@ tasks.register('adbRuntimeDist', Zip) {
         from(tasks.named('adbUpgradePlanStartScripts'))
         from(tasks.named('adbDoctorStartScripts'))
         from(tasks.named('adbReleaseProfileStartScripts'))
+        from(tasks.named('adbBenchmarkStartScripts'))
         fileMode = 0755
     }
 }

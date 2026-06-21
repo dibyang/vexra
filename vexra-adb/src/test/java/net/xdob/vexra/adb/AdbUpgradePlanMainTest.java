@@ -22,15 +22,15 @@ class AdbUpgradePlanMainTest {
   @Test
   void shouldRenderNextNodeAndRemainingUpgradeSteps() throws Exception {
     String output = capture(() -> AdbUpgradePlanMain.main(new String[]{
-        "--targetVersion", "0.6.0",
+        "--targetVersion", "0.10.0",
         "--nodes", "node-a,node-b,witness-a",
         "--upgraded", "node-a"}));
 
     assertTrue(output.contains("PASS"));
-    assertTrue(output.contains("targetVersion=0.6.0"));
+    assertTrue(output.contains("targetVersion=0.10.0"));
     assertTrue(output.contains("nextNode=node-b"));
-    assertTrue(output.contains("1. upgrade node-b to 0.6.0"));
-    assertTrue(output.contains("2. upgrade witness-a to 0.6.0"));
+    assertTrue(output.contains("1. upgrade node-b to 0.10.0"));
+    assertTrue(output.contains("2. upgrade witness-a to 0.10.0"));
     assertTrue(output.contains("rollback command: rollback node-b"));
   }
 
@@ -41,7 +41,7 @@ class AdbUpgradePlanMainTest {
   void shouldRejectUpgradePlanWhenProductionGuardIsNotReady() {
     SQLException error = assertThrows(SQLException.class,
         () -> AdbUpgradePlanMain.main(new String[]{
-            "--targetVersion", "0.6.0",
+            "--targetVersion", "0.10.0",
             "--nodes", "node-a,node-b,witness-a",
             "--adb.production.mode", "mvp-cluster",
             "--adb.production.topology", "2data1witness"}));
@@ -56,7 +56,7 @@ class AdbUpgradePlanMainTest {
   @Test
   void shouldRenderUpgradePlanWithSecureProductionGuard() throws Exception {
     String output = capture(() -> AdbUpgradePlanMain.main(new String[]{
-        "--targetVersion", "0.6.0",
+        "--targetVersion", "0.10.0",
         "--nodes", "node-a,node-b,witness-a",
         "--adb.production.mode", "mvp-cluster",
         "--adb.production.topology", "2data1witness",

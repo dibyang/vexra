@@ -53,7 +53,7 @@ class AdbDoctorMainTest {
         "--bundleId", "doctor-test",
         "--version", "test-version",
         "--h2dbVersion", "2.3.0",
-        "--ldbVersion", "0.6.0",
+        "--ldbVersion", "0.10.0",
         "--checkRuntimeScripts", "false",
         "--logs", log.toString(),
         "--autoLogs", "true",
@@ -73,7 +73,7 @@ class AdbDoctorMainTest {
     assertTrue(text.contains("bundleId=doctor-test"));
     assertTrue(text.contains("productVersion=test-version"));
     assertTrue(text.contains("h2dbVersion=2.3.0"));
-    assertTrue(text.contains("ldbVersion=0.6.0"));
+    assertTrue(text.contains("ldbVersion=0.10.0"));
     assertTrue(text.contains("PASS"));
     assertTrue(text.contains("preflightPassed=true"));
     assertTrue(text.contains("adb.security.token=<redacted>"));
