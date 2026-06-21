@@ -3,6 +3,7 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.key.*;
 import org.h2.result.Row;
 import org.h2.value.Value;
+import org.h2.value.ValueNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -117,6 +118,23 @@ public class TxnMap2 {
   }
 
   /**
+   * 写入已经编码好的数据 key，并复用调用方已经读取过的旧可见版本。
+   *
+   * <p>该入口用于 bulk insert 在完成整批主键/索引校验后一次性登记事务本地写集。
+   * 调用方必须保证 {@code oldValue} 来自同一事务快照；这样提交和回滚仍然由
+   * {@link Transaction2} 的 write set / undo log 统一处理。</p>
+   *
+   * @param dataKey 写入的逻辑 key，可以是 row key 或 index key
+   * @param value 已编码的写入值
+   * @param oldValue 同一事务快照下的旧可见值，不存在时为 null
+   * @throws SQLException 写入事务本地状态失败时抛出
+   */
+  public void putEncoded(DataKey dataKey, RowValue value, RowValue oldValue)
+      throws SQLException {
+    this.put(dataKey, value, oldValue);
+  }
+
+  /**
    * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
    *
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
@@ -228,6 +246,27 @@ public class TxnMap2 {
 
   public void addIndexBatch(IndexPrefix indexPrefix, Collection<IndexKey> indexKeys) throws SQLException {
     txnManager.addIndexBatch(transaction, indexPrefix, indexKeys);
+  }
+
+  /**
+   * 在当前事务中登记二级索引 key 写入。
+   *
+   * <p>与 {@link #addIndexBatch(IndexPrefix, Collection)} 不同，该方法不直接写
+   * committed version，而是写入事务本地 write set，使普通用户事务的 commit、rollback
+   * 和 savepoint 语义与 row 写入保持一致。</p>
+   *
+   * @param indexKeys 需要随当前事务提交的索引 key
+   * @throws SQLException 可见性检查或事务写入失败时抛出
+   */
+  public void putIndexKeys(Collection<IndexKey> indexKeys) throws SQLException {
+    for (IndexKey indexKey : indexKeys) {
+      RowValue indexValue = new RowValue();
+      indexValue.txnId = transaction.getTxnId();
+      indexValue.commitTs = 0;
+      indexValue.deleted = false;
+      indexValue.payload = RowCodec.encode(ValueNull.INSTANCE);
+      put(indexKey, indexValue, getVisible(indexKey));
+    }
   }
 
   public Row lock(int tableId, long key, int timeoutMillis) throws SQLException {

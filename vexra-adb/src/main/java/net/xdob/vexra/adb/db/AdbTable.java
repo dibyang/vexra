@@ -670,10 +670,6 @@ public class AdbTable extends TableBase {
     if (rows == null || rows.isEmpty()) {
       return 0;
     }
-    if (hasSecondaryIndex()) {
-      throw DbException.getUnsupportedException(
-          "ADB bulk insert currently requires a table without secondary indexes");
-    }
     if (getSqlDistributedWriteRuntime() != null
         || txnManager.getRegionCommitCoordinator() != null) {
       throw DbException.getUnsupportedException(
@@ -683,23 +679,44 @@ public class AdbTable extends TableBase {
     RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
     TxnMap2 map = getTxnMap(session);
+    long savepointId = System.nanoTime();
+    map.setSavepoint(savepointId);
     int count = 0;
     try {
+      List<BulkRowWrite> rowWrites = new ArrayList<>(rows.size());
+      Set<Long> rowIds = new HashSet<>();
       for (Row row : rows) {
         prepareBulkRow(row);
         RowKey rowKey = RowKey.of(map.getTabId(getId()), row.getKey());
-        RowValue old = map.putEncodedIfAbsent(rowKey,
-            rowValue(map.getTransaction().getTxnId(), row));
-        if (old != null) {
-          throw duplicateKey(row.getKey(), old);
+        if (!rowIds.add(row.getKey())) {
+          throw duplicateKey(row.getKey(), null);
         }
-        count++;
+        RowValue old = null;
+        if (!map.canSkipAppendUniqueCheck(rowKey)) {
+          old = map.getVisible(rowKey);
+          if (isExistingRow(old)) {
+            throw duplicateKey(row.getKey(), old);
+          }
+        }
+        rowWrites.add(new BulkRowWrite(rowKey,
+            rowValue(map.getTransaction().getTxnId(), row), old));
       }
+      for (BulkRowWrite rowWrite : rowWrites) {
+        map.putEncoded(rowWrite.rowKey, rowWrite.value, rowWrite.oldValue);
+      }
+      for (Index index : indexes) {
+        if (index instanceof AdbSecondaryIndex) {
+          ((AdbSecondaryIndex) index).bulkInsertRows(session, rows);
+        }
+      }
+      count = rows.size();
     } catch (SQLException e) {
       failure = convertException(e);
+      rollbackBulkSavepoint(map, savepointId, failure);
       throw failure;
     } catch (RuntimeException e) {
       failure = e;
+      rollbackBulkSavepoint(map, savepointId, failure);
       throw e;
     } finally {
       recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
@@ -708,13 +725,18 @@ public class AdbTable extends TableBase {
     return count;
   }
 
-  private boolean hasSecondaryIndex() {
-    for (Index index : indexes) {
-      if (index instanceof AdbSecondaryIndex) {
-        return true;
-      }
+  private static void rollbackBulkSavepoint(TxnMap2 map, long savepointId,
+      RuntimeException failure) {
+    try {
+      map.rollbackTo(savepointId);
+    } catch (RuntimeException rollbackFailure) {
+      failure.addSuppressed(rollbackFailure);
     }
-    return false;
+  }
+
+  private static boolean isExistingRow(RowValue old) {
+    return old != null && !old.deleted && old.payload != null
+        && old.payload.length > 0;
   }
 
   private void prepareBulkRow(Row row) {
@@ -739,11 +761,24 @@ public class AdbTable extends TableBase {
 
   private DbException duplicateKey(long rowId, RowValue old) {
     int errorCode = ErrorCode.DUPLICATE_KEY_1;
-    Row oldRow = RowCodec.decode(rowId, old.payload);
+    Row oldRow = old != null && old.payload != null
+        ? RowCodec.decode(rowId, old.payload) : null;
     DbException e = DbException.get(errorCode,
         getName() + " primary key " + rowId + ' ' + oldRow);
     e.setSource(primaryIndex);
     return e;
+  }
+
+  private static final class BulkRowWrite {
+    private final RowKey rowKey;
+    private final RowValue value;
+    private final RowValue oldValue;
+
+    private BulkRowWrite(RowKey rowKey, RowValue value, RowValue oldValue) {
+      this.rowKey = rowKey;
+      this.value = value;
+      this.oldValue = oldValue;
+    }
   }
 
   @Override

@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
@@ -123,23 +124,78 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
-    void rejectsSecondaryIndexThroughBulkInsertPath() throws Exception {
+    void bulkInsertsRowsAndSecondaryIndexEntries() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-secondary-index").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
         try {
             try (Connection connection = new org.h2.Driver().connect(url, new Properties());
                  Statement statement = connection.createStatement()) {
                 connection.setAutoCommit(false);
-                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR, SCORE INT)");
                 statement.execute("CREATE INDEX IDX_TEST_NAME ON TEST(NAME)");
-                connection.commit();
 
                 AdbTable table = adbTable(connection, "TEST");
+                int inserted = table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(1L, "a", 10),
+                        row(2L, "b", 20),
+                        row(3L, "b", 30)));
+                connection.commit();
+
+                Assertions.assertEquals(3, inserted);
+                Assertions.assertEquals(3L, countRows(statement));
+                Assertions.assertEquals(2L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE NAME = 'b'"));
+                Assertions.assertEquals("b",
+                        singleString(statement, "SELECT NAME FROM TEST WHERE ID = 2"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rejectsDuplicateSecondaryUniqueKeyThroughBulkInsertPath() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-secondary-unique").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR, SCORE INT)");
+                statement.execute("CREATE UNIQUE INDEX IDX_TEST_NAME ON TEST(NAME)");
+                AdbTable table = adbTable(connection, "TEST");
                 DbException error = Assertions.assertThrows(DbException.class,
-                        () -> table.bulkInsertAppendRows(session(connection),
-                                Collections.singletonList(row(2L, "indexed"))));
-                Assertions.assertTrue(error.getMessage().contains("secondary indexes"), error.getMessage());
+                        () -> table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                                row(1L, "dup", 10),
+                                row(2L, "dup", 20))));
+                Assertions.assertTrue(error.getMessage().contains("Unique index"), error.getMessage());
+                Assertions.assertEquals(0L, countRows(statement));
                 connection.rollback();
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void rollsBackBulkInsertedSecondaryIndexEntries() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-secondary-rollback").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR, SCORE INT)");
+                statement.execute("CREATE INDEX IDX_TEST_NAME ON TEST(NAME)");
+                AdbTable table = adbTable(connection, "TEST");
+                table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(1L, "rollback", 10),
+                        row(2L, "rollback", 20)));
+                connection.rollback();
+
+                Assertions.assertEquals(0L, countRows(statement));
+                Assertions.assertEquals(0L,
+                        singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE NAME = 'rollback'"));
             }
         } finally {
             DbStoreEngine.close(databasePath);
@@ -404,6 +460,15 @@ class AdbTableProviderIntegrationTest {
 
     private static DefaultRow row(long id, String name) {
         DefaultRow row = new DefaultRow(new Value[]{ValueBigint.get(id), ValueVarchar.get(name)});
+        row.setKey(id);
+        return row;
+    }
+
+    private static DefaultRow row(long id, String name, int score) {
+        DefaultRow row = new DefaultRow(new Value[]{
+                ValueBigint.get(id),
+                ValueVarchar.get(name),
+                org.h2.value.ValueInteger.get(score)});
         row.setKey(id);
         return row;
     }

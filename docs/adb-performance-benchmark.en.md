@@ -158,10 +158,26 @@ Current result lines:
 | `jdbc_bulk` | `insert` | 100000 | 5000 | 357142.86 | 6 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties` | JDBC connection plus ADB table bulk API |
 
 The `jdbc_bulk` path is above both the hard target (`3000 ops/s`) and the desired
-margin (`5000 ops/s`). It is intentionally local-only in this first version:
-tables with secondary indexes and tables with a region commit coordinator are
-rejected rather than silently taking the fast path. Duplicate primary keys still
-raise an error.
+margin (`5000 ops/s`). The fast path remains local-only: tables with a region
+commit coordinator are rejected rather than silently bypassing distributed
+commit. Duplicate primary keys still raise an error.
+
+This increment also supports local secondary-index tables in
+`bulkInsertAppendRows`. The path validates primary keys first, then registers
+secondary index keys in the same ADB transaction write set so they commit or
+rollback with the user transaction. JUnit coverage now includes non-unique
+secondary-index lookup, in-batch unique secondary conflict rejection, and
+rollback leaving neither row nor index entries behind.
+
+With `h2db:2.3.0`, `org.h2.command.dml.Insert` still calls
+`Table.addRow(SessionLocal, Row)` once per `VALUES` row, and
+`org.h2.table.Table` does not expose a table-level bulk insert callback.
+Therefore ordinary user SQL such as `INSERT INTO ... VALUES (...), (...)`
+cannot be routed automatically into `bulkInsertAppendRows` from the ADB plugin
+alone. Finishing ordinary-SQL automatic bulk insert requires a new h2db
+table-level bulk insert SPI that preserves trigger, constraint, generated
+column, `ON DUPLICATE KEY`, and delta-table semantics. ADB keeps
+`bulkInsertAppendRows` as the table entry point that such an SPI can call.
 
 JDBC bulk insert reproduction command:
 
@@ -182,7 +198,7 @@ JDBC bulk insert reproduction command:
 
 | Priority | Target | Verification |
 | --- | --- | --- |
-| P0 | Route ordinary SQL INSERT into the bulk entry point | Let multi-values SQL INSERT automatically use the ADB bulk API when the table is local-only and has no secondary indexes; verify plain `jdbc` insert > 3000 ops/s |
+| P0 | Route ordinary SQL INSERT into the bulk entry point | Requires an h2db table-level bulk insert hook; keep the ADB `bulkInsertAppendRows` entry point ready and verify plain `jdbc` insert > 3000 ops/s after the hook is available |
 | P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |

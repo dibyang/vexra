@@ -50,12 +50,43 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
   @Override
   public void addRowsToBuffer(SessionLocal session, List<Row> rows) {
     for (Row row : rows) {
-      SearchRow r = getRowFactory().createRow();
-      r.copyFrom( row);
-      byte[] encode = SearchRowCodec.encode(row, indexColumns, false);
-      TxnMap2 map = getTxnMap(session);
-      IndexKey indexKey = IndexKey.of(map.getTabId(table.getId()), this.getId(), encode, row.getKey());
-      buffer.add(indexKey);
+      buffer.add(indexKey(session, row));
+    }
+  }
+
+  /**
+   * 为 bulk insert 构造并登记当前二级索引的事务内写入。
+   *
+   * <p>该方法先完成唯一索引的外部冲突和批内冲突检查，再把 index key 写入当前
+   * ADB 事务 write set。它不直接写 committed version，因此会随用户事务一起
+   * commit/rollback。</p>
+   *
+   * @param session 当前 H2 session
+   * @param rows 已完成主键准备的待插入行
+   */
+  void bulkInsertRows(SessionLocal session, List<Row> rows) {
+    if (rows.isEmpty()) {
+      return;
+    }
+    TxnMap2 map = getTxnMap(session);
+    List<IndexKey> indexKeys = new ArrayList<>(rows.size());
+    Set<ByteArrayKey> uniqueKeys = isUnique() ? new HashSet<>() : null;
+    try {
+      for (Row row : rows) {
+        if (needsUniqueCheck(row)) {
+          byte[] uniqueKey = uniqueKey(row);
+          if (!uniqueKeys.add(new ByteArrayKey(uniqueKey))) {
+            throw getDuplicateKeyException(row.toString());
+          }
+          boolean repeatableRead =
+              !session.getTransaction().allowNonRepeatableRead();
+          checkUnique(repeatableRead, map, row, row.getKey());
+        }
+        indexKeys.add(indexKey(map, row));
+      }
+      map.putIndexKeys(indexKeys);
+    } catch (SQLException e) {
+      throw adbTable.convertException(e);
     }
   }
 
@@ -132,15 +163,29 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
         boolean repeatableRead = !session.getTransaction().allowNonRepeatableRead();
         checkUnique(repeatableRead, map, row, row.getKey());
       }
-      SearchRow r = getRowFactory().createRow();
-      r.copyFrom( row);
-      byte[] encode = SearchRowCodec.encode(row, indexColumns, false);
-      IndexKey indexKey = IndexKey.of(map.getTabId(table.getId()), this.getId(), encode, row.getKey());
+      IndexKey indexKey = indexKey(map, row);
       map.put(indexKey, ValueNull.INSTANCE);
 
     } catch (SQLException e) {
       throw adbTable.convertException(e);
     }
+  }
+
+  private IndexKey indexKey(SessionLocal session, Row row) {
+    return indexKey(getTxnMap(session), row);
+  }
+
+  private IndexKey indexKey(TxnMap2 map, Row row) {
+    byte[] encode = SearchRowCodec.encode(row, indexColumns, false);
+    return IndexKey.of(map.getTabId(table.getId()), this.getId(), encode,
+        row.getKey());
+  }
+
+  private byte[] uniqueKey(SearchRow row) {
+    RowFactory uniqueRowFactory = getUniqueRowFactory();
+    SearchRow from = uniqueRowFactory.createRow();
+    from.copyFrom(row);
+    return SearchRowCodec.encode(from, indexColumns, false);
   }
 
 
@@ -287,6 +332,25 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
     } finally {
       adbTable.recordSqlDiagnostic("SELECT", "SECONDARY_FIND", startMillis,
           failure);
+    }
+  }
+
+  private static final class ByteArrayKey {
+    private final byte[] value;
+
+    ByteArrayKey(byte[] value) {
+      this.value = value.clone();
+    }
+
+    @Override
+    public boolean equals(Object obj) {
+      return obj instanceof ByteArrayKey
+          && Arrays.equals(value, ((ByteArrayKey) obj).value);
+    }
+
+    @Override
+    public int hashCode() {
+      return Arrays.hashCode(value);
     }
   }
 

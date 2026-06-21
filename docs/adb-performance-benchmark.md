@@ -90,6 +90,7 @@ table-engine 边界仍是主要瓶颈。
 
 | 优先级 | 靶点 | 验证方式 |
 | --- | --- | --- |
+| P0 | 普通 SQL INSERT 自动命中 bulk 入口 | 需要 h2db 暴露表级 bulk insert hook；ADB 侧保持 `bulkInsertAppendRows` 作为可调用入口，待 h2db hook 后验证普通 `jdbc` insert > 3000 ops/s |
 | P0 | 细化 commit 阶段耗时统计 | 区分 txn ref 扫描、intent 读取、committed version 写入、meta 写入和底层 write batch |
 | P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
 | P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
@@ -126,9 +127,21 @@ insert 的逐行 `Table.addRow` 调度，同时保留 JDBC transaction event 的
 | `txn` | `insert` | 3000 | 3000 | 63829.79 | 25 | `vexra-adb/build/adb-benchmark/txn_insert_goal.properties` | ADB 本地事务/MVCC/commit 路径 |
 | `jdbc_bulk` | `insert` | 100000 | 5000 | 357142.86 | 6 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_goal_100k.properties` | JDBC 连接 + ADB table bulk API |
 
-`jdbc_bulk` 已超过硬目标 `3000 ops/s`，也明显超过期望余量 `5000 ops/s`。第一版
-fast path 只允许本地、无二级索引的表；带二级索引或 region commit coordinator 的表会拒绝
-bulk fast path，避免索引不一致或绕过分布式提交。重复主键仍会报错。
+`jdbc_bulk` 已超过硬目标 `3000 ops/s`，也明显超过期望余量 `5000 ops/s`。当前
+fast path 保持 local-only：带 region commit coordinator 的表会拒绝 bulk fast path，
+避免绕过分布式提交；重复主键仍会报错。
+
+本轮增量已支持本地二级索引表使用 `bulkInsertAppendRows`：批量写 row 前先完成主键校验，
+再把 secondary index key 登记到同一个 ADB 事务 write set 中，随用户事务一起
+commit/rollback。覆盖用例包括非唯一二级索引查询、唯一二级索引批内冲突拒绝，以及
+bulk 后 rollback 不留下 row 或 index entry。
+
+当前 `h2db:2.3.0` 的 `org.h2.command.dml.Insert` 对 `VALUES` 语句仍逐行调用
+`Table.addRow(SessionLocal, Row)`，`org.h2.table.Table` 也没有公开表级批量插入回调。
+因此普通用户执行 `INSERT INTO ... VALUES (...), (...)` 还不能只靠 ADB 插件侧自动路由到
+`bulkInsertAppendRows`。要完成普通 SQL 自动 bulk，需要 h2db 新增一个保持触发器、约束、
+generated column、`ON DUPLICATE KEY` 和 delta table 语义的表级 bulk insert SPI；ADB 已保留
+可被该 SPI 调用的 bulk 表入口。
 
 JDBC bulk insert 复现命令：
 
