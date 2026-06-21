@@ -153,11 +153,18 @@ caller uses `DriverManager` with a parameterized multi-values
 INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), ...
 ```
 
-and the target table is an `AdbTable`, the wrapper converts parameters into H2
-`Row` objects and calls `AdbTable.bulkInsertAppendRows`. It also preserves JDBC
-auto-commit behavior by committing after a successful bulk write when
-`autoCommit=true`. Unsupported SQL forms, non-ADB tables, incomplete
-parameters, and single-row inserts continue to use the original h2db path.
+or a simple literal multi-values `Statement`:
+
+```sql
+INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), ...
+```
+
+and the target table is an `AdbTable`, the wrapper converts parameters or
+literals into H2 `Row` objects and calls `AdbTable.bulkInsertAppendRows`. It
+also preserves JDBC auto-commit behavior by committing after a successful bulk
+write when `autoCommit=true`. Unsupported SQL forms, non-ADB tables,
+incomplete parameters, single-row inserts, and literal expressions continue to
+use the original h2db path.
 
 Measured results:
 
@@ -166,33 +173,38 @@ Measured results:
 | `jdbc` | `insert` | 1000 | on | 43478.26 | 23 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_diag_r2.properties` | Diagnostics confirm a single `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` operation |
 | `jdbc` | `insert` | 3000 | off | 76923.08 | 13 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties` | Ordinary JDBC SQL now auto-routes to the bulk path and exceeds both 3000 and 5000 ops/s |
 | `jdbc` | `mixed` | 100 | on | 1779.36 | 2093 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_bulk.properties` | Mixed regression; previous comparable result was about 1697.79 ops/s |
+| `jdbc` | `insert` | 3000 | off | 73170.73 | 13 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_literal_stage.properties` | Insert regression after adding literal Statement support |
+| `jdbc` | `mixed` | 100 | on | 1718.21 | 2027 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_bulk_literal_stage.properties` | Mixed regression after adding literal Statement support |
 
-The new integration test `preparedMultiValuesInsertUsesAdbDriverBulkPath`
-covers the ordinary `DriverManager + jdbc:adb:* + PreparedStatement` usage and
-asserts that diagnostics contain `ADB_TABLE_BULK_ADD_ROW TEST` instead of
-falling back to row-by-row `ADB_TABLE_ADD_ROW TEST`.
+The new integration tests `preparedMultiValuesInsertUsesAdbDriverBulkPath`,
+`statementLiteralMultiValuesInsertUsesAdbDriverBulkPath`, and
+`unsupportedStatementInsertFallsBackToH2Path` cover ordinary
+`DriverManager + jdbc:adb:* + PreparedStatement/Statement` usage. They assert
+that supported multi-values INSERT statements produce `ADB_TABLE_BULK_ADD_ROW
+TEST`, while expression literals fall back to h2db's row-by-row path.
 
 JDBC insert auto-bulk reproduction command:
 
 ```powershell
 .\gradlew.bat :vexra-adb:adbBenchmark `
   "-PadbBenchmarkMode=jdbc" `
-  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-driver-bulk-no-diag-r2/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-driver-bulk-literal-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
   "-PadbBenchmarkWorkload=insert" `
   "-PadbBenchmarkRows=5000" `
   "-PadbBenchmarkWarmupOperations=300" `
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkTransactionBatchSize=3000" `
   "-PadbBenchmarkStatementBatchSize=3000" `
-  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_literal_stage.properties" `
   "-PadbBenchmarkSqlDiagnostics=false"
 ```
 
-Remaining limitations: the automatic bulk path currently covers only
-parameterized multi-values `PreparedStatement` SQL. It does not yet cover
-`Statement.executeUpdate("INSERT ... literal values ...")`, `INSERT ... SELECT`,
-`DEFAULT VALUES`, `ON DUPLICATE KEY`, `RETURNING`, or the full trigger and
-delta-table semantics available inside h2db's native `Insert` executor. A
+Remaining limitations: the automatic bulk path currently covers parameterized
+multi-values `PreparedStatement` SQL and simple literal multi-values
+`Statement` SQL. It does not yet cover `INSERT ... SELECT`, `DEFAULT VALUES`,
+literal expressions/functions, `ON DUPLICATE KEY`, `RETURNING`, or the full
+trigger and delta-table semantics available inside h2db's native `Insert`
+executor. A
 future h2db table-level bulk callback is still the cleaner path to full
 transparency; ADB's `bulkInsertAppendRows` can remain the implementation target.
 
@@ -360,7 +372,7 @@ JDBC bulk insert reproduction command:
 
 | Priority | Target | Verification |
 | --- | --- | --- |
-| P0 | Route ordinary SQL INSERT into the bulk entry point | Parameterized multi-values `PreparedStatement` now routes through the ADB JDBC compatibility Driver to `bulkInsertAppendRows`; a future h2db table-level hook is still needed for literal `Statement` SQL, triggers, and the full `Insert` grammar |
+| P0 | Route ordinary SQL INSERT into the bulk entry point | Parameterized multi-values `PreparedStatement` and simple literal multi-values `Statement` now route through the ADB JDBC compatibility Driver to `bulkInsertAppendRows`; a future h2db table-level hook is still needed for expressions, triggers, and the full `Insert` grammar |
 | P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |

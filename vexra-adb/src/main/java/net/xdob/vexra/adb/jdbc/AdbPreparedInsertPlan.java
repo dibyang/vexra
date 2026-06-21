@@ -1,5 +1,6 @@
 package net.xdob.vexra.adb.jdbc;
 
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -32,12 +33,14 @@ final class AdbPreparedInsertPlan {
   private final String tableName;
   private final List<String> columnNames;
   private final int rowCount;
+  private final List<Object> literalValues;
 
   private AdbPreparedInsertPlan(String tableName, List<String> columnNames,
-      int rowCount) {
+      int rowCount, List<Object> literalValues) {
     this.tableName = tableName;
     this.columnNames = columnNames;
     this.rowCount = rowCount;
+    this.literalValues = literalValues;
   }
 
   /**
@@ -84,7 +87,26 @@ final class AdbPreparedInsertPlan {
       return null;
     }
     return new AdbPreparedInsertPlan(normalizeIdentifier(tableName),
-        columnNames, rowCount);
+        columnNames, rowCount, null);
+  }
+
+  /**
+   * 解析可 bulk 化的 literal 多值 INSERT SQL。
+   *
+   * @param sql Statement SQL
+   * @return 可执行计划；不支持时返回 {@code null}
+   */
+  static AdbPreparedInsertPlan parseLiteral(String sql) {
+    InsertHead head = parseHead(sql);
+    if (head == null) {
+      return null;
+    }
+    LiteralRows rows = parseLiteralRows(head.values, head.columnNames.size());
+    if (rows == null || rows.rowCount <= 1) {
+      return null;
+    }
+    return new AdbPreparedInsertPlan(head.tableName, head.columnNames,
+        rows.rowCount, rows.values);
   }
 
   /**
@@ -123,8 +145,52 @@ final class AdbPreparedInsertPlan {
     return Integer.valueOf(count);
   }
 
+  /**
+   * 执行 literal SQL 的 ADB bulk insert。
+   *
+   * @param connection h2db 原始连接
+   * @return 命中 bulk path 时返回写入行数；不能安全命中时返回 {@code null}
+   * @throws SQLException bulk 写入失败时抛出
+   */
+  Integer tryExecuteLiteral(Connection connection) throws SQLException {
+    if (literalValues == null || literalValues.size() != parameterCount()) {
+      return null;
+    }
+    SessionLocal session = session(connection);
+    AdbTable table = adbTable(session);
+    if (table == null) {
+      return null;
+    }
+    List<Row> rows = rows(session, table, literalValues);
+    int count = table.bulkInsertAppendRows(session, rows);
+    if (connection.getAutoCommit()) {
+      connection.commit();
+    }
+    return Integer.valueOf(count);
+  }
+
   private List<Row> rows(SessionLocal session, AdbTable table,
       Object[] parameters) {
+    return rows(session, table, new ParameterAccessor() {
+      @Override
+      public Object get(int parameter) {
+        return parameters[parameter];
+      }
+    });
+  }
+
+  private List<Row> rows(SessionLocal session, AdbTable table,
+      final List<Object> parameters) {
+    return rows(session, table, new ParameterAccessor() {
+      @Override
+      public Object get(int parameter) {
+        return parameters.get(parameter - 1);
+      }
+    });
+  }
+
+  private List<Row> rows(SessionLocal session, AdbTable table,
+      ParameterAccessor parameters) {
     Column[] tableColumns = table.getColumns();
     Column[] insertColumns = new Column[columnNames.size()];
     for (int i = 0; i < columnNames.size(); i++) {
@@ -136,7 +202,7 @@ final class AdbPreparedInsertPlan {
       Value[] values = new Value[tableColumns.length];
       java.util.Arrays.fill(values, ValueNull.INSTANCE);
       for (Column column : insertColumns) {
-        Value value = toValue(session, parameters[parameter++]);
+        Value value = toValue(session, parameters.get(parameter++));
         values[column.getColumnId()] = column.convert(session, value);
       }
       DefaultRow row = new DefaultRow(values);
@@ -232,6 +298,139 @@ final class AdbPreparedInsertPlan {
     return result;
   }
 
+  private static InsertHead parseHead(String sql) {
+    if (sql == null) {
+      return null;
+    }
+    String trimmed = sql.trim();
+    String upper = trimmed.toUpperCase(Locale.ROOT);
+    if (!upper.startsWith(INSERT_INTO)) {
+      return null;
+    }
+    int tableStart = skipWhitespace(trimmed, INSERT_INTO.length());
+    int columnStart = trimmed.indexOf('(', tableStart);
+    if (columnStart < 0) {
+      return null;
+    }
+    String tableName = trimmed.substring(tableStart, columnStart).trim();
+    if (tableName.isEmpty()) {
+      return null;
+    }
+    int columnEnd = findMatching(trimmed, columnStart);
+    if (columnEnd < 0) {
+      return null;
+    }
+    List<String> columnNames = splitColumns(
+        trimmed.substring(columnStart + 1, columnEnd));
+    if (columnNames.isEmpty()) {
+      return null;
+    }
+    int valuesStart = skipWhitespace(trimmed, columnEnd + 1);
+    if (!trimmed.regionMatches(true, valuesStart, "VALUES", 0,
+        "VALUES".length())) {
+      return null;
+    }
+    return new InsertHead(normalizeIdentifier(tableName), columnNames,
+        trimmed.substring(valuesStart + "VALUES".length()).trim());
+  }
+
+  private static LiteralRows parseLiteralRows(String values, int columnCount) {
+    ArrayList<Object> parsedValues = new ArrayList<>();
+    int rows = 0;
+    int index = 0;
+    while (index < values.length()) {
+      index = skipWhitespace(values, index);
+      if (index >= values.length() || values.charAt(index) != '(') {
+        return null;
+      }
+      int end = findMatching(values, index);
+      if (end < 0) {
+        return null;
+      }
+      List<String> tokens = splitLiteralTuple(values.substring(index + 1, end));
+      if (tokens == null || tokens.size() != columnCount) {
+        return null;
+      }
+      for (String token : tokens) {
+        Object value = parseLiteralValue(token);
+        if (value == UnsupportedLiteral.INSTANCE) {
+          return null;
+        }
+        parsedValues.add(value);
+      }
+      rows++;
+      index = skipWhitespace(values, end + 1);
+      if (index >= values.length()) {
+        return new LiteralRows(rows, parsedValues);
+      }
+      if (values.charAt(index) != ',') {
+        return null;
+      }
+      index++;
+    }
+    return new LiteralRows(rows, parsedValues);
+  }
+
+  private static List<String> splitLiteralTuple(String tuple) {
+    ArrayList<String> tokens = new ArrayList<>();
+    StringBuilder current = new StringBuilder();
+    boolean inString = false;
+    for (int i = 0; i < tuple.length(); i++) {
+      char ch = tuple.charAt(i);
+      if (ch == '\'') {
+        current.append(ch);
+        if (inString && i + 1 < tuple.length() && tuple.charAt(i + 1) == '\'') {
+          current.append('\'');
+          i++;
+        } else {
+          inString = !inString;
+        }
+      } else if (ch == ',' && !inString) {
+        tokens.add(current.toString().trim());
+        current.setLength(0);
+      } else {
+        current.append(ch);
+      }
+    }
+    if (inString) {
+      return null;
+    }
+    tokens.add(current.toString().trim());
+    return tokens;
+  }
+
+  private static Object parseLiteralValue(String token) {
+    if (token == null || token.isEmpty()) {
+      return UnsupportedLiteral.INSTANCE;
+    }
+    String upper = token.toUpperCase(Locale.ROOT);
+    if ("NULL".equals(upper)) {
+      return null;
+    }
+    if ("TRUE".equals(upper)) {
+      return Boolean.TRUE;
+    }
+    if ("FALSE".equals(upper)) {
+      return Boolean.FALSE;
+    }
+    if (token.startsWith("'") && token.endsWith("'") && token.length() >= 2) {
+      return token.substring(1, token.length() - 1).replace("''", "'");
+    }
+    try {
+      if (token.indexOf('.') >= 0 || token.indexOf('E') >= 0
+          || token.indexOf('e') >= 0) {
+        return new BigDecimal(token);
+      }
+      long value = Long.parseLong(token);
+      if (value >= Integer.MIN_VALUE && value <= Integer.MAX_VALUE) {
+        return Integer.valueOf((int) value);
+      }
+      return Long.valueOf(value);
+    } catch (NumberFormatException e) {
+      return UnsupportedLiteral.INSTANCE;
+    }
+  }
+
   private static int countParameterRows(String values, int columnCount) {
     int rows = 0;
     int index = 0;
@@ -280,5 +479,36 @@ final class AdbPreparedInsertPlan {
       return value.substring(1, value.length() - 1);
     }
     return value.toUpperCase(Locale.ROOT);
+  }
+
+  private interface ParameterAccessor {
+    Object get(int parameter);
+  }
+
+  private static final class InsertHead {
+    private final String tableName;
+    private final List<String> columnNames;
+    private final String values;
+
+    private InsertHead(String tableName, List<String> columnNames,
+        String values) {
+      this.tableName = tableName;
+      this.columnNames = columnNames;
+      this.values = values;
+    }
+  }
+
+  private static final class LiteralRows {
+    private final int rowCount;
+    private final List<Object> values;
+
+    private LiteralRows(int rowCount, List<Object> values) {
+      this.rowCount = rowCount;
+      this.values = values;
+    }
+  }
+
+  private enum UnsupportedLiteral {
+    INSTANCE
   }
 }

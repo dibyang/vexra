@@ -90,7 +90,7 @@ table-engine 边界仍是主要瓶颈。
 
 | 优先级 | 靶点 | 验证方式 |
 | --- | --- | --- |
-| P0 | 普通 SQL INSERT 自动命中 bulk 入口 | 已通过 ADB JDBC 兼容 Driver 包装参数化多值 `PreparedStatement`，将 `INSERT INTO ... VALUES (?, ?), ...` 路由到 `bulkInsertAppendRows`；后续仍需 h2db 原生表级 bulk hook 覆盖 `Statement` literal SQL、触发器和更完整语法 |
+| P0 | 普通 SQL INSERT 自动命中 bulk 入口 | 已通过 ADB JDBC 兼容 Driver 包装参数化多值 `PreparedStatement` 和简单 literal 多值 `Statement`，将 `INSERT INTO ... VALUES ...` 路由到 `bulkInsertAppendRows`；后续仍需 h2db 原生表级 bulk hook 覆盖表达式、触发器和更完整语法 |
 | P0 | 细化 commit 阶段耗时统计 | 区分 txn ref 扫描、intent 读取、committed version 写入、meta 写入和底层 write batch |
 | P0 | 优化 batch 写入路径 | 支持一次 SQL 事务内批量写入时减少 per-row writeBatch、txn ref 扫描和 row-count 重复成本 |
 | P1 | 点查绕过不必要扫描和对象分配 | 用 allocation profiling 与 p50/p99 对照验证 |
@@ -122,9 +122,15 @@ Driver。真实连接、SQL 解析和非命中语句仍委托给 h2db；当调�
 INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), ...
 ```
 
-且目标表是 `AdbTable` 时，包装层会把参数转换成 H2 `Row`，调用
+或简单 literal 多值 `Statement`：
+
+```sql
+INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), ...
+```
+
+且目标表是 `AdbTable` 时，包装层会把参数或字面量转换成 H2 `Row`，调用
 `AdbTable.bulkInsertAppendRows`，并在 `autoCommit=true` 时补齐 JDBC 自动提交边界。
-不匹配的 SQL、非 ADB 表、参数不完整或单行 insert 继续走 h2db 原路径。
+不匹配的 SQL、非 ADB 表、参数不完整、单行 insert 或表达式 literal 继续走 h2db 原路径。
 
 验证结果：
 
@@ -133,30 +139,34 @@ INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), ...
 | `jdbc` | `insert` | 1000 | on | 43478.26 | 23 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_diag_r2.properties` | 诊断确认只记录 1 次 `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` |
 | `jdbc` | `insert` | 3000 | off | 76923.08 | 13 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties` | 普通 JDBC SQL 自动命中 bulk path，超过 3000 / 5000 ops/s 目标 |
 | `jdbc` | `mixed` | 100 | on | 1779.36 | 2093 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_bulk.properties` | mixed 回归；上一轮可比结果约 1697.79 ops/s |
+| `jdbc` | `insert` | 3000 | off | 73170.73 | 13 | `vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_literal_stage.properties` | literal Statement 支持加入后的 insert 回归 |
+| `jdbc` | `mixed` | 100 | on | 1718.21 | 2027 | `vexra-adb/build/adb-benchmark/jdbc_mixed_driver_bulk_literal_stage.properties` | literal Statement 支持加入后的 mixed 回归 |
 
-本轮新增集成测试 `preparedMultiValuesInsertUsesAdbDriverBulkPath`，覆盖
-`DriverManager + jdbc:adb:* + PreparedStatement` 的普通 SQL 写法，并断言诊断项为
-`ADB_TABLE_BULK_ADD_ROW TEST`，不会退回逐行 `ADB_TABLE_ADD_ROW TEST`。
+本轮新增集成测试 `preparedMultiValuesInsertUsesAdbDriverBulkPath`、
+`statementLiteralMultiValuesInsertUsesAdbDriverBulkPath` 和
+`unsupportedStatementInsertFallsBackToH2Path`，覆盖
+`DriverManager + jdbc:adb:* + PreparedStatement/Statement` 的普通 SQL 写法，并断言可命中语句的诊断项为
+`ADB_TABLE_BULK_ADD_ROW TEST`，不会退回逐行 `ADB_TABLE_ADD_ROW TEST`；表达式 literal 会回退 h2db。
 
 JDBC insert 自动 bulk 复现命令：
 
 ```powershell
 .\gradlew.bat :vexra-adb:adbBenchmark `
   "-PadbBenchmarkMode=jdbc" `
-  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-driver-bulk-no-diag-r2/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/insert-driver-bulk-literal-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
   "-PadbBenchmarkWorkload=insert" `
   "-PadbBenchmarkRows=5000" `
   "-PadbBenchmarkWarmupOperations=300" `
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkTransactionBatchSize=3000" `
   "-PadbBenchmarkStatementBatchSize=3000" `
-  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_no_diag_r2.properties" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_driver_bulk_literal_stage.properties" `
   "-PadbBenchmarkSqlDiagnostics=false"
 ```
 
-剩余限制：当前自动 bulk 只覆盖参数化多值 `PreparedStatement`，不覆盖
-`Statement.executeUpdate("INSERT ... literal values ...")`、`INSERT ... SELECT`、
-`DEFAULT VALUES`、`ON DUPLICATE KEY`、`RETURNING` 等语法。要做到完全透明，仍建议
+剩余限制：当前自动 bulk 覆盖参数化多值 `PreparedStatement` 和简单 literal 多值
+`Statement`，但不覆盖 `INSERT ... SELECT`、`DEFAULT VALUES`、表达式/函数 literal、
+`ON DUPLICATE KEY`、`RETURNING` 等语法。要做到完全透明，仍建议
 h2db 在 `Insert` 执行层提供表级 bulk 回调，ADB 的 `bulkInsertAppendRows` 可继续作为落点。
 
 ## 第六轮普通 JDBC insert 微优化结果

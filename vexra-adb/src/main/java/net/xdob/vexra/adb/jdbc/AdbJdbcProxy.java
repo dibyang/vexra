@@ -6,12 +6,14 @@ import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Statement;
 
 /**
  * ADB JDBC 包装代理工厂。
  *
- * <p>代理只拦截 {@link Connection#prepareStatement(String)}，其余 JDBC 行为直接委托给
- * h2db 原连接。这样可以在普通 JDBC SQL 上接入 ADB bulk insert，同时保持兼容回退边界清晰。</p>
+ * <p>代理只拦截 {@link Connection#prepareStatement(String)} 和
+ * {@link Connection#createStatement()}，其余 JDBC 行为直接委托给 h2db 原连接。这样可以在普通
+ * JDBC SQL 上接入 ADB bulk insert，同时保持兼容回退边界清晰。</p>
  */
 final class AdbJdbcProxy {
 
@@ -58,6 +60,16 @@ final class AdbJdbcProxy {
           return AdbPreparedStatementProxy.wrap(delegate, statement, plan);
         }
         return statement;
+      }
+      if ("createStatement".equals(name)
+          && method.getReturnType().isAssignableFrom(Statement.class)) {
+        Statement statement;
+        try {
+          statement = (Statement) method.invoke(delegate, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+          throw e.getCause();
+        }
+        return AdbStatementProxy.wrap(delegate, statement);
       }
       if ("unwrap".equals(name) && args != null && args.length == 1
           && args[0] instanceof Class) {
