@@ -36,6 +36,7 @@ import org.h2.table.Table;
 public final class AdbTableProvider implements TableEngineProvider {
 
     public static final String ID = "adb_table";
+    private static final String SQL_DIAGNOSTICS_PARAM = "adb.sql.diagnostics";
 
     /**
      * 返回 H2 插件注册表中的 provider 类型。
@@ -114,8 +115,10 @@ public final class AdbTableProvider implements TableEngineProvider {
             txnManager.setTxnRegionGuard(
                 AdbCrossRegionTxnGuard.fromProductionGuard(productionGuard));
         }
-        txnManager.setSqlDiagnosticRecorder(AdbSqlDiagnosticsRegistry
-            .getOrCreate(AdbSqlDiagnosticsRegistry.scope(databasePath)));
+        if (isSqlDiagnosticsEnabled(context.getTableEngineParams())) {
+            txnManager.setSqlDiagnosticRecorder(AdbSqlDiagnosticsRegistry
+                .getOrCreate(AdbSqlDiagnosticsRegistry.scope(databasePath)));
+        }
         if (scanConfig.isEnabled()) {
             txnManager.setSqlDistributedScanRuntime(
                 new AdbSqlDistributedScanRuntime(dbStore, scanConfig));
@@ -151,6 +154,33 @@ public final class AdbTableProvider implements TableEngineProvider {
 
     private static boolean hasProductionParams(List<String> params) {
         return !productionProperties(params).isEmpty();
+    }
+
+    private static boolean isSqlDiagnosticsEnabled(List<String> params) {
+        String value = tableParam(params, SQL_DIAGNOSTICS_PARAM);
+        return value == null || Boolean.parseBoolean(value);
+    }
+
+    private static String tableParam(List<String> params, String key) {
+        if (params == null || key == null) {
+            return null;
+        }
+        String normalizedKey = key.toLowerCase(Locale.ROOT);
+        for (String raw : params) {
+            if (raw == null) {
+                continue;
+            }
+            String param = raw.trim();
+            int separator = param.indexOf('=');
+            if (separator <= 0) {
+                continue;
+            }
+            if (normalizedKey.equals(param.substring(0, separator).trim()
+                .toLowerCase(Locale.ROOT))) {
+                return param.substring(separator + 1).trim();
+            }
+        }
+        return null;
     }
 
     private static Properties productionProperties(List<String> params) {

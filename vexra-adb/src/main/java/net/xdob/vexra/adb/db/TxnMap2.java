@@ -54,6 +54,28 @@ public class TxnMap2 {
   }
 
   public RowValue putIfAbsent(DataKey dataKey, Value row) throws SQLException {
+    return putIfAbsent(dataKey, row, canSkipAppendUniqueCheck(dataKey));
+  }
+
+  /**
+   * 插入不存在的 row，并允许调用方复用已经计算过的 append fast path 判定。
+   *
+   * @param dataKey row key
+   * @param row 待编码的 H2 row
+   * @param skipAppendUniqueCheck 是否已确认可跳过 committed 版本唯一性扫描
+   * @return 已存在的可见版本；不存在时返回 null
+   */
+  public RowValue putIfAbsent(DataKey dataKey, Value row,
+      boolean skipAppendUniqueCheck) throws SQLException {
+    if (skipAppendUniqueCheck) {
+      RowValue value = new RowValue();
+      value.txnId = transaction.getTxnId();
+      value.commitTs = 0;
+      value.deleted = false;
+      value.payload = RowCodec.encode(row);
+      this.put(dataKey, value, null);
+      return null;
+    }
 
     RowValue old = getVisible(dataKey);
     if (old == null||old.deleted||old.payload== null) {
@@ -66,6 +88,16 @@ public class TxnMap2 {
       return null;
     }
     return old;
+  }
+
+  /**
+   * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
+   *
+   * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
+   */
+  public boolean canSkipAppendUniqueCheck(DataKey dataKey) {
+    return txnManager.canSkipAppendUniqueCheck(dataKey)
+        && transaction.getLocalWrite(dataKey) == null;
   }
 
   public void markStatementStart(){

@@ -114,6 +114,32 @@ class AdbBenchmarkMainTest {
    * 验证 point lookup workload 可以独立运行。
    */
   @Test
+  void shouldRunTxnInsertBenchmarkAgainstLdbStore() throws Exception {
+    Path output = tempDir.resolve("txn.properties");
+    Path storeDir = tempDir.resolve("txn-store");
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--mode", "txn",
+        "--storeDir", storeDir.toString(),
+        "--workload", "insert",
+        "--rows", "20",
+        "--warmupOperations", "3",
+        "--operations", "10",
+        "--transactionBatchSize", "5",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("txn", result.getMode());
+    assertEquals("insert", result.getWorkload());
+    assertEquals(10L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("txn", properties.getProperty("mode"));
+    assertEquals(storeDir.toString(), properties.getProperty("url"));
+    assertEquals(null, properties.getProperty("sqlDiagnostics.totalSqlCount"));
+  }
+
+  @Test
   void shouldRunPointLookupBenchmarkAgainstLdbUrl() throws Exception {
     String url = "jdbc:adb:ldb:" + tempDir.resolve("lookup").resolve(
         "adb-benchmark") + ";DB_CLOSE_DELAY=0";

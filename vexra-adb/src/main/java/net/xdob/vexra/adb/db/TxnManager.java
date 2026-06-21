@@ -23,6 +23,8 @@ public class TxnManager {
   private final Object commitMutex = new Object();
   private final Map<Long, Transaction2> activeTransactions =
       new java.util.concurrent.ConcurrentHashMap<>();
+  private final Map<TabId, java.util.concurrent.atomic.AtomicLong> maxRowIdHints =
+      new java.util.concurrent.ConcurrentHashMap<>();
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -262,9 +264,8 @@ public class TxnManager {
 
   // -------------------- 鍐?鍒犻櫎鎿嶄綔 --------------------
   public void put(Transaction2 txn, DataKey key, RowValue value) throws SQLException {
-    store.writeBatch(s -> {
-      txn.put(s, key, value);
-    });
+    RowValue oldValue = getVisible(txn, key);
+    put(txn, key, value, oldValue);
   }
 
   /**
@@ -275,9 +276,13 @@ public class TxnManager {
    */
   public void put(Transaction2 txn, DataKey key, RowValue value,
       RowValue oldValue) throws SQLException {
-    store.writeBatch(s -> {
-      txn.put(s, key, value, oldValue);
-    });
+    if (regionCommitCoordinator != null) {
+      store.writeBatch(s -> {
+        txn.put(s, key, value, oldValue);
+      });
+      return;
+    }
+    txn.putLocal(key, value, oldValue);
   }
 
   public IndexBuildState getIndexBuildState(TabId tId, int indexId) throws SQLException {
@@ -378,12 +383,46 @@ public class TxnManager {
   public RowValue delete(Transaction2 txn, DataKey key) throws SQLException {
     RowValue result = getVisible(txn, key);
     if(result!=null) {
-      store.writeBatch(s -> {
-        txn.delete(s, key, result);
-      });
+      if (regionCommitCoordinator != null) {
+        store.writeBatch(s -> {
+          txn.delete(s, key, result);
+        });
+      } else {
+        txn.deleteLocal(key, result);
+      }
       return result;
     }
     return null;
+  }
+
+  /**
+   * 判断指定 row insert 是否可以跳过 committed 版本扫描。
+   *
+   * <p>该 hint 只在当前进程已经通过成功写入见过表内最大 rowId 后启用；未知表、重启恢复、
+   * 非 row key、低于或等于 hint 的 key 都会回退到完整唯一性检查。因此它只优化 append
+   * insert，不改变保守路径的正确性。</p>
+   */
+  public boolean canSkipAppendUniqueCheck(DataKey key) {
+    if (key == null || !key.isRow()) {
+      return false;
+    }
+    java.util.concurrent.atomic.AtomicLong hint = maxRowIdHints.get(
+        key.getTabID());
+    return hint != null && key.getRowId() > hint.get();
+  }
+
+  /**
+   * 记录当前进程已成功接收的 rowId 上界 hint。
+   *
+   * @param key row key
+   */
+  public void recordRowIdHint(DataKey key) {
+    if (key == null || !key.isRow()) {
+      return;
+    }
+    maxRowIdHints.computeIfAbsent(key.getTabID(),
+        ignored -> new java.util.concurrent.atomic.AtomicLong(Long.MIN_VALUE))
+        .accumulateAndGet(key.getRowId(), Math::max);
   }
 
   /**
@@ -576,9 +615,12 @@ public class TxnManager {
         TableEpochKey tableEpochKey = TableEpochKey.of(entry.getKey());
         metas.add(Meta.of(tableEpochKey.toBytes(), Utils.encodeLong(entry.getValue())));
       }
-      commitAsync(txn, commitTs, writeKeys, metas).join();
+      commitLocalOrRemote(txn, commitTs, writeKeys, metas);
 
       txn.afterCommitSuccess(commitTs);
+      for (DataKey key : writeKeys) {
+        recordRowIdHint(key);
+      }
       activeTransactions.remove(txn.getTxnId());
     } catch (CompletionException e) {
       Throwable cause = unwrapCompletionException(e);
@@ -622,6 +664,32 @@ public class TxnManager {
         Collections.singletonList("local"));
   }
 
+  private void commitLocalOrRemote(Transaction2 txn, long commitTs,
+      Collection<DataKey> writeKeys, List<Meta> metas) throws SQLException {
+    AdbRegionCommitCoordinator coordinator = regionCommitCoordinator;
+    if (coordinator != null && !writeKeys.isEmpty()) {
+      coordinator.commitAsync(txn, commitTs, writeKeys, metas).join();
+      return;
+    }
+    commitLocalDirect(txn, commitTs, metas);
+  }
+
+  private void commitLocalDirect(Transaction2 txn, long commitTs,
+      List<Meta> metas) throws SQLException {
+    store.writeBatch(batch -> {
+      for (Map.Entry<DataKey, RowValue> entry : txn.getWriteSet().entrySet()) {
+        RowValue rowValue = copyForCommit(entry.getValue(), commitTs);
+        VersionKey versionKey = VersionKey.of(entry.getKey(), true, commitTs);
+        batch.put(versionKey.toBytes(), RowValue.encodeValue(rowValue));
+      }
+      if (metas != null) {
+        for (Meta meta : metas) {
+          batch.put(CF.META.getCfId(), meta.getKey(), meta.getValue());
+        }
+      }
+    });
+  }
+
   private java.util.concurrent.CompletableFuture<Void> commitAsync(
       Transaction2 txn, long commitTs, Collection<DataKey> writeKeys,
       List<Meta> metas) throws SQLException {
@@ -630,6 +698,16 @@ public class TxnManager {
       return coordinator.commitAsync(txn, commitTs, writeKeys, metas);
     }
     return store.commitAsync(txn.getTxnId(), commitTs, metas);
+  }
+
+  private static RowValue copyForCommit(RowValue source, long commitTs) {
+    RowValue copy = new RowValue();
+    copy.txnId = source.txnId;
+    copy.deleted = source.deleted;
+    copy.payload = source.payload;
+    copy.rowKey = source.rowKey;
+    copy.commitTs = commitTs;
+    return copy;
   }
 
   private long nextCommitTs() {

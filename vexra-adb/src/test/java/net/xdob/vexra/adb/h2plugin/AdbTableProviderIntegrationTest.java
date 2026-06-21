@@ -66,6 +66,28 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void canDisableSqlDiagnosticsThroughTableEngineParams() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        String databasePath = tempDir.resolve("adb-sql-diagnostics-disabled").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR) "
+                        + "ENGINE \"adb_table\" WITH \"adb.sql.diagnostics=false\"");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+                Assertions.assertEquals("a", singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
+            }
+
+            Assertions.assertFalse(AdbSqlDiagnosticsRegistry.snapshotAll()
+                    .containsKey(AdbSqlDiagnosticsRegistry.scope(databasePath)));
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void countsRowsAfterReopenThroughJdbcUrlPrefix() throws Exception {
         String databasePath = tempDir.resolve("adb-reopen").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

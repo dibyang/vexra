@@ -214,6 +214,9 @@ public class AdbTable extends TableBase {
    */
   void recordSqlDiagnostic(String sqlType, String operation, long startMillis,
       Throwable failure) {
+    if (txnManager.getSqlDiagnosticRecorder() == null) {
+      return;
+    }
     long now = System.currentTimeMillis();
     long latencyMillis = Math.max(0L, now - startMillis);
     String summary = "ADB_TABLE_" + operation + " " + getName();

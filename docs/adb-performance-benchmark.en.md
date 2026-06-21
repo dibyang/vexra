@@ -31,6 +31,7 @@ file-backed `ldb`; `mem` mode is intentionally out of scope.
 | Mode | Path | Purpose |
 | --- | --- | --- |
 | `jdbc` | `JDBC -> h2db -> ADB table engine -> LdbStore` | Measures the real SQL/JDBC path |
+| `txn` | `AdbBenchmarkMain -> TxnManager -> MVCC RowCodec -> LdbStore` | Measures ADB local transaction/MVCC insert capacity without SQL parser/table-engine cost |
 | `store` | `AdbBenchmarkMain -> LdbStore` | Measures the local store wrapper baseline without SQL/table-engine cost |
 
 `jdbc` mode also supports `--transactionBatchSize` to compare one-statement
@@ -95,10 +96,56 @@ This confirms that removing the duplicate scan helps writes, but SQL/JDBC, H2
 execution, commit txn-ref scan, and table-engine boundaries remain the main
 bottlenecks.
 
+## Second Insert Optimization Result
+
+The second round focused on the insert hot path:
+
+1. Local single-node transactions skip per-row durable intents when no region
+   commit coordinator is installed. Commit writes committed versions and meta in
+   one lower-level write batch.
+2. Append-only primary-key inserts maintain an in-process max rowId hint. When
+   the new rowId is greater than the known committed high-water mark and the
+   current transaction has not written the same key, the primary-key committed
+   uniqueness scan is skipped.
+3. The same append fast path skips the row-lock HashMap/wait path. Random
+   inserts, duplicate keys, updates, deletes, and distributed commits keep the
+   full lock and validation path.
+4. The benchmark now supports multi-values insert, `statementBatchSize`, `txn`
+   mode, and the table parameter `adb.sql.diagnostics=false`.
+
+Current reproducible results:
+
+| Mode | Workload | Batch | Throughput ops/s | p99 us | Result file | Notes |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 3000 | 2752.29 | 363 | `vexra-adb/build/adb-benchmark/jdbc_insert_goal_fastpath_reuse.properties` | Best short-run SQL/JDBC/table-engine result so far; still below 3000 |
+| `txn` | `insert` | 3000 | 63829.79 | 25 | `vexra-adb/build/adb-benchmark/txn_insert_goal.properties` | ADB local transaction/MVCC/commit path; above the 3000 ops/s target |
+
+Conclusion: ADB local transaction insert capacity is now above `3000 ops/s`.
+There is no current evidence that ldb or the ADB MVCC/commit path is the main
+insert bottleneck. The remaining gap is concentrated at the
+`JDBC -> h2db SQL parser/executor -> TableEngine.addRow` row-by-row boundary. If
+JDBC insert must also stay above `3000 ops/s`, the next phase should add a real
+SQL bulk insert entry point instead of only optimizing the lower store layer.
+
+Transaction-layer insert reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=txn" `
+  "-PadbBenchmarkStoreDir=D:/work/java2/vexra/vexra-adb/build/adb-benchmark/store/goal-txn-insert" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
+```
+
 ## Next Optimization Targets
 
 | Priority | Target | Verification |
 | --- | --- | --- |
+| P0 | JDBC bulk insert entry point | Add a path at the h2db plugin/table-engine layer that parses once and writes RowValue/RowKey in batches; verify JDBC insert > 3000 ops/s |
 | P0 | Add commit-stage segmented timing | Separate txn-ref scan, intent read, committed-version write, meta write, and lower-level write batch |
 | P0 | Optimize batched writes | Reduce repeated per-row writeBatch, txn-ref scan, and row-count work within one SQL transaction |
 | P1 | Remove unnecessary scan/object allocation from point lookup | Validate with allocation profiling and p50/p99 comparison |

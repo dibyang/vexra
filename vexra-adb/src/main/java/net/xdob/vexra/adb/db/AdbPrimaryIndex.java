@@ -107,9 +107,12 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     TxnMap2 map = getTxnMap(session);
     long rowId = row.getKey();
     try {
-      map.lock(table.getId(), rowId, session.getLockTimeout());
       RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
-      RowValue old = map.putIfAbsent(rowKey, row);
+      boolean skipAppendUniqueCheck = map.canSkipAppendUniqueCheck(rowKey);
+      if (!skipAppendUniqueCheck) {
+        map.lock(table.getId(), rowId, session.getLockTimeout());
+      }
+      RowValue old = map.putIfAbsent(rowKey, row, skipAppendUniqueCheck);
       if (old != null) {
         int errorCode = ErrorCode.CONCURRENT_UPDATE_1;
         if (map.getVisible(rowKey) != null) {
@@ -258,6 +261,9 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       }
       if (first != null && last != null && first.longValue() == last.longValue()) {
         RowKey firstKey = RowKey.of(map.getTabId(table.getId()), first);
+        if (map.canSkipAppendUniqueCheck(firstKey)) {
+          return new SingleRowCursor(null);
+        }
         RowValue rowValue = map.getVisible(firstKey);
         if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
           return new SingleRowCursor(null);

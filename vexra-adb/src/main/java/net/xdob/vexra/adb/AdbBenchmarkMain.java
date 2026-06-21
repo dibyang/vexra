@@ -1,11 +1,21 @@
 package net.xdob.vexra.adb;
 
 import net.xdob.vexra.adb.db.ScanDirection;
+import net.xdob.vexra.adb.db.RowCodec;
+import net.xdob.vexra.adb.db.RowValue;
+import net.xdob.vexra.adb.db.Transaction2;
+import net.xdob.vexra.adb.db.TxnManager;
 import net.xdob.vexra.adb.db.VersionScanSource;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.AdbSqlOperationStats;
+import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.ldb.LdbStore;
+import org.h2.value.Value;
+import org.h2.value.ValueBigint;
+import org.h2.value.ValueRow;
+import org.h2.value.ValueVarchar;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -89,7 +99,10 @@ public final class AdbBenchmarkMain {
     int operations = positiveInt(values, "operations", 1_000);
     int rangeSize = positiveInt(values, "rangeSize", 32);
     int transactionBatchSize = positiveInt(values, "transactionBatchSize", 1);
+    int statementBatchSize = statementBatchSize(values, workload,
+        transactionBatchSize);
     boolean dropTable = bool(values, "dropTable", true);
+    boolean sqlDiagnostics = bool(values, "sqlDiagnostics", true);
     Path output = Paths.get(value(values, "output",
         "build/adb-benchmark/adb-benchmark.properties"));
 
@@ -97,7 +110,11 @@ public final class AdbBenchmarkMain {
     AdbBenchmarkResult result;
     if ("jdbc".equals(mode)) {
       result = benchmark.executeJdbc(url, workload, rows, warmupOperations,
-          operations, rangeSize, dropTable, transactionBatchSize);
+          operations, rangeSize, dropTable, transactionBatchSize,
+          statementBatchSize, sqlDiagnostics);
+    } else if ("txn".equals(mode)) {
+      result = benchmark.executeTxn(storeDir, workload, rows,
+          warmupOperations, operations, transactionBatchSize);
     } else if ("store".equals(mode)) {
       result = benchmark.executeStore(storeDir, workload, rows,
           warmupOperations, operations, rangeSize);
@@ -124,47 +141,62 @@ public final class AdbBenchmarkMain {
    */
   public AdbBenchmarkResult executeJdbc(String url, String workload, int rows,
       int warmupOperations, int operations, int rangeSize,
-      boolean dropTable, int transactionBatchSize) throws Exception {
+      boolean dropTable, int transactionBatchSize, int statementBatchSize,
+      boolean sqlDiagnostics)
+      throws Exception {
     requireSupportedWorkload(workload);
     Class.forName("org.h2.Driver");
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(transactionBatchSize <= 1);
-      prepareSchema(connection, rows, dropTable);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics);
       commitRemaining(connection, transactionBatchSize, 1);
       try (BenchmarkStatements statements = new BenchmarkStatements(
           connection)) {
-        for (int i = 0; i < warmupOperations; i++) {
-          executeOperation(statements, workload, rows, rangeSize, i, false);
-          commitIfNeeded(connection, transactionBatchSize, i + 1);
+        if ("insert".equals(workload) && statementBatchSize > 1) {
+          executeInsertBatches(connection, statements, rows, warmupOperations,
+              statementBatchSize, transactionBatchSize, false, null);
+        } else {
+          for (int i = 0; i < warmupOperations; i++) {
+            executeOperation(statements, workload, rows, rangeSize, i, false,
+                statementBatchSize);
+            commitIfNeeded(connection, transactionBatchSize, i + 1);
+          }
+          commitRemaining(connection, transactionBatchSize, warmupOperations);
         }
-        commitRemaining(connection, transactionBatchSize, warmupOperations);
         AdbSqlDiagnosticsRegistry.resetAll();
         long[] latencies = new long[operations];
         long failed = 0;
         int pendingBatchOperations = 0;
         long started = System.nanoTime();
-        for (int i = 0; i < operations; i++) {
-          long opStarted = System.nanoTime();
-          try {
-            executeOperation(statements, workload, rows, rangeSize, i, true);
-            pendingBatchOperations++;
-            commitIfNeeded(connection, transactionBatchSize,
-                pendingBatchOperations);
-            if (transactionBatchSize > 1
-                && pendingBatchOperations >= transactionBatchSize) {
+        if ("insert".equals(workload) && statementBatchSize > 1) {
+          failed = executeInsertBatches(connection, statements, rows,
+              operations, statementBatchSize, transactionBatchSize, true,
+              latencies);
+        } else {
+          for (int i = 0; i < operations; i++) {
+            long opStarted = System.nanoTime();
+            try {
+              executeOperation(statements, workload, rows, rangeSize, i, true,
+                  statementBatchSize);
+              pendingBatchOperations++;
+              commitIfNeeded(connection, transactionBatchSize,
+                  pendingBatchOperations);
+              if (transactionBatchSize > 1
+                  && pendingBatchOperations >= transactionBatchSize) {
+                pendingBatchOperations = 0;
+              }
+            } catch (Exception e) {
+              failed++;
+              rollbackIfNeeded(connection, transactionBatchSize);
               pendingBatchOperations = 0;
+            } finally {
+              latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
             }
-          } catch (Exception e) {
-            failed++;
-            rollbackIfNeeded(connection, transactionBatchSize);
-            pendingBatchOperations = 0;
-          } finally {
-            latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
           }
+          commitRemaining(connection, transactionBatchSize,
+              pendingBatchOperations);
         }
-        commitRemaining(connection, transactionBatchSize,
-            pendingBatchOperations);
         long durationMillis = Math.max(1L,
             (System.nanoTime() - started) / 1_000_000L);
         Arrays.sort(latencies);
@@ -223,14 +255,106 @@ public final class AdbBenchmarkMain {
     }
   }
 
+  /**
+   * 执行 ADB 本地事务层 benchmark。
+   *
+   * <p>该模式绕过 H2 SQL parser 和 table engine，但仍然使用 TxnManager、MVCC key、
+   * RowCodec、row-count meta 和底层 ldb 提交路径，用于区分 ADB 事务写入能力与 JDBC
+   * 逐行 table engine 调度成本。</p>
+   */
+  public AdbBenchmarkResult executeTxn(String storeDir, String workload,
+      int rows, int warmupOperations, int operations, int transactionBatchSize)
+      throws Exception {
+    if (!"insert".equals(workload)) {
+      throw new IllegalArgumentException(
+          "Txn mode only supports insert workload: " + workload);
+    }
+    try (LdbStore store = new LdbStore(storeDir)) {
+      TxnManager txnManager = new TxnManager(store);
+      TabId tableId = TabId.of(1, 0L);
+      executeTxnInserts(txnManager, tableId, rows, warmupOperations,
+          transactionBatchSize, false, null);
+
+      long[] latencies = new long[operations];
+      long started = System.nanoTime();
+      long failed = executeTxnInserts(txnManager, tableId, rows, operations,
+          transactionBatchSize, true, latencies);
+      long durationMillis = Math.max(1L,
+          (System.nanoTime() - started) / 1_000_000L);
+      Arrays.sort(latencies);
+      double throughput = operations * 1000D / durationMillis;
+      return new AdbBenchmarkResult("txn", workload, storeDir,
+          warmupOperations, operations, failed, durationMillis, throughput,
+          percentile(latencies, 0.50D), percentile(latencies, 0.95D),
+          percentile(latencies, 0.99D), latencies[latencies.length - 1]);
+    }
+  }
+
+  private static long executeTxnInserts(TxnManager txnManager, TabId tableId,
+      int rows, int operations, int transactionBatchSize, boolean countedRun,
+      long[] latencies) throws Exception {
+    long failed = 0L;
+    int completedInTransaction = 0;
+    Transaction2 txn = txnManager.beginTransaction();
+    try {
+      for (int i = 0; i < operations; i++) {
+        long opStarted = System.nanoTime();
+        try {
+          long id = rows + (countedRun ? 1_000_000L : 100_000L) + i;
+          txnManager.put(txn, RowKey.of(tableId, id), rowValue(txn, id,
+              countedRun ? "insert-" + id : "warmup-insert-" + id), null);
+          completedInTransaction++;
+          if (completedInTransaction >= transactionBatchSize) {
+            txnManager.commit(txn);
+            txn = txnManager.beginTransaction();
+            completedInTransaction = 0;
+          }
+        } catch (Exception e) {
+          failed++;
+          txnManager.rollback(txn);
+          txn = txnManager.beginTransaction();
+          completedInTransaction = 0;
+        } finally {
+          if (latencies != null) {
+            latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
+          }
+        }
+      }
+      if (completedInTransaction > 0) {
+        txnManager.commit(txn);
+      } else {
+        txnManager.rollback(txn);
+      }
+      return failed;
+    } catch (Exception e) {
+      txnManager.rollback(txn);
+      throw e;
+    }
+  }
+
+  private static RowValue rowValue(Transaction2 txn, long id, String name) {
+    RowValue rowValue = new RowValue();
+    rowValue.txnId = txn.getTxnId();
+    rowValue.commitTs = 0L;
+    rowValue.deleted = false;
+    rowValue.payload = RowCodec.encode(ValueRow.get(new Value[]{
+        ValueBigint.get(id),
+        ValueVarchar.get(name)
+    }));
+    return rowValue;
+  }
+
   private static void prepareSchema(Connection connection, int rows,
-      boolean dropTable) throws Exception {
+      boolean dropTable, boolean sqlDiagnostics) throws Exception {
     try (Statement statement = connection.createStatement()) {
       if (dropTable) {
         statement.execute("DROP TABLE IF EXISTS " + TABLE_NAME);
       }
+      String diagnosticsParam = sqlDiagnostics ? ""
+          : " WITH \"adb.sql.diagnostics=false\"";
       statement.execute("CREATE TABLE IF NOT EXISTS " + TABLE_NAME
-          + "(ID BIGINT PRIMARY KEY, NAME VARCHAR) ENGINE \"adb_table\"");
+          + "(ID BIGINT PRIMARY KEY, NAME VARCHAR) ENGINE \"adb_table\""
+          + diagnosticsParam);
     }
     try (PreparedStatement statement = connection.prepareStatement(
         "MERGE INTO " + TABLE_NAME + "(ID, NAME) KEY(ID) VALUES (?, ?)")) {
@@ -244,7 +368,7 @@ public final class AdbBenchmarkMain {
 
   private static void executeOperation(BenchmarkStatements statements,
       String workload, int rows, int rangeSize, int index,
-      boolean countedRun) throws Exception {
+      boolean countedRun, int statementBatchSize) throws Exception {
     if ("insert".equals(workload)) {
       long id = rows + (countedRun ? 1_000_000L : 100_000L) + index;
       statements.insert(id, "insert-" + id);
@@ -265,6 +389,46 @@ public final class AdbBenchmarkMain {
         statements.rangeScan(start, Math.min(rows, start + rangeSize - 1L));
       }
     }
+  }
+
+  private static long executeInsertBatches(Connection connection,
+      BenchmarkStatements statements, int rows, int operations,
+      int statementBatchSize, int transactionBatchSize, boolean countedRun,
+      long[] latencies) throws Exception {
+    long failed = 0L;
+    int completedInTransaction = 0;
+    int index = 0;
+    while (index < operations) {
+      int batchSize = Math.min(statementBatchSize, operations - index);
+      long opStarted = System.nanoTime();
+      try {
+        long firstId = rows + (countedRun ? 1_000_000L : 100_000L) + index;
+        statements.insertMany(firstId, batchSize, countedRun
+            ? "insert-" : "warmup-insert-");
+        completedInTransaction += batchSize;
+        commitIfNeeded(connection, transactionBatchSize,
+            completedInTransaction);
+        if (transactionBatchSize > 1
+            && completedInTransaction >= transactionBatchSize) {
+          completedInTransaction = 0;
+        }
+      } catch (Exception e) {
+        failed += batchSize;
+        rollbackIfNeeded(connection, transactionBatchSize);
+        completedInTransaction = 0;
+      } finally {
+        if (latencies != null) {
+          long perRowMicros = nanosToMicros(System.nanoTime() - opStarted)
+              / Math.max(1, batchSize);
+          for (int i = 0; i < batchSize; i++) {
+            latencies[index + i] = perRowMicros;
+          }
+        }
+      }
+      index += batchSize;
+    }
+    commitRemaining(connection, transactionBatchSize, completedInTransaction);
+    return failed;
   }
 
   private static void commitIfNeeded(Connection connection,
@@ -465,6 +629,21 @@ public final class AdbBenchmarkMain {
     return value;
   }
 
+  private static int defaultStatementBatchSize(String workload,
+      int transactionBatchSize) {
+    return "insert".equals(workload) && transactionBatchSize > 1
+        ? transactionBatchSize : 1;
+  }
+
+  private static int statementBatchSize(Map<String, String> values,
+      String workload, int transactionBatchSize) {
+    int configured = nonNegativeInt(values, "statementBatchSize", 0);
+    if (configured > 0) {
+      return configured;
+    }
+    return defaultStatementBatchSize(workload, transactionBatchSize);
+  }
+
   private static int nonNegativeInt(Map<String, String> values, String name,
       int defaultValue) {
     int value = Integer.parseInt(value(values, name,
@@ -479,10 +658,12 @@ public final class AdbBenchmarkMain {
     private final PreparedStatement insert;
     private final PreparedStatement pointLookup;
     private final PreparedStatement rangeScan;
+    private final Map<Integer, PreparedStatement> multiInserts =
+        new HashMap<>();
 
     private BenchmarkStatements(Connection connection) throws Exception {
       this.insert = connection.prepareStatement("MERGE INTO " + TABLE_NAME
-          + "(ID, NAME) KEY(ID) VALUES (?, ?)");
+          + "(ID, NAME) VALUES (?, ?)");
       this.pointLookup = connection.prepareStatement("SELECT NAME FROM "
           + TABLE_NAME + " WHERE ID = ?");
       this.rangeScan = connection.prepareStatement("SELECT COUNT(*) FROM "
@@ -493,6 +674,36 @@ public final class AdbBenchmarkMain {
       insert.setLong(1, id);
       insert.setString(2, name);
       insert.executeUpdate();
+    }
+
+    private void insertMany(long firstId, int batchSize, String namePrefix)
+        throws Exception {
+      PreparedStatement statement = multiInsert(batchSize);
+      int parameter = 1;
+      for (int i = 0; i < batchSize; i++) {
+        long id = firstId + i;
+        statement.setLong(parameter++, id);
+        statement.setString(parameter++, namePrefix + id);
+      }
+      statement.executeUpdate();
+    }
+
+    private PreparedStatement multiInsert(int batchSize) throws Exception {
+      PreparedStatement statement = multiInserts.get(batchSize);
+      if (statement != null) {
+        return statement;
+      }
+      StringBuilder sql = new StringBuilder("INSERT INTO ");
+      sql.append(TABLE_NAME).append("(ID, NAME) VALUES ");
+      for (int i = 0; i < batchSize; i++) {
+        if (i > 0) {
+          sql.append(", ");
+        }
+        sql.append("(?, ?)");
+      }
+      statement = insert.getConnection().prepareStatement(sql.toString());
+      multiInserts.put(batchSize, statement);
+      return statement;
     }
 
     private void pointLookup(long id) throws Exception {
@@ -516,6 +727,9 @@ public final class AdbBenchmarkMain {
 
     @Override
     public void close() throws Exception {
+      for (PreparedStatement statement : multiInserts.values()) {
+        statement.close();
+      }
       rangeScan.close();
       pointLookup.close();
       insert.close();

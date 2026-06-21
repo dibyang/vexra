@@ -124,14 +124,20 @@ public class Transaction2 {
    */
   public void put(AdbWriteBatch batch, DataKey key, RowValue value,
       RowValue oldValue) throws SQLException {
+    putLocal(key, value, oldValue);
+    writeIntent(batch, key, value);
+  }
+
+  /**
+   * 只在内存事务写集中记录写入，不立即持久化 intent。
+   *
+   * <p>本地单机提交可以在 commit 阶段通过一个底层 write batch 直接写 committed
+   * version。这样仍然保持 commit 原子性，同时避免每行 INSERT 都提前写 intent 和 txn ref。</p>
+   */
+  public void putLocal(DataKey key, RowValue value, RowValue oldValue) {
     value.txnId = txnId;
     value.deleted = false;
-
-    VersionKey intentKey = VersionKey.of(key, false, txnId);
-    batch.put(intentKey.toBytes(), RowValue.encodeValue(value));
     this.recordWrite(key, value);
-    TxnRefKey txnRefKey = TxnRefKey.of(txnId, TxnKeyType.WRITE_REF, CF.DEFAULT.getCfId(), intentKey);
-    batch.put(CF.TXN.getCfId(), txnRefKey.toBytes(), new byte[0]);
     OLdEntry entry = new OLdEntry();
     entry.key = key;
     entry.oldValue = oldValue;
@@ -139,6 +145,13 @@ public class Transaction2 {
     if(key.isRow()&&(oldValue==null||oldValue.deleted)){
       getRowCountDelta2(RowCountDeltaKey.of(key.getTabID())).incrementAndGet();
     }
+  }
+
+  private void writeIntent(AdbWriteBatch batch, DataKey key, RowValue value) {
+    VersionKey intentKey = VersionKey.of(key, false, txnId);
+    batch.put(intentKey.toBytes(), RowValue.encodeValue(value));
+    TxnRefKey txnRefKey = TxnRefKey.of(txnId, TxnKeyType.WRITE_REF, CF.DEFAULT.getCfId(), intentKey);
+    batch.put(CF.TXN.getCfId(), txnRefKey.toBytes(), new byte[0]);
   }
 
   private RowValue getVisible(AdbWriteBatch batch, DataKey dataKey) throws SQLException {
@@ -160,15 +173,23 @@ public class Transaction2 {
    */
   public void delete(AdbWriteBatch batch, DataKey key, RowValue oldValue)
       throws SQLException {
+    RowValue value = deleteLocal(key, oldValue);
+    writeIntent(batch, key, value);
+  }
+
+  /**
+   * 只在内存事务写集中记录删除，不立即持久化 intent。
+   *
+   * @param key 删除目标 key
+   * @param oldValue 同一事务快照下的旧可见版本；不存在时为 null
+   * @return 删除 intent value
+   */
+  public RowValue deleteLocal(DataKey key, RowValue oldValue) {
     RowValue value = new RowValue();
     value.txnId = this.getTxnId();
     value.deleted = true;
     value.payload = null;
-    VersionKey intentKey = VersionKey.of(key, false, txnId);
-    TxnRefKey txnRefKey = TxnRefKey.of(txnId, TxnKeyType.WRITE_REF, CF.DEFAULT.getCfId(), intentKey);
-    batch.put(intentKey.toBytes(), RowValue.encodeValue(value));
     this.recordWrite(key, value);
-    batch.put(CF.TXN.getCfId(), txnRefKey.toBytes(), new byte[0]);
     OLdEntry entry = new OLdEntry();
     entry.key = key;
     entry.oldValue = oldValue;
@@ -176,6 +197,7 @@ public class Transaction2 {
     if(key.isRow()&&(oldValue!=null&&!oldValue.deleted)){
       getRowCountDelta2(RowCountDeltaKey.of(key.getTabID())).decrementAndGet();
     }
+    return value;
   }
 
   public void setSavepoint(String name) {

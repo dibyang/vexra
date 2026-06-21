@@ -175,6 +175,8 @@ tasks.register('adbBenchmark', JavaExec) {
         '--operations', (findProperty('adbBenchmarkOperations') ?: '1000').toString(),
         '--rangeSize', (findProperty('adbBenchmarkRangeSize') ?: '32').toString(),
         '--transactionBatchSize', (findProperty('adbBenchmarkTransactionBatchSize') ?: '1').toString(),
+        '--statementBatchSize', (findProperty('adbBenchmarkStatementBatchSize') ?: '0').toString(),
+        '--sqlDiagnostics', (findProperty('adbBenchmarkSqlDiagnostics') ?: 'true').toString(),
         '--dropTable', (findProperty('adbBenchmarkDropTable') ?: 'true').toString(),
         '--output', output.toString()
 }
