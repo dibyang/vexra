@@ -2765,3 +2765,62 @@ powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile
   `TxnMap2.getVisible`、commit/write batch 和 range count 外层入口时的观测成本。
 - 第 2 项“专用 ResultSet”仍保持 defer：第三十九轮完整 mixed JFR 没有证明
   `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 是 allocation 大头。
+
+## 第四十一轮：点查可见性扫描 raw commitTs 快路径
+
+第三十九轮 JFR 里 `TxnMap2.getVisible` / `DefaultVisibleRowResolver` 仍有可见性读取成本，
+但 allocation 大头并不在 `RowValue.decodeValue`。本轮只处理一个低风险子路径：当 row
+点查扫描同一 logical row 的多个 committed 版本时，先从 `VersionRowKey` raw key 还原
+commitTs；如果该版本晚于当前事务 `startTs`，直接 `advance()` 跳过，不再解码 value 和复制
+payload。
+
+实现边界：
+
+1. 新增 `RAW_VERSION_OFFSET` 和 `rawCommitTs(byte[])`，复用现有 `VersionRowKey`
+   固定布局：`table header(13) + rowId(8) + committed(1) + version(8)`。
+2. `getVisibleCommittedRow(...)` 在确认 raw key 是 committed row version 后，先通过 raw
+   commitTs 判断是否晚于快照；晚于快照的版本不调用 `RowValue.decodeValue(...)`。
+3. 该改动只影响 row 点查的非 detailed diagnostics 路径，不改变 index key、range count、
+   本地 write-set、read-set 记录和 committed row cache 语义。
+4. 删除版本的可见性保持原语义：如果删除版本晚于快照，继续向后找旧版本；如果删除版本对快照
+   可见，则返回不可见行。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `shouldKeepSnapshotVisibleWhenNewerDeleteVersionExists` 覆盖晚于快照的删除版本会被跳过、
+  旧版本仍可见，而新快照能看到删除结果。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_raw_commit_ts_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-raw-commit-ts-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-raw-commit-ts-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1977.59 | 457 | 830 | 1258 | 9595 | `vexra-adb/build/adb-benchmark/point_lookup_raw_commit_ts_stage.properties` |
+| `mixed` | 8 | 2463.05 | 2346 | 8199 | 11499 | 662332 | `vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_stage.properties` |
+
+结论：
+
+- 点查样本达到 `1977.59 ops/s`、p99 `1258us`，但 allocation 仍约 `9.6KB/op`，说明该改动
+  收掉的是“跳过较新版本时的无效 value decode”，不是主分配源。
+- mixed 仍约 `2463 ops/s`、`662KB/op`，与第三十九轮 raw-key reuse 样本接近；整体分配瓶颈
+  仍在 ldb cursor/key/value 边界和 range count 扫描。
+- 下一步如果继续做 ADB 内优化，应优先考虑写入入口 `BULK_ADD_ROW / ADD_ROW` 的 per-row
+  key/index 构造与唯一性检查；如果要继续压 `range_scan/mixed` allocation，仍需要
+  `vexra-ldb` raw-view / reusable-entry API 或 ADB segment/block-level count 元数据。

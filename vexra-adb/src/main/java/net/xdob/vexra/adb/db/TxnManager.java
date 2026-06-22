@@ -29,6 +29,7 @@ public class TxnManager {
   private static final int RAW_VERSION_ROW_KEY_LENGTH = 30;
   private static final int RAW_ROW_ID_OFFSET = 13;
   private static final int RAW_COMMITTED_OFFSET = 21;
+  private static final int RAW_VERSION_OFFSET = 22;
 
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
@@ -1052,8 +1053,15 @@ public class TxnManager {
           continue;
         }
 
+        long commitTs = rawCommitTs(rawKey);
+        if (commitTs > txn.getStartTs()) {
+          sawNewerCommitted = true;
+          scan.advance();
+          continue;
+        }
+
         RowValue rowValue = RowValue.decodeValue(scan.value());
-        if (rowValue != null && rowValue.commitTs <= txn.getStartTs()) {
+        if (rowValue != null) {
           if (rowValue.deleted) {
             return null;
           }
@@ -1548,6 +1556,18 @@ public class TxnManager {
    */
   private static long rawRowId(byte[] rawKey) {
     return Key.flipSign(readLong(rawKey, RAW_ROW_ID_OFFSET));
+  }
+
+  /**
+   * 直接从 committed VersionRowKey 的磁盘编码中还原提交时间戳。
+   *
+   * <p>row version key 为了让新版本排在旧版本前，落盘时写入
+   * {@code flipSign(Long.MAX_VALUE - commitTs)}。点查可见性扫描可以先从 key
+   * 判断该版本是否晚于当前快照，只有可能可见时才解码 value，避免跳过新版本时复制 payload。</p>
+   */
+  private static long rawCommitTs(byte[] rawKey) {
+    return Long.MAX_VALUE - Key.flipSign(readLong(rawKey,
+        RAW_VERSION_OFFSET));
   }
 
   private static long readLong(byte[] data, int offset) {

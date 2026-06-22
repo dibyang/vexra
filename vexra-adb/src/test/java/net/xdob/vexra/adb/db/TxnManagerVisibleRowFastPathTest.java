@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * TxnManager 可见行快路径测试。
@@ -49,10 +50,41 @@ class TxnManagerVisibleRowFastPathTest {
     }
   }
 
+  /**
+   * 验证 raw-key 提交时间戳快路径会正确跳过晚于快照的删除版本。
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldKeepSnapshotVisibleWhenNewerDeleteVersionExists()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "visible-delete")
+        .getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      RowKey key = RowKey.of(TabId.of(1, 0L), 1L);
+
+      putCommitted(store, key, 10L, "old");
+      putDeleted(store, key, 20L);
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      assertEquals("old", read(manager, reader, key));
+
+      Transaction2 latestReader = new Transaction2(2L, 25L);
+      RowValue latestVisible = manager.getVisible(latestReader, key);
+      assertNull(latestVisible);
+    }
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
         .toBytes(), RowValue.encodeValue(row(value, commitTs))));
+  }
+
+  private static void putDeleted(LdbStore store, RowKey key, long commitTs)
+      throws Exception {
+    store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
+        .toBytes(), RowValue.encodeValue(deleted(commitTs))));
   }
 
   private static String read(TxnManager manager, Transaction2 txn, RowKey key)
@@ -65,6 +97,14 @@ class TxnManagerVisibleRowFastPathTest {
     RowValue row = new RowValue();
     row.commitTs = commitTs;
     row.payload = RowCodec.encode(ValueVarchar.get(value));
+    return row;
+  }
+
+  private static RowValue deleted(long commitTs) {
+    RowValue row = new RowValue();
+    row.commitTs = commitTs;
+    row.deleted = true;
+    row.payload = new byte[0];
     return row;
   }
 }

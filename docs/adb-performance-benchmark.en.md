@@ -3181,3 +3181,73 @@ Conclusion:
 - Item 2, a dedicated ResultSet, remains deferred because the Round 39 full
   mixed JFR did not prove that `AdbSimpleResultSet` / `java.lang.reflect.Proxy`
   are allocation hotspots.
+
+## Round 41: Raw commitTs Fast Path for Point-Lookup Visibility Scan
+
+Round 39 still showed visible-read cost around `TxnMap2.getVisible` /
+`DefaultVisibleRowResolver`, although allocation was not dominated by
+`RowValue.decodeValue`. This round handles one low-risk subpath: when a row
+point lookup scans multiple committed versions of the same logical row, it now
+restores commitTs directly from the `VersionRowKey` raw key. If that version is
+newer than the current transaction `startTs`, the scan advances without decoding
+the value or copying payload bytes.
+
+Implementation boundary:
+
+1. Added `RAW_VERSION_OFFSET` and `rawCommitTs(byte[])`, using the existing
+   fixed `VersionRowKey` layout: `table header(13) + rowId(8) + committed(1) +
+   version(8)`.
+2. `getVisibleCommittedRow(...)` now checks raw commitTs after confirming the
+   raw key is a committed row version. Versions newer than the snapshot no
+   longer call `RowValue.decodeValue(...)`.
+3. The change only affects the row point-lookup path when detailed diagnostics
+   are disabled. It does not change index keys, range count, local write-set
+   handling, read-set recording, or committed row cache semantics.
+4. Delete-version visibility is unchanged: a delete newer than the snapshot is
+   skipped so the older version remains visible, while a delete visible to the
+   snapshot hides the row.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `shouldKeepSnapshotVisibleWhenNewerDeleteVersionExists` covers skipping a
+  delete version newer than the snapshot, keeping the older value visible, and
+  letting a newer snapshot observe the delete.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_raw_commit_ts_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-raw-commit-ts-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-raw-commit-ts-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1977.59 | 457 | 830 | 1258 | 9595 | `vexra-adb/build/adb-benchmark/point_lookup_raw_commit_ts_stage.properties` |
+| `mixed` | 8 | 2463.05 | 2346 | 8199 | 11499 | 662332 | `vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_stage.properties` |
+
+Conclusion:
+
+- The point-lookup sample reached `1977.59 ops/s` with p99 `1258us`, but
+  allocation remains around `9.6KB/op`. This confirms that the change removes
+  unnecessary value decoding when skipping newer versions, but it is not the
+  primary allocation source.
+- Mixed remains around `2463 ops/s` and `662KB/op`, close to the Round 39
+  raw-key-reuse sample. The overall allocation bottleneck is still at the ldb
+  cursor/key/value boundary and range-count scan.
+- The next ADB-internal optimization should focus on per-row key/index
+  construction and uniqueness checks in `BULK_ADD_ROW / ADD_ROW`. To materially
+  reduce `range_scan/mixed` allocation, ADB still needs a `vexra-ldb` raw-view /
+  reusable-entry API or ADB segment/block-level count metadata.
