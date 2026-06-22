@@ -798,6 +798,72 @@ payload decoding alone.
   "-PadbBenchmarkDetailedDiagnostics=true"
 ```
 
+## Round 14 Range Count ResultSet / Prefix Fixed-Cost Result
+
+This round reduces fixed overhead around `ADB_TABLE_RANGE_COUNT_FAST`:
+
+1. `AdbPreparedRangeCountPlan` caches the `RowPrefix` for the current `TabId`.
+   Repeated prepared range-count executions within the same table epoch avoid
+   rebuilding the prefix. If truncate / DDL advances the epoch, the changed
+   `TabId` automatically rebuilds the cached prefix.
+2. `AdbSimpleResultSet` adds a single-column long handler, so the `COUNT(*)`
+   fast path no longer allocates `Value[]` / `ValueBigint` for every query.
+   `findColumn("COUNT(*)")`, `getLong("COUNT(*)")`, and `getString(1)` remain
+   supported.
+
+Measured results:
+
+| Mode | Workload | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | on | 1144.60 | 701 | 1959 | 2682 | 6749 | `vexra-adb/build/adb-benchmark/range_count_resultset_stage.properties` |
+| `jdbc` | `mixed` | on | 877.45 | 1086 | 1827 | 3883 | 8169 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_resultset_stage.properties` |
+
+Main phase summary:
+
+| workload | phase | count | avg us | max us |
+| --- | --- | ---: | ---: | ---: |
+| `range_scan` | `ADB_RANGE_COUNT_VISIBLE_COUNT` | 3000 | 318 | 6018 |
+| `range_scan` | `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 3000 | 868 | 6000 |
+| `mixed` | `ADB_RANGE_COUNT_VISIBLE_COUNT` | 600 | 412 | 6783 |
+| `mixed` | `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 600 | 1408 | 9000 |
+
+Conclusion: this round removes small allocations from the range-count fast
+path, but the short benchmark did not beat Round 9's
+`range_count_fast_stage` result of 1388.89 ops/s, and the mixed result is below
+the previous single-row insert stage's short window. The remaining range-count
+opportunity is therefore unlikely to be a single `ResultSet` / `Value[]`
+allocation; it is more likely in visible-row scan cost, query-execution
+variance, and contention with point lookup / commit work in mixed runs. Future
+range-count work should focus on block-level / segment counts or metadata-level
+statistics for common wide ranges.
+
+Range-count reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-resultset-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_resultset_stage.properties"
+```
+
+Mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-resultset-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_resultset_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

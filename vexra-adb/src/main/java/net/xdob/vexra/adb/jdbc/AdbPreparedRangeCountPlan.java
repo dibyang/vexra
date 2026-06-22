@@ -3,11 +3,11 @@ package net.xdob.vexra.adb.jdbc;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Collections;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.TxnMap2;
 import net.xdob.vexra.adb.key.RowPrefix;
+import net.xdob.vexra.adb.key.TabId;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
 import org.h2.jdbc.JdbcConnection;
@@ -15,8 +15,6 @@ import org.h2.result.SearchRow;
 import org.h2.schema.Schema;
 import org.h2.table.Column;
 import org.h2.table.Table;
-import org.h2.value.Value;
-import org.h2.value.ValueBigint;
 
 /**
  * 参数化主键范围 COUNT 的 ADB 快路径计划。
@@ -32,10 +30,13 @@ final class AdbPreparedRangeCountPlan {
   private static final String WHERE = " WHERE ";
   private static final String BETWEEN = " BETWEEN ";
   private static final String PARAM_AND_PARAM = "? AND ?";
+  private static final String COUNT_COLUMN = "COUNT(*)";
 
   private final String tableName;
   private final String whereColumn;
   private AdbTable resolvedTable;
+  private TabId cachedTabId;
+  private RowPrefix cachedRowPrefix;
 
   private AdbPreparedRangeCountPlan(String tableName, String whereColumn) {
     this.tableName = tableName;
@@ -120,9 +121,7 @@ final class AdbPreparedRangeCountPlan {
       long min = toLong(parameters[1]);
       long max = toLong(parameters[2]);
       long count = min > max ? 0L : countVisibleRows(session, table, min, max);
-      Value[] values = new Value[]{ValueBigint.get(count)};
-      return AdbSimpleResultSet.singleRow(Collections.singletonList("COUNT(*)"),
-          values);
+      return AdbSimpleResultSet.singleLong(COUNT_COLUMN, count);
     } catch (SQLException e) {
       failure = e;
       throw e;
@@ -138,7 +137,7 @@ final class AdbPreparedRangeCountPlan {
   private long countVisibleRows(SessionLocal session, AdbTable table, long min,
       long max) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
-    RowPrefix prefix = RowPrefix.of(map.getTabId(table.getId()));
+    RowPrefix prefix = rowPrefix(map, table.getId());
     long started = System.nanoTime();
     try {
       return map.countVisibleRows(prefix, min, max);
@@ -146,6 +145,16 @@ final class AdbPreparedRangeCountPlan {
       table.recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT",
           System.nanoTime() - started);
     }
+  }
+
+  private RowPrefix rowPrefix(TxnMap2 map, int tableId) {
+    TabId tabId = map.getTabId(tableId);
+    if (tabId.equals(cachedTabId) && cachedRowPrefix != null) {
+      return cachedRowPrefix;
+    }
+    cachedTabId = tabId;
+    cachedRowPrefix = RowPrefix.of(tabId);
+    return cachedRowPrefix;
   }
 
   private boolean isPrimaryKeyRange(AdbTable table) {

@@ -942,7 +942,10 @@ class AdbTableProviderIntegrationTest {
             count.setLong(2, max);
             try (ResultSet resultSet = count.executeQuery()) {
                 Assertions.assertTrue(resultSet.next());
+                Assertions.assertEquals(1, resultSet.findColumn("COUNT(*)"));
                 long value = resultSet.getLong(1);
+                Assertions.assertEquals(value, resultSet.getLong("COUNT(*)"));
+                Assertions.assertEquals(String.valueOf(value), resultSet.getString(1));
                 Assertions.assertFalse(resultSet.next());
                 return value;
             }

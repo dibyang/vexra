@@ -33,6 +33,24 @@ final class AdbSimpleResultSet {
         new Handler(columns, values));
   }
 
+  /**
+   * 创建单列 long 值 ResultSet。
+   *
+   * <p>COUNT 快路径只返回一行一列 long 值，使用专用 handler 可以避免每次构造
+   * {@code Value[]}。列名仍交给通用 handler 处理，保持 findColumn / getLong(String)
+   * 行为一致。</p>
+   *
+   * @param columnName 列名
+   * @param value long 值
+   * @return ResultSet 代理
+   */
+  static ResultSet singleLong(String columnName, long value) {
+    return (ResultSet) Proxy.newProxyInstance(
+        ResultSet.class.getClassLoader(),
+        new Class<?>[]{ResultSet.class},
+        new SingleLongHandler(columnName, value));
+  }
+
   private static final class Handler implements InvocationHandler {
 
     private final List<String> columns;
@@ -166,6 +184,109 @@ final class AdbSimpleResultSet {
         throw new SQLException("ResultSet metadata is not supported by ADB fast path");
       }
       return null;
+    }
+  }
+
+  private static final class SingleLongHandler implements InvocationHandler {
+
+    private final String columnName;
+    private final long value;
+    private boolean beforeFirst = true;
+    private boolean onRow;
+    private boolean closed;
+    private boolean wasNull;
+
+    private SingleLongHandler(String columnName, long value) {
+      this.columnName = columnName;
+      this.value = value;
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args)
+        throws Throwable {
+      String name = method.getName();
+      if ("next".equals(name)) {
+        if (closed || !beforeFirst) {
+          onRow = false;
+          beforeFirst = false;
+          return Boolean.FALSE;
+        }
+        beforeFirst = false;
+        onRow = true;
+        return Boolean.TRUE;
+      }
+      if ("close".equals(name)) {
+        closed = true;
+        onRow = false;
+        return null;
+      }
+      if ("isClosed".equals(name)) {
+        return Boolean.valueOf(closed);
+      }
+      if ("wasNull".equals(name)) {
+        return Boolean.valueOf(wasNull);
+      }
+      if ("findColumn".equals(name)) {
+        return Integer.valueOf(findColumn((String) args[0]));
+      }
+      if ("getLong".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Long.valueOf(value);
+      }
+      if ("getInt".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Integer.valueOf((int) value);
+      }
+      if ("getString".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return String.valueOf(value);
+      }
+      if ("getObject".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Long.valueOf(value);
+      }
+      if ("unwrap".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        Class<?> type = (Class<?>) args[0];
+        if (type.isInstance(proxy)) {
+          return proxy;
+        }
+        throw new SQLException("Not a wrapper for " + type.getName());
+      }
+      if ("isWrapperFor".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        return Boolean.valueOf(((Class<?>) args[0]).isInstance(proxy));
+      }
+      return Handler.defaultValue(method.getReturnType(), name);
+    }
+
+    private void checkOnRow() throws SQLException {
+      if (!onRow || closed) {
+        throw new SQLException("ResultSet is not positioned on a row");
+      }
+    }
+
+    private int findColumn(Object column) throws SQLException {
+      if (column instanceof Number) {
+        int index = ((Number) column).intValue();
+        if (index == 1) {
+          return 1;
+        }
+        throw new SQLException("Invalid column index: " + index);
+      }
+      String text = String.valueOf(column);
+      if (columnName.equalsIgnoreCase(text)) {
+        return 1;
+      }
+      throw new SQLException("Unknown column: " + text);
     }
   }
 }
