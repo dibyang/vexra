@@ -3307,3 +3307,63 @@ benchmark：
 - 该改动仍然有价值，因为它减少了每次 cache miss / 新 key 点查的确定性分配；后续第 3 项继续推进时，
   更高价值方向仍是安全降低 committed cache hit 校验成本，或把 RowValue payload copy 进一步下沉到
   直接从 store value 解码选中列。
+
+## 第五十轮：RowValue 头部手工解码
+
+本轮继续第 3 项 `TxnMap2.getVisible / visible row` 解析路径优化。`RowValue.decodeValue(...)` 和
+`decodeMetadata(...)` 原先每次都会 `ByteBuffer.wrap(data)`，再读取固定布局的
+`txnId / commitTs / deleted / payloadLength`。该路径在点查、range count 多版本可见性判断、committed
+store scan 中都会被使用。
+
+本轮改动：
+
+1. `RowValue.decodeValue(...)` 改为按固定 offset 手工读取 long/int/byte，去掉每次解码的
+   `HeapByteBuffer` 包装对象。
+2. `RowValue.decodeMetadata(...)` 同样改为手工读取头部，服务 range count 和可见性判断。
+3. 空 payload 使用共享的 `EMPTY_PAYLOAD`，避免 delete/空 payload 版本每次创建新 `byte[0]`。
+4. 不改变 RowValue 磁盘格式；payload 非空时仍复制一份独立 byte[]，避免调用方持有底层 store value。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `RowValueTest.shouldDecodeValueAndMetadataFromEncodedBytes` 覆盖完整 payload 的 value / metadata 解码。
+- `RowValueTest.shouldReuseEmptyPayloadForDeletedRows` 覆盖空 payload 复用和 metadata `hasPayload=false`。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_rowvalue_manual_decode_20260622-170419.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-point_lookup-rowvalue-manual-decode-20260622-170419/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_20260622-170419.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-rowvalue-manual-decode-20260622-170419/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_repeat_20260622-170526.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-rowvalue-manual-decode-repeat-20260622-170526/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | baseline ops/s | 本轮 ops/s | 本轮复跑 ops/s | baseline p99 us | 本轮 p99 us | 本轮复跑 p99 us | baseline alloc bytes/op | 本轮 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1020.76 | 1411.10 | - | 2177 | 1958 | - | 9922 | 10258 | `vexra-adb/build/adb-benchmark/adb_point_lookup_rowvalue_manual_decode_20260622-170419.properties` |
+| `mixed` | 2700.27 | 3045.69 | 2868.07 | 8670 | 7560 | 8250 | 371846 | 371102 / 371162 | `vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_20260622-170419.properties` |
+
+结论：
+
+- mixed 两次样本均高于第四十九轮 baseline：`3045.69 ops/s` 与 `2868.07 ops/s`，p99 分别为
+  `7560us` 和 `8250us`；说明手工头部解码对 visible row / range metadata 路径有正向信号。
+- allocation 下降幅度不大，约从 `371846 B/op` 到 `371102-371162 B/op`；这符合预期，因为主要大头仍是
+  ldb cursor key/value 边界和 store value 复制。
+- point_lookup 单项吞吐从上一轮低位回升到 `1411 ops/s`，但 allocation 没有下降；该单项仍不适合单凭
+  一轮判断趋势。
+- 后续要继续第 3 项，真正大头仍是安全降低 committed cache hit 的物理版本校验成本，或者新增只解码选中列的
+  visible-row API，直接从 store value 中跳过 RowValue payload copy。

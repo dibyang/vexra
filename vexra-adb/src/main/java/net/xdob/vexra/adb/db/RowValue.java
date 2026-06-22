@@ -1,8 +1,13 @@
 package net.xdob.vexra.adb.db;
 
-import java.nio.ByteBuffer;
-
 public class RowValue {
+  private static final int OFFSET_TXN_ID = 0;
+  private static final int OFFSET_COMMIT_TS = 8;
+  private static final int OFFSET_DELETED = 16;
+  private static final int OFFSET_PAYLOAD_LENGTH = 17;
+  private static final int OFFSET_PAYLOAD = 21;
+  private static final byte[] EMPTY_PAYLOAD = new byte[0];
+
   public long txnId;     // 濮嬬粓琛ㄧず鍐欏叆浜嬪姟
   public long commitTs;  // 0 = 鏈彁浜?
   public boolean deleted;
@@ -38,18 +43,17 @@ public class RowValue {
     if(data==null||data.length==0){
       return null;
     }
-    ByteBuffer buffer = ByteBuffer.wrap(data);
     RowValue value = new RowValue();
-    value.txnId = buffer.getLong();
-    value.commitTs = buffer.getLong();
-    value.deleted = buffer.get() != 0;
-    int len = buffer.getInt();
+    value.txnId = readLong(data, OFFSET_TXN_ID);
+    value.commitTs = readLong(data, OFFSET_COMMIT_TS);
+    value.deleted = data[OFFSET_DELETED] != 0;
+    int len = readInt(data, OFFSET_PAYLOAD_LENGTH);
     if (len > 0) {
       byte[] bytes = new byte[len];
-      buffer.get(bytes);
+      System.arraycopy(data, OFFSET_PAYLOAD, bytes, 0, len);
       value.payload = bytes;
     } else {
-      value.payload = new byte[0];
+      value.payload = EMPTY_PAYLOAD;
     }
     return value;
   }
@@ -64,13 +68,30 @@ public class RowValue {
     if(data==null||data.length==0){
       return null;
     }
-    ByteBuffer buffer = ByteBuffer.wrap(data);
     Metadata metadata = new Metadata();
-    metadata.txnId = buffer.getLong();
-    metadata.commitTs = buffer.getLong();
-    metadata.deleted = buffer.get() != 0;
-    metadata.payloadLength = buffer.getInt();
+    metadata.txnId = readLong(data, OFFSET_TXN_ID);
+    metadata.commitTs = readLong(data, OFFSET_COMMIT_TS);
+    metadata.deleted = data[OFFSET_DELETED] != 0;
+    metadata.payloadLength = readInt(data, OFFSET_PAYLOAD_LENGTH);
     return metadata;
+  }
+
+  private static long readLong(byte[] data, int offset) {
+    return ((long) (data[offset] & 0xff) << 56)
+        | ((long) (data[offset + 1] & 0xff) << 48)
+        | ((long) (data[offset + 2] & 0xff) << 40)
+        | ((long) (data[offset + 3] & 0xff) << 32)
+        | ((long) (data[offset + 4] & 0xff) << 24)
+        | ((long) (data[offset + 5] & 0xff) << 16)
+        | ((long) (data[offset + 6] & 0xff) << 8)
+        | (long) (data[offset + 7] & 0xff);
+  }
+
+  private static int readInt(byte[] data, int offset) {
+    return ((data[offset] & 0xff) << 24)
+        | ((data[offset + 1] & 0xff) << 16)
+        | ((data[offset + 2] & 0xff) << 8)
+        | (data[offset + 3] & 0xff);
   }
 
   /**

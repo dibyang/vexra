@@ -3812,3 +3812,74 @@ Conclusion:
   safely reducing committed-cache hit validation cost, or pushing selected-column
   decoding further down so it can read directly from the store value without
   copying the RowValue payload first.
+
+## Round 50: Manual RowValue Header Decode
+
+This round continues item 3, `TxnMap2.getVisible / visible row` parsing-path
+optimization. `RowValue.decodeValue(...)` and `decodeMetadata(...)` previously
+created a `ByteBuffer.wrap(data)` object on every decode, then read the fixed
+`txnId / commitTs / deleted / payloadLength` layout. This path is used by point
+lookup, range-count multi-version visibility checks, and committed store scans.
+
+Changes:
+
+1. `RowValue.decodeValue(...)` now reads long / int / byte fields from fixed
+   offsets, avoiding a `HeapByteBuffer` wrapper per decode.
+2. `RowValue.decodeMetadata(...)` uses the same manual header decode for range
+   count and visibility checks.
+3. Empty payloads reuse a shared `EMPTY_PAYLOAD`, avoiding a new `byte[0]` for
+   delete / empty-payload versions.
+4. The RowValue disk format is unchanged. Non-empty payloads are still copied
+   into an independent byte array, so callers do not hold the underlying store
+   value.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+Result: passed.
+
+New tests:
+
+- `RowValueTest.shouldDecodeValueAndMetadataFromEncodedBytes` covers full
+  payload value / metadata decode.
+- `RowValueTest.shouldReuseEmptyPayloadForDeletedRows` covers empty-payload
+  reuse and metadata `hasPayload=false`.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_rowvalue_manual_decode_20260622-170419.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-point_lookup-rowvalue-manual-decode-20260622-170419/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_20260622-170419.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-rowvalue-manual-decode-20260622-170419/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_repeat_20260622-170526.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-rowvalue-manual-decode-repeat-20260622-170526/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | Baseline ops/s | This round ops/s | Repeat ops/s | Baseline p99 us | This round p99 us | Repeat p99 us | Baseline alloc bytes/op | This round alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1020.76 | 1411.10 | - | 2177 | 1958 | - | 9922 | 10258 | `vexra-adb/build/adb-benchmark/adb_point_lookup_rowvalue_manual_decode_20260622-170419.properties` |
+| `mixed` | 2700.27 | 3045.69 | 2868.07 | 8670 | 7560 | 8250 | 371846 | 371102 / 371162 | `vexra-adb/build/adb-benchmark/adb_mixed_rowvalue_manual_decode_20260622-170419.properties` |
+
+Conclusion:
+
+- Both mixed samples are above the Round 49 baseline: `3045.69 ops/s` and
+  `2868.07 ops/s`, with p99 at `7560us` and `8250us`. This is a positive signal
+  for the visible-row / range-metadata path.
+- Allocation only dropped modestly, from `371846 B/op` to roughly
+  `371102-371162 B/op`, which is expected because the dominant sources remain
+  the ldb cursor key/value boundary and store-value copying.
+- The standalone point-lookup sample recovered to `1411 ops/s` from the
+  previous low sample, but allocation did not improve. It is still not a good
+  one-run trend indicator.
+- The next higher-value item 3 work remains safely reducing physical-version
+  validation on committed-cache hits, or adding a selected-column visible-row API
+  that can decode directly from the store value and skip RowValue payload copy.
