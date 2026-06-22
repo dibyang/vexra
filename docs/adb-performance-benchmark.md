@@ -1339,3 +1339,43 @@ mixed 8 线程复现命令：
   "-PadbBenchmarkThreads=8" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties"
 ```
+
+## 第十八轮：primary find cost 诊断与未采纳实验
+
+本轮继续拆分 `PRIMARY_FIND` 的外层耗时，保留了一个 detailed-only 诊断：
+
+- `ADB_PRIMARY_FIND_COST`：统计 H2 planner 调用 primary index `getCost` 时的耗时。
+- 该 phase 只在 `vexra.adb.sql.diagnostic.detail=true` 时记录，默认 benchmark
+  和线上热路径不增加额外 `System.nanoTime()` 调用。
+
+同时验证了两个实验性方案，但没有合入为默认行为：
+
+| 实验 | workload | throughput ops/s | p50 us | p95 us | p99 us | bytes/op | 结论 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 轻量 `Row` 视图替代 `DefaultRow` | `primary_find` | 302.85 | 3342 | 5512 | 6791 | 51223 | 相比上一轮 `431.97 ops/s` 明显回退，未采纳 |
+| `getCost` 使用估算行数，跳过精确 `getRowCount` | `primary_find` | 524.02 | 1942 | 3191 | 4778 | 33770 | 单项 primary find 改善明显 |
+| 同一估算行数方案 | `mixed` | 1135.93 | 713 | 2199 | 3350 | 111425 | mixed 相比上一轮 `1699.72 ops/s` 明显回退，未采纳 |
+
+结论：
+
+- `getCost -> getRowCount` 是 primary find 单项 workload 的真实成本来源之一；
+  估算行数能让 `ADB_TABLE_ROW_COUNT` 从该路径消失，并降低对象分配。
+- 该方案会影响 H2 optimizer 的索引选择或执行计划稳定性，在 mixed workload 中造成明显吞吐回退；
+  因此不能直接把 primary index cost 改成固定估算值。
+- 下一步若继续优化 primary find，应基于 `ADB_PRIMARY_FIND_COST` 做更窄的策略：
+  例如只在安全的主键等值查询计划中跳过精确 row-count，或者把 row-count 基线改成可预热、
+  可复用且不改变 optimizer 计划语义的缓存。
+
+primary find cost 诊断复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-cost-diagnostic/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkDetailedDiagnostics=true" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_cost_diagnostic.properties"
+```

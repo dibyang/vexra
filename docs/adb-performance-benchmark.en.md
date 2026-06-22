@@ -1540,3 +1540,50 @@ Mixed 8-thread reproduction command:
   "-PadbBenchmarkThreads=8" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_count_threads_8.properties"
 ```
+
+## Round 18: Primary-Find Cost Diagnostics and Rejected Experiments
+
+This round further splits the outer `PRIMARY_FIND` cost and keeps one
+detailed-only diagnostic phase:
+
+- `ADB_PRIMARY_FIND_COST`: time spent while H2 planner calls the primary
+  index `getCost` method.
+- This phase is recorded only when `vexra.adb.sql.diagnostic.detail=true`, so
+  the default benchmark and production hot path do not add extra
+  `System.nanoTime()` calls.
+
+Two experimental approaches were validated but not retained as default
+behavior:
+
+| Experiment | workload | throughput ops/s | p50 us | p95 us | p99 us | bytes/op | Conclusion |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Lightweight `Row` view instead of `DefaultRow` | `primary_find` | 302.85 | 3342 | 5512 | 6791 | 51223 | Clear regression from the previous `431.97 ops/s`; rejected |
+| Estimated row count in `getCost`, avoiding exact `getRowCount` | `primary_find` | 524.02 | 1942 | 3191 | 4778 | 33770 | Clear standalone primary-find improvement |
+| Same estimated-row-count approach | `mixed` | 1135.93 | 713 | 2199 | 3350 | 111425 | Clear mixed-workload regression from the previous `1699.72 ops/s`; rejected |
+
+Conclusion:
+
+- `getCost -> getRowCount` is one real source of standalone primary-find cost.
+  Estimated row count removes `ADB_TABLE_ROW_COUNT` from that path and lowers
+  allocation.
+- The same change can affect H2 optimizer index choice or execution-plan
+  stability, causing a major mixed-workload throughput regression. Therefore
+  the primary index cost must not be switched to a fixed estimate globally.
+- Future primary-find optimization should use `ADB_PRIMARY_FIND_COST` to design
+  a narrower strategy: for example, skip exact row-count only for safe primary
+  key equality plans, or make the row-count baseline prewarmed and reusable
+  without changing optimizer semantics.
+
+Primary-find cost diagnostic reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-cost-diagnostic/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkDetailedDiagnostics=true" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_cost_diagnostic.properties"
+```

@@ -807,6 +807,8 @@ class AdbTableProviderIntegrationTest {
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_PRIMARY_FIND_ROW_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_PRIMARY_FIND_COST"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_PRIMARY_FIND_ROW_DECODE"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_PRIMARY_FIND_ROW_BUILD"), snapshot.getPhaseStats().keySet().toString());

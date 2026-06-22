@@ -328,11 +328,17 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
   public double getCost(SessionLocal session, int[] masks,
                         TableFilter[] filters, int filter, SortOrder sortOrder,
                         AllColumnsForPlan allColumnsSet) {
+    long started = detailedSqlDiagnostics() ? System.nanoTime() : 0L;
     try {
       return 10 * getCostRangeIndex(masks, getRowCount(session),
           filters, filter, sortOrder, true, allColumnsSet);
     } catch (MVStoreException e) {
       throw DbException.get(ErrorCode.OBJECT_CLOSED, e);
+    } finally {
+      if (started != 0L) {
+        rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_COST",
+            System.nanoTime() - started);
+      }
     }
   }
 
