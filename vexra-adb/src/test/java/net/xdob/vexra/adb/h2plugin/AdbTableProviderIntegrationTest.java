@@ -655,6 +655,8 @@ class AdbTableProviderIntegrationTest {
 
     @Test
     void pointLookupCacheSeesCommittedUpdateAndDelete() throws Exception {
+        System.setProperty("vexra.adb.sql.diagnostic.detail", "true");
+        AdbSqlDiagnosticsRegistry.clear();
         String databasePath = tempDir.resolve("adb-point-cache").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
         try {
@@ -662,6 +664,7 @@ class AdbTableProviderIntegrationTest {
                  Statement statement = connection.createStatement()) {
                 statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
                 statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'first')");
+                AdbSqlDiagnosticsRegistry.resetAll();
                 Assertions.assertEquals("first",
                         singleString(statement, "SELECT NAME FROM TEST WHERE ID = 1"));
                 Assertions.assertEquals("first",
@@ -675,13 +678,26 @@ class AdbTableProviderIntegrationTest {
                 Assertions.assertEquals(0L,
                         singleLong(statement, "SELECT COUNT(*) FROM TEST WHERE ID = 1"));
             }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_PRIMARY_FIND_VISIBLE_ROW"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_PRIMARY_FIND_ROW_CACHE_MISS"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_PRIMARY_FIND_ROW_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
         } finally {
             DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+            System.clearProperty("vexra.adb.sql.diagnostic.detail");
         }
     }
 
     @Test
     void preparedPointLookupDecodeCacheSeesCommittedUpdateAndDelete() throws Exception {
+        System.setProperty("vexra.adb.sql.diagnostic.detail", "true");
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());
         String databasePath = tempDir.resolve("adb-prepared-point-cache").toAbsolutePath().toString().replace('\\', '/');
@@ -711,11 +727,16 @@ class AdbTableProviderIntegrationTest {
                     .snapshot();
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_POINT_LOOKUP_DECODE_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_POINT_LOOKUP_VISIBLE_ROW"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_POINT_LOOKUP_RESULT_BUILD"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getOperationStats().containsKey(
                     "ADB_TABLE_POINT_LOOKUP_FAST TEST"), snapshot.getOperationStats().keySet().toString());
         } finally {
             DbStoreEngine.close(databasePath);
             AdbSqlDiagnosticsRegistry.clear();
+            System.clearProperty("vexra.adb.sql.diagnostic.detail");
         }
     }
 

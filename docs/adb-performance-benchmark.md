@@ -122,6 +122,70 @@ table-engine 边界仍是主要瓶颈。
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## point lookup / primary find 详细诊断开关
+
+本轮为 point lookup 和 primary find 增加了按需启用的细粒度 phase：
+
+- `ADB_POINT_LOOKUP_VISIBLE_ROW`：prepared point lookup 获取 MVCC 可见行。
+- `ADB_POINT_LOOKUP_RESULT_BUILD`：prepared point lookup 构造 fast-path ResultSet。
+- `ADB_PRIMARY_FIND_VISIBLE_ROW`：H2 primary find 点查路径获取 MVCC 可见行。
+- `ADB_PRIMARY_FIND_ROW_CACHE_HIT` / `ADB_PRIMARY_FIND_ROW_CACHE_MISS`：primary find 解码 row cache 命中情况。
+
+这些 phase 会调用 SQL diagnostic recorder，默认关闭，避免在高频点查路径上引入同步统计开销。
+如需在 benchmark 中打开，使用 `-PadbBenchmarkDetailedDiagnostics=true`；运行时也可以设置
+`-Dvexra.adb.sql.diagnostic.detail=true`。
+
+默认诊断关闭的 mixed 8 线程结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1300.95 | 13488 | `vexra-adb/build/adb-benchmark/jdbc_mixed_detail_toggle_threads_8.properties` |
+
+详细诊断开启的 mixed 8 线程结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1257.33 | 13707 | `vexra-adb/build/adb-benchmark/jdbc_mixed_detail_on_threads_8.properties` |
+
+详细诊断结论：
+
+- `ADB_TABLE_POINT_LOOKUP_FAST` 平均约 2360 us，其中 `ADB_POINT_LOOKUP_VISIBLE_ROW`
+  平均约 259 us，`ADB_POINT_LOOKUP_RESULT_BUILD` 平均约 16 us，
+  `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` 平均约 8 us。
+- `ADB_TABLE_PRIMARY_FIND` 平均约 3292 us，其中 `ADB_PRIMARY_FIND_VISIBLE_ROW`
+  平均约 1404 us。
+- 因此下一步 point lookup / primary find 的高价值优化不应继续优先压列值 decode，
+  而应转向减少 H2/JDBC/table-engine 外层调用边界、primary find 可见性解析和 Row/ResultSet 对象边界。
+
+默认 mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-detail-toggle-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_detail_toggle_threads_8.properties"
+```
+
+详细诊断 mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-detail-on-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkDetailedDiagnostics=true" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_detail_on_threads_8.properties"
+```
+
 ## row-count 冷启动 single-flight 优化结果
 
 上一轮 mixed 8 线程报告显示 `ADB_ROW_COUNT_CACHE_MISS` / `ADB_ROW_COUNT_BASE_SCAN`

@@ -145,7 +145,16 @@ final class AdbPreparedPointLookupPlan {
       }
       Value[] values = rowValue == null ? null
           : decodedValues(table, rowId, rowValue);
-      return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+      if (!detailedSqlDiagnostics()) {
+        return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+      }
+      long resultStarted = System.nanoTime();
+      try {
+        return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+      } finally {
+        table.recordSqlPhase("ADB_POINT_LOOKUP_RESULT_BUILD",
+            System.nanoTime() - resultStarted);
+      }
     } catch (SQLException e) {
       failure = e;
       throw e;
@@ -203,12 +212,26 @@ final class AdbPreparedPointLookupPlan {
       long rowId) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
     RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
-    RowValue rowValue = map.getVisible(rowKey);
-    if (rowValue == null || rowValue.deleted || rowValue.payload == null
-        || rowValue.payload.length == 0) {
-      return null;
+    if (!detailedSqlDiagnostics()) {
+      RowValue rowValue = map.getVisible(rowKey);
+      if (rowValue == null || rowValue.deleted || rowValue.payload == null
+          || rowValue.payload.length == 0) {
+        return null;
+      }
+      return rowValue;
     }
-    return rowValue;
+    long started = System.nanoTime();
+    try {
+      RowValue rowValue = map.getVisible(rowKey);
+      if (rowValue == null || rowValue.deleted || rowValue.payload == null
+          || rowValue.payload.length == 0) {
+        return null;
+      }
+      return rowValue;
+    } finally {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_VISIBLE_ROW",
+          System.nanoTime() - started);
+    }
   }
 
   private Value[] decodedValues(AdbTable table, long rowId,
@@ -304,6 +327,10 @@ final class AdbPreparedPointLookupPlan {
       return value.substring(1, value.length() - 1);
     }
     return value.toUpperCase(Locale.ROOT);
+  }
+
+  private static boolean detailedSqlDiagnostics() {
+    return Boolean.getBoolean("vexra.adb.sql.diagnostic.detail");
   }
 
   private static final class CachedColumnValues {

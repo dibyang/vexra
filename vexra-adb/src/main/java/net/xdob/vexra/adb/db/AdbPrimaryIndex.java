@@ -270,7 +270,7 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
         if (map.canSkipAppendUniqueCheck(firstKey)) {
           return new SingleRowCursor(null);
         }
-        RowValue rowValue = map.getVisible(firstKey);
+        RowValue rowValue = visiblePointRow(map, firstKey);
         if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
           decodedRowCache.remove(firstKey);
           return new SingleRowCursor(null);
@@ -313,7 +313,7 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     TxnMap2 map = getTxnMap(session);
     try {
       RowKey firstKey = RowKey.of(map.getTabId(table.getId()), key);
-      RowValue rowValue = map.getVisible(firstKey);
+      RowValue rowValue = visiblePointRow(map, firstKey);
       if (rowValue == null || rowValue.deleted || rowValue.payload == null || rowValue.payload.length == 0) {
         decodedRowCache.remove(firstKey);
         return null;
@@ -439,14 +439,52 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     return row;
   }
 
+  private RowValue visiblePointRow(TxnMap2 map, RowKey rowKey)
+      throws SQLException {
+    if (!detailedSqlDiagnostics()) {
+      return map.getVisible(rowKey);
+    }
+    long started = System.nanoTime();
+    try {
+      return map.getVisible(rowKey);
+    } finally {
+      rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_VISIBLE_ROW",
+          System.nanoTime() - started);
+    }
+  }
+
   private Row decodePointRow(RowKey rowKey, long rowId, RowValue rowValue) {
+    if (!detailedSqlDiagnostics()) {
+      CachedDecodedRow cached = decodedRowCache.get(rowKey);
+      if (cached != null && cached.commitTs == rowValue.commitTs) {
+        return cached.toRow(rowId);
+      }
+      Row row = RowCodec.decode(rowId, rowValue.payload);
+      cacheDecodedRow(rowKey, rowValue.commitTs, row);
+      return row;
+    }
+    long started = System.nanoTime();
     CachedDecodedRow cached = decodedRowCache.get(rowKey);
     if (cached != null && cached.commitTs == rowValue.commitTs) {
-      return cached.toRow(rowId);
+      try {
+        return cached.toRow(rowId);
+      } finally {
+        rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_CACHE_HIT",
+            System.nanoTime() - started);
+      }
     }
-    Row row = RowCodec.decode(rowId, rowValue.payload);
-    cacheDecodedRow(rowKey, rowValue.commitTs, row);
-    return row;
+    try {
+      Row row = RowCodec.decode(rowId, rowValue.payload);
+      cacheDecodedRow(rowKey, rowValue.commitTs, row);
+      return row;
+    } finally {
+      rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_CACHE_MISS",
+          System.nanoTime() - started);
+    }
+  }
+
+  private static boolean detailedSqlDiagnostics() {
+    return Boolean.getBoolean("vexra.adb.sql.diagnostic.detail");
   }
 
   private void cacheDecodedRow(RowKey rowKey, long commitTs, Row row) {

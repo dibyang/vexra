@@ -160,6 +160,8 @@ tasks.register('adbBenchmark', JavaExec) {
     description = 'Runs an ADB benchmark and writes a properties report.'
     classpath = sourceSets.main.runtimeClasspath
     mainClass = 'net.xdob.vexra.adb.AdbBenchmarkMain'
+    systemProperty 'vexra.adb.sql.diagnostic.detail',
+        (findProperty('adbBenchmarkDetailedDiagnostics') ?: 'false').toString()
     def output = findProperty('adbBenchmarkOutput')
         ? rootProject.file(findProperty('adbBenchmarkOutput').toString()).absolutePath
         : layout.buildDirectory.file('adb-benchmark/adb-benchmark.properties').get().asFile.absolutePath

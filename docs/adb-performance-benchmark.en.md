@@ -141,6 +141,74 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Point Lookup / Primary Find Detailed Diagnostics Toggle
+
+This round adds optional fine-grained phases for point lookup and primary find:
+
+- `ADB_POINT_LOOKUP_VISIBLE_ROW`: MVCC visible-row resolution in prepared point lookup.
+- `ADB_POINT_LOOKUP_RESULT_BUILD`: fast-path ResultSet creation in prepared point lookup.
+- `ADB_PRIMARY_FIND_VISIBLE_ROW`: MVCC visible-row resolution in the H2 primary-find point path.
+- `ADB_PRIMARY_FIND_ROW_CACHE_HIT` / `ADB_PRIMARY_FIND_ROW_CACHE_MISS`: decoded-row cache behavior in primary find.
+
+These phases call the SQL diagnostic recorder, so they are disabled by default
+to avoid synchronized statistics overhead on the hot point-lookup path. Enable
+them in benchmark runs with `-PadbBenchmarkDetailedDiagnostics=true`, or at
+runtime with `-Dvexra.adb.sql.diagnostic.detail=true`.
+
+Default diagnostics-off mixed 8-thread result:
+
+| Mode | workload | threads | operations | throughput ops/s | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1300.95 | 13488 | `vexra-adb/build/adb-benchmark/jdbc_mixed_detail_toggle_threads_8.properties` |
+
+Detailed diagnostics-on mixed 8-thread result:
+
+| Mode | workload | threads | operations | throughput ops/s | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1257.33 | 13707 | `vexra-adb/build/adb-benchmark/jdbc_mixed_detail_on_threads_8.properties` |
+
+Diagnostic conclusion:
+
+- `ADB_TABLE_POINT_LOOKUP_FAST` averaged about 2360 us. Inside it,
+  `ADB_POINT_LOOKUP_VISIBLE_ROW` averaged about 259 us,
+  `ADB_POINT_LOOKUP_RESULT_BUILD` averaged about 16 us, and
+  `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` averaged about 8 us.
+- `ADB_TABLE_PRIMARY_FIND` averaged about 3292 us, with
+  `ADB_PRIMARY_FIND_VISIBLE_ROW` averaging about 1404 us.
+- Therefore, the next high-value point lookup / primary find work should not
+  keep focusing on column-value decoding first. It should reduce the
+  H2/JDBC/table-engine call boundary, primary-find visible-row resolution, and
+  Row/ResultSet object boundary.
+
+Default mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-detail-toggle-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_detail_toggle_threads_8.properties"
+```
+
+Detailed diagnostics mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-detail-on-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkDetailedDiagnostics=true" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_detail_on_threads_8.properties"
+```
+
 ## Row-Count Cold-Start Single-Flight Result
 
 The previous 8-thread mixed report showed 8 `ADB_ROW_COUNT_CACHE_MISS` /
