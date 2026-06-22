@@ -3367,3 +3367,61 @@ benchmark：
   一轮判断趋势。
 - 后续要继续第 3 项，真正大头仍是安全降低 committed cache hit 的物理版本校验成本，或者新增只解码选中列的
   visible-row API，直接从 store value 中跳过 RowValue payload copy。
+
+## 第五十一轮：当前 ADB 与原生 H2 文件表对比复测
+
+本轮按用户要求重新跑一轮 `adb_table` 与原生 h2db 文件表对比。两者继续使用同一个
+`AdbBenchmarkMain` JDBC benchmark，差异只在 table engine 和 JDBC URL：
+
+- ADB：`jdbc:adb:ldb:*` + `ENGINE "adb_table"`；
+- H2：`jdbc:h2:*` + 原生 H2 表。
+
+测试参数：
+
+| 参数 | 值 |
+| --- | --- |
+| `rows` | 5000 |
+| `warmupOperations` | 300 |
+| `operations` | 3000 |
+| `rangeSize` | 32 |
+| `sqlDiagnostics` | false |
+| `insert` / `point_lookup` / `table_count` / `range_scan` | 1 线程，`transactionBatchSize=1` |
+| `mixed` | 8 线程，`transactionBatchSize=100` |
+| 二级索引 | 关闭 |
+
+结果：
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 530.88 | 503.19 | 1.06x | 4563 | 5080 | 36317 | 37862 |
+| `point_lookup` | 1168.22 | 485.36 | 2.41x | 2083 | 5260 | 10138 | 36776 |
+| `table_count` | 1805.05 | 400.21 | 4.51x | 1967 | 5372 | 9622 | 35612 |
+| `range_scan` | 1370.49 | 342.08 | 4.01x | 2125 | 9852 | 92863 | 38186 |
+| `mixed` | 2606.43 | 30000.00 | 0.09x | 8766 | 2140 | 371506 | 3579 |
+
+结果文件：
+
+| workload | ADB 结果文件 | H2 结果文件 |
+| --- | --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/adb_insert_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_insert_h2_compare_current_20260622-171452.properties` |
+| `point_lookup` | `vexra-adb/build/adb-benchmark/adb_point_lookup_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_point_lookup_h2_compare_current_20260622-171452.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/adb_table_count_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_table_count_h2_compare_current_20260622-171452.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/adb_range_scan_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_range_scan_h2_compare_current_20260622-171452.properties` |
+| `mixed` | `vexra-adb/build/adb-benchmark/adb_mixed_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_mixed_h2_compare_current_20260622-171452.properties` |
+
+和第四十七轮 H2 对比基线相比：
+
+| workload | ADB 吞吐变化 | H2 吞吐变化 | 说明 |
+| --- | ---: | ---: | --- |
+| `insert` | -98.0% | -98.6% | 两边同幅下降，说明本轮单行自动提交 insert 主要受本机文件库 flush / 环境波动影响，不适合作为优化趋势判断 |
+| `point_lookup` | -22.4% | +31.4% | ADB 仍快于 H2，但比值从 `4.07x` 回落到 `2.41x` |
+| `table_count` | +38.4% | +21.8% | ADB 比值从 `3.97x` 提升到 `4.51x` |
+| `range_scan` | +15.0% | -1.4% | range seek 修复后，ADB 比值从 `3.44x` 提升到 `4.01x` |
+| `mixed` | +16.5% | +65.0% | ADB 有改善，但 H2 本轮更快，mixed 仍是最大差距项 |
+
+结论：
+
+- 当前最明确的改善在 `range_scan` 和 `table_count`：ADB 对 H2 的吞吐优势分别约为 `4.01x` 和 `4.51x`。
+- `point_lookup` 仍快于 H2，约 `2.41x`，但该单项受 cache / store seek / 文件系统波动影响较大，不能用单轮样本判断细小优化收益。
+- `insert` 本轮 ADB/H2 都只有约 `500 ops/s`，和第四十七轮同时大幅偏离；更适合后续用更长窗口或 batch insert 口径复测。
+- `mixed` 仍是最需要优化的主项：ADB 本轮比第四十七轮提升约 `16.5%`，但只有 H2 的 `0.09x`，主要差距仍在 range count 外层、可见性解析、写入组合成本和 JDBC/table-engine 边界。

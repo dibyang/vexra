@@ -3883,3 +3883,70 @@ Conclusion:
 - The next higher-value item 3 work remains safely reducing physical-version
   validation on committed-cache hits, or adding a selected-column visible-row API
   that can decode directly from the store value and skip RowValue payload copy.
+
+## Round 51: Current ADB vs Native H2 File-Table Retest
+
+This round reruns the requested `adb_table` versus native h2db file-table
+comparison. Both sides use the same `AdbBenchmarkMain` JDBC benchmark. The only
+differences are the table engine and JDBC URL:
+
+- ADB: `jdbc:adb:ldb:*` plus `ENGINE "adb_table"`;
+- H2: `jdbc:h2:*` plus the native H2 table.
+
+Parameters:
+
+| Parameter | Value |
+| --- | --- |
+| `rows` | 5000 |
+| `warmupOperations` | 300 |
+| `operations` | 3000 |
+| `rangeSize` | 32 |
+| `sqlDiagnostics` | false |
+| `insert` / `point_lookup` / `table_count` / `range_scan` | 1 thread, `transactionBatchSize=1` |
+| `mixed` | 8 threads, `transactionBatchSize=100` |
+| Secondary index | disabled |
+
+Results:
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 530.88 | 503.19 | 1.06x | 4563 | 5080 | 36317 | 37862 |
+| `point_lookup` | 1168.22 | 485.36 | 2.41x | 2083 | 5260 | 10138 | 36776 |
+| `table_count` | 1805.05 | 400.21 | 4.51x | 1967 | 5372 | 9622 | 35612 |
+| `range_scan` | 1370.49 | 342.08 | 4.01x | 2125 | 9852 | 92863 | 38186 |
+| `mixed` | 2606.43 | 30000.00 | 0.09x | 8766 | 2140 | 371506 | 3579 |
+
+Result files:
+
+| workload | ADB result file | H2 result file |
+| --- | --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/adb_insert_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_insert_h2_compare_current_20260622-171452.properties` |
+| `point_lookup` | `vexra-adb/build/adb-benchmark/adb_point_lookup_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_point_lookup_h2_compare_current_20260622-171452.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/adb_table_count_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_table_count_h2_compare_current_20260622-171452.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/adb_range_scan_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_range_scan_h2_compare_current_20260622-171452.properties` |
+| `mixed` | `vexra-adb/build/adb-benchmark/adb_mixed_h2_compare_current_20260622-171452.properties` | `vexra-adb/build/adb-benchmark/h2_mixed_h2_compare_current_20260622-171452.properties` |
+
+Compared with the Round 47 H2 comparison baseline:
+
+| workload | ADB throughput change | H2 throughput change | Note |
+| --- | ---: | ---: | --- |
+| `insert` | -98.0% | -98.6% | Both sides dropped by roughly the same amount, so this single-row autocommit insert run appears dominated by local file flush / environment variance and is not a good optimization-trend signal |
+| `point_lookup` | -22.4% | +31.4% | ADB is still faster than H2, but the ratio fell from `4.07x` to `2.41x` |
+| `table_count` | +38.4% | +21.8% | ADB improved from `3.97x` to `4.51x` H2 |
+| `range_scan` | +15.0% | -1.4% | After the range-seek fix, ADB improved from `3.44x` to `4.01x` H2 |
+| `mixed` | +16.5% | +65.0% | ADB improved, but H2 was much faster in this run; mixed remains the largest gap |
+
+Conclusion:
+
+- The clearest current wins are `range_scan` and `table_count`: ADB is about
+  `4.01x` and `4.51x` H2 respectively.
+- `point_lookup` is still faster than H2 at about `2.41x`, but this standalone
+  workload is sensitive to cache, store seek, and filesystem variance, so small
+  optimization wins should not be inferred from one run.
+- `insert` landed at roughly `500 ops/s` for both ADB and H2, far away from the
+  Round 47 sample on both sides. It should be retested with a longer window or
+  batch-insert profile before being used as a trend signal.
+- `mixed` remains the highest-value optimization target: ADB improved by about
+  `16.5%` versus Round 47, but is still only `0.09x` H2 in this run. The likely
+  gap remains in the range-count outer path, visibility parsing, combined write
+  costs, and the JDBC / table-engine boundary.
