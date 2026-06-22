@@ -314,9 +314,7 @@ public interface RowCodec {
     for (int rowColumn = 0; rowColumn < size; rowColumn++) {
       int len = buf.getInt();
       if (isSelectedColumn(columnIndexes, rowColumn)) {
-        byte[] valueBytes = new byte[len];
-        buf.get(valueBytes);
-        Value value = safeDecode(ByteBuffer.wrap(valueBytes));
+        Value value = decodeCurrentValue(buf, len);
         fillSelectedColumn(values, columnIndexes, rowColumn, value);
       } else {
         buf.position(buf.position() + len);
@@ -379,13 +377,27 @@ public interface RowCodec {
     for (int rowColumn = 0; rowColumn < size; rowColumn++) {
       int len = buf.getInt();
       if (rowColumn == columnIndex) {
-        byte[] valueBytes = new byte[len];
-        buf.get(valueBytes);
-        return safeDecode(ByteBuffer.wrap(valueBytes));
+        return decodeCurrentValue(buf, len);
       }
       buf.position(buf.position() + len);
     }
     return ValueNull.INSTANCE;
+  }
+
+  /**
+   * 从当前 Row payload 子值位置解码单个列值，并把原 buffer 推进到该子值末尾。
+   *
+   * <p>行 payload 中每列已经带有独立长度。点查快路径只解码少量列时，直接用
+   * {@link ByteBuffer#duplicate()} 构造受限视图，可以避免为每个命中列复制一份
+   * encoded value 字节数组。</p>
+   */
+  static Value decodeCurrentValue(ByteBuffer buf, int len) {
+    int start = buf.position();
+    ByteBuffer view = buf.duplicate();
+    view.limit(start + len);
+    Value value = safeDecode(view);
+    buf.position(start + len);
+    return value;
   }
 
   static boolean isSelectedColumn(int[] columnIndexes, int rowColumn) {

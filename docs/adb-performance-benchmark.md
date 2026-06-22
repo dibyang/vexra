@@ -3256,3 +3256,54 @@ benchmark：
   `2697.84 ops/s`，p99 从 `11531us` 降到 `8676us`。
 - 这说明 range count 外层 seek bound 是本轮最有价值修复之一；但 `mixed` 距 H2 仍有明显差距，
   后续还需要继续压低 ldb cursor 边界分配，或引入 segment/block-level count 元数据。
+
+## 第四十九轮：点查列解码去掉临时 value byte[] 拷贝
+
+本轮继续第 3 项 visible row / point lookup 解析路径优化。`RowValue.decodeValue(...)` 之后，
+`RowCodec.decodeColumn(...)` 和 `decodeColumns(...)` 在 Row payload 中定位到目标列时，会先分配一份
+`valueBytes`，把列编码拷贝出来，再 `ByteBuffer.wrap(valueBytes)` 调用 `safeDecode(...)`。
+
+对于 benchmark 的 `SELECT NAME FROM ADB_BENCH WHERE ID = ?`，每次点查都只需要解一个列值；该额外
+byte[] 拷贝不改变语义，但会增加 cache miss / 新 key 点查路径的分配。
+
+本轮改动：
+
+1. 新增 `RowCodec.decodeCurrentValue(ByteBuffer, int)`，使用 `ByteBuffer.duplicate()` 创建受限视图，
+   直接在原 payload 上解码单个列值。
+2. `decodeColumn(...)` 和 `decodeColumns(...)` 的命中列路径改用该 helper，并把原 buffer 推进到列值末尾。
+3. 行格式、`Value` 返回语义、未命中列返回 `ValueNull` 的行为不变。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_decode_view_repeat_20260622-165545.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-point-lookup-decode-view-repeat-20260622-165545/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_decode_view_20260622-165403.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-decode-view-20260622-165403/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | baseline ops/s | 本轮 ops/s | baseline p99 us | 本轮 p99 us | baseline alloc bytes/op | 本轮 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1504.51 | 1020.76 | 1894 | 2177 | 9928 | 9922 | `vexra-adb/build/adb-benchmark/adb_point_lookup_decode_view_repeat_20260622-165545.properties` |
+| `mixed` | 2697.84 | 2700.27 | 8676 | 8670 | 372208 | 371846 | `vexra-adb/build/adb-benchmark/adb_mixed_decode_view_20260622-165403.properties` |
+
+结论：
+
+- 本轮是小幅 allocation 清理，不是主要吞吐优化：mixed allocation 从 `372208 B/op` 降到
+  `371846 B/op`，吞吐基本持平。
+- point_lookup 单项吞吐本轮没有改善，说明当前点查单项更受 store seek、cache hit 校验、磁盘/压测波动影响；
+  不能把去掉列值临时数组解读成点查主瓶颈已经解决。
+- 该改动仍然有价值，因为它减少了每次 cache miss / 新 key 点查的确定性分配；后续第 3 项继续推进时，
+  更高价值方向仍是安全降低 committed cache hit 校验成本，或把 RowValue payload copy 进一步下沉到
+  直接从 store value 解码选中列。

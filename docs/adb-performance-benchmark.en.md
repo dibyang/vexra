@@ -3749,3 +3749,66 @@ Conclusion:
   valuable fixes in this area. Mixed is still far from H2, so the next steps are
   further reducing ldb cursor boundary allocation or adding segment/block-level
   count metadata.
+
+## Round 49: Remove Temporary value byte[] Copy in Point-Lookup Column Decode
+
+This round continues item 3, visible-row / point-lookup parsing-path
+optimization. After `RowValue.decodeValue(...)`, `RowCodec.decodeColumn(...)`
+and `decodeColumns(...)` located the selected column inside the Row payload,
+allocated a temporary `valueBytes` array, copied the encoded column bytes into
+it, and then called `safeDecode(ByteBuffer.wrap(valueBytes))`.
+
+For the benchmark query `SELECT NAME FROM ADB_BENCH WHERE ID = ?`, each point
+lookup only decodes one column. The extra byte-array copy does not change SQL
+semantics, but it does add deterministic allocation on cache-miss / new-key
+point lookups.
+
+Changes:
+
+1. Added `RowCodec.decodeCurrentValue(ByteBuffer, int)`, which uses
+   `ByteBuffer.duplicate()` to create a bounded view and decode the selected
+   value directly from the original payload.
+2. `decodeColumn(...)` and `decodeColumns(...)` now use that helper for selected
+   columns and advance the original buffer to the end of the column value.
+3. Row format, returned `Value` semantics, and the `ValueNull` behavior for
+   missing columns are unchanged.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_decode_view_repeat_20260622-165545.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-point-lookup-decode-view-repeat-20260622-165545/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_decode_view_20260622-165403.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-decode-view-20260622-165403/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | Baseline ops/s | This round ops/s | Baseline p99 us | This round p99 us | Baseline alloc bytes/op | This round alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1504.51 | 1020.76 | 1894 | 2177 | 9928 | 9922 | `vexra-adb/build/adb-benchmark/adb_point_lookup_decode_view_repeat_20260622-165545.properties` |
+| `mixed` | 2697.84 | 2700.27 | 8676 | 8670 | 372208 | 371846 | `vexra-adb/build/adb-benchmark/adb_mixed_decode_view_20260622-165403.properties` |
+
+Conclusion:
+
+- This round is a small allocation cleanup, not a major throughput optimization:
+  mixed allocation dropped from `372208 B/op` to `371846 B/op`, while throughput
+  stayed effectively flat.
+- The point-lookup standalone throughput did not improve in this run. That
+  indicates the standalone point lookup is currently more affected by store
+  seek, cache-hit validation, and benchmark / disk variance than by this column
+  value copy.
+- The change is still useful because it removes deterministic allocation from
+  cache-miss / new-key point lookups. The next higher-value item 3 work remains
+  safely reducing committed-cache hit validation cost, or pushing selected-column
+  decoding further down so it can read directly from the store value without
+  copying the RowValue payload first.
