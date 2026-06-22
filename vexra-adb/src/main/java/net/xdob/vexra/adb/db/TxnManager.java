@@ -738,7 +738,8 @@ public class TxnManager {
         tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
 
     byte[] tablePrefix = prefixKey.toBytes();
-    if (txn.getWriteSet().isEmpty()) {
+    if (txn.getWriteSet().isEmpty()
+        || !hasLocalRowWriteInRange(txn, prefixKey.getTabID(), min, max)) {
       return countVisibleRowsWithoutLocalWrites(txn, prefixKey, tablePrefix,
           min, max);
     }
@@ -835,6 +836,19 @@ public class TxnManager {
           System.nanoTime() - started);
     }
     return count;
+  }
+
+  private static boolean hasLocalRowWriteInRange(Transaction2 txn, TabId tabId,
+      Long minRowId, Long maxRowId) {
+    for (DataKey key : txn.getWriteSet().keySet()) {
+      if (key == null || !key.isRow() || !tabId.equals(key.getTabID())) {
+        continue;
+      }
+      if (inRowIdRange(key.getRowId(), minRowId, maxRowId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
 

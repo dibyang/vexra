@@ -4088,3 +4088,73 @@ Stack trace conclusions:
   positioning cost. Start with prepared range-count plan caching, count-only
   cursor seek/entry-construction reduction, and whether committed-cache
   validation can avoid some physical-version scans.
+
+## Round 54: Range Count Local-Write Range Filtering
+
+This round continues objective item 5. JFR showed the range-count allocations in
+`mixed` are mostly around ldb cursor / block iteration and visible-row version
+positioning. Looking at the benchmark revealed another issue: `mixed` uses
+`transactionBatchSize=100`, so the transaction write set becomes non-empty after
+the first append insert. Previously, even when those local writes had rowIds
+outside the `COUNT(*) WHERE ID BETWEEN ? AND ?` range,
+`TxnManager.countVisibleRows(...)` fell back to the object-heavy local-write
+merge path.
+
+Changes:
+
+1. `TxnManager.countVisibleRows(...)` now checks whether local row writes
+   intersect the requested rowId range when the write set is non-empty.
+2. If all local writes are outside the requested range, the method still uses
+   the `countVisibleRowsWithoutLocalWrites(...)` raw fast path and avoids the
+   unnecessary `VersionKey/DataKey/HashSet` merge path.
+3. If a local insert/delete is inside the requested range, the previous slow
+   path is preserved, keeping read-your-writes and rollback semantics.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange`
+  covers a transaction with an out-of-range local insert. The prepared range
+  count returns the correct result and records `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`.
+
+Diagnostic benchmark:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_diag_20260622-180525.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_range_count_local_write_filter_diag-20260622-180525/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Non-diagnostic benchmark:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_repeat_20260622-180557.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_range_count_local_write_filter_repeat-20260622-180557/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | --- |
+| `mixed` diagnostic sample, 1000 ops | 2785.52 | 7821 | not recorded | `vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_diag_20260622-180525.properties` |
+| `mixed` non-diagnostic sample, 3000 ops | 2727.27 | 8654 | 388679 | `vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_repeat_20260622-180557.properties` |
+
+Conclusion:
+
+- The diagnostic sample confirms that all 200 range-count operations hit
+  `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`; the raw inner phase averaged about
+  `101us`, and the outer `ADB_RANGE_COUNT_VISIBLE_COUNT` phase averaged about
+  `118us`.
+- Allocation fell slightly from the Round 52 mixed sample's `391563 B/op` to
+  `388679 B/op`.
+- The end-to-end throughput short run does not prove an improvement:
+  `2727 ops/s` is below Round 52's `2762 ops/s`, and also below the later ADB/H2
+  retest sample at `2994 ops/s`. Treat this as range-count path narrowing and
+  allocation cleanup, not as the main throughput optimization being done.
+- Follow-up work still needs to reduce range-count ldb cursor seek / block
+  entry construction cost, or push the count-only path closer to the
+  store/block layer.

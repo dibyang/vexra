@@ -1235,6 +1235,38 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-range-local-write-outside").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (100, 'outside')");
+
+                AdbSqlDiagnosticsRegistry.resetAll();
+                Assertions.assertEquals(3L, preparedRangeCount(connection, 1L, 3L));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void repeatedPreparedRangeCountReusesPlanSession() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

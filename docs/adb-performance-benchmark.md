@@ -3532,3 +3532,63 @@ stack trace 结论：
 - 下一步更高价值方向是目标第 5 项和第 3 项的交叉区域：优化 range count 外层入口和
   visible row 的 ldb cursor/版本定位成本，优先看 prepared range count 计划缓存、count-only
   路径减少 cursor seek/entry 构造，以及 committed cache 校验是否能减少物理版本扫描。
+
+## 第五十四轮：range count 本地写范围过滤
+
+本轮继续目标第 5 项。JFR 显示 `mixed` 中 range count 相关分配主要落在 ldb cursor /
+block 迭代和 visible row 版本定位。进一步检查 benchmark 后发现，`mixed`
+使用 `transactionBatchSize=100`，事务内只要发生一次 append insert，`writeSet`
+就非空；此前即使这些本地写入的 rowId 位于 `COUNT(*) WHERE ID BETWEEN ? AND ?`
+范围外，`TxnManager.countVisibleRows(...)` 仍会回退到带本地写合并的对象化路径。
+
+本轮改动：
+
+1. `TxnManager.countVisibleRows(...)` 在 `writeSet` 非空时先判断本地 row 写是否与本次
+   rowId 范围相交。
+2. 如果本地写都在范围外，继续走 `countVisibleRowsWithoutLocalWrites(...)` raw 快路径，
+   避免不必要的 `VersionKey/DataKey/HashSet` 合并路径。
+3. 本地 insert/delete 落在范围内时仍走原慢路径，保留读己之写和 rollback 语义。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange`
+  覆盖事务内存在范围外本地 insert 时，prepared range count 返回正确结果，并记录
+  `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`。
+
+诊断 benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_diag_20260622-180525.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_range_count_local_write_filter_diag-20260622-180525/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+无诊断 benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_repeat_20260622-180557.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_range_count_local_write_filter_repeat-20260622-180557/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | --- |
+| `mixed` 诊断样本，1000 ops | 2785.52 | 7821 | 未记录 | `vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_diag_20260622-180525.properties` |
+| `mixed` 无诊断样本，3000 ops | 2727.27 | 8654 | 388679 | `vexra-adb/build/adb-benchmark/adb_mixed_range_count_local_write_filter_repeat_20260622-180557.properties` |
+
+结论：
+
+- 诊断样本确认 200 次 range count 都命中 `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`，
+  raw 内部平均约 `101us`，外层 `ADB_RANGE_COUNT_VISIBLE_COUNT` 平均约 `118us`。
+- allocation 比第五十二轮 mixed 样本的 `391563 B/op` 小幅下降到 `388679 B/op`。
+- 端到端吞吐短跑没有形成明确提升证据，`2727 ops/s` 低于第五十二轮 `2762 ops/s`，
+  也低于后续 ADB/H2 复测样本 `2994 ops/s`。因此本轮应视为 range count 路径收窄和
+  allocation 清理，而不是吞吐主优化完成。
+- 后续还需要继续压缩 range count 的 ldb cursor seek / block entry 构造成本，或者把
+  count-only 路径进一步下沉到更接近 store/block 的层次。
