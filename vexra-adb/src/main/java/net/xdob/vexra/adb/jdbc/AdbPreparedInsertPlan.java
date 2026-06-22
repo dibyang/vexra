@@ -20,11 +20,11 @@ import org.h2.value.ValueNull;
 import org.h2.value.ValueToObjectConverter;
 
 /**
- * 参数化多值 INSERT 的 ADB bulk insert 计划。
+ * 简单 VALUES INSERT 的 ADB bulk insert 计划。
  *
- * <p>当前计划只识别 {@code INSERT INTO T(c1, c2) VALUES (?, ?), (?, ?)}
- * 这类无子查询、无 ON DUPLICATE、无 RETURNING 的普通批量插入。该限制用于保证代理命中后语义明确，
- * 不匹配的 SQL 会直接回退到 h2db 原执行路径。</p>
+ * <p>当前计划只识别 {@code INSERT INTO T(c1, c2) VALUES (?, ?)}
+ * 或多组 VALUES 的普通插入。它不接管子查询、表达式、ON DUPLICATE、RETURNING
+ * 等需要 h2db Insert 执行器完整语义的形态；不匹配的 SQL 会直接回退到 h2db 原执行路径。</p>
  */
 final class AdbPreparedInsertPlan {
 
@@ -83,7 +83,7 @@ final class AdbPreparedInsertPlan {
     }
     String values = trimmed.substring(valuesStart + "VALUES".length()).trim();
     int rowCount = countParameterRows(values, columnNames.size());
-    if (rowCount <= 1) {
+    if (rowCount < 1) {
       return null;
     }
     return new AdbPreparedInsertPlan(normalizeIdentifier(tableName),
@@ -102,7 +102,7 @@ final class AdbPreparedInsertPlan {
       return null;
     }
     LiteralRows rows = parseLiteralRows(head.values, head.columnNames.size());
-    if (rows == null || rows.rowCount <= 1) {
+    if (rows == null || rows.rowCount < 1) {
       return null;
     }
     return new AdbPreparedInsertPlan(head.tableName, head.columnNames,

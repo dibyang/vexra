@@ -126,6 +126,39 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedSingleValuesInsertUsesAdbDriverBulkPath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-prepared-single-bulk").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO TEST(ID, NAME) VALUES (?, ?)")) {
+                    insert.setLong(1, 1L);
+                    insert.setString(2, "a");
+                    Assertions.assertEquals(1, insert.executeUpdate());
+                }
+                Assertions.assertEquals("a", singleString(statement,
+                        "SELECT NAME FROM TEST WHERE ID = 1"));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void statementLiteralMultiValuesInsertUsesAdbDriverBulkPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());
@@ -139,6 +172,35 @@ class AdbTableProviderIntegrationTest {
                         "INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')"));
                 Assertions.assertEquals("a,b,c", csv(statement,
                         "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void statementLiteralSingleValuesInsertUsesAdbDriverBulkPath() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-statement-single-bulk").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                Assertions.assertEquals(1, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES (1, 'a')"));
+                Assertions.assertEquals("a", singleString(statement,
+                        "SELECT NAME FROM TEST WHERE ID = 1"));
             }
 
             AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry

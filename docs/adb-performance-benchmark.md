@@ -442,7 +442,7 @@ INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), ...
 
 且目标表是 `AdbTable` 时，包装层会把参数或字面量转换成 H2 `Row`，调用
 `AdbTable.bulkInsertAppendRows`，并在 `autoCommit=true` 时补齐 JDBC 自动提交边界。
-不匹配的 SQL、非 ADB 表、参数不完整、单行 insert 或表达式 literal 继续走 h2db 原路径。
+不匹配的 SQL、非 ADB 表、参数不完整或表达式 literal 继续走 h2db 原路径。
 
 验证结果：
 
@@ -476,8 +476,8 @@ JDBC insert 自动 bulk 复现命令：
   "-PadbBenchmarkSqlDiagnostics=false"
 ```
 
-剩余限制：当前自动 bulk 覆盖参数化多值 `PreparedStatement` 和简单 literal 多值
-`Statement`，但不覆盖 `INSERT ... SELECT`、`DEFAULT VALUES`、表达式/函数 literal、
+剩余限制：当前自动 bulk 覆盖参数化 `PreparedStatement` 和简单 literal
+`Statement` 的 `VALUES` 插入，包括单行和多行形态；但不覆盖 `INSERT ... SELECT`、`DEFAULT VALUES`、表达式/函数 literal、
 `ON DUPLICATE KEY`、`RETURNING` 等语法。要做到完全透明，仍建议
 h2db 在 `Insert` 执行层提供表级 bulk 回调，ADB 的 `bulkInsertAppendRows` 可继续作为落点。
 
@@ -666,6 +666,64 @@ delta，实测约 761.61 ops/s、p99 2785us，说明瓶颈转移到了 row-count
   "-PadbBenchmarkWarmupOperations=300" `
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_cache_stage.properties"
+```
+
+## 第十二轮 JDBC 单行 INSERT 快路径结果
+
+本轮把 `jdbc:adb:*` 兼容 Driver 的普通 `INSERT INTO ... VALUES ...`
+自动 bulk 路径从多 values 扩展到单行 values：
+
+```sql
+INSERT INTO TEST(ID, NAME) VALUES (?, ?)
+INSERT INTO TEST(ID, NAME) VALUES (1, 'a')
+```
+
+命中条件仍保持保守：目标表必须是 `AdbTable`，列清单必须明确，PreparedStatement
+必须全部由 `?` 参数组成，Statement literal 只接受简单数值、字符串、布尔和 `NULL`。
+表达式、函数、子查询、`DEFAULT VALUES`、`ON DUPLICATE KEY` 和 `RETURNING`
+继续回退 h2db 原路径。benchmark 的单行写入语句也从 `MERGE INTO` 改为普通
+`INSERT INTO`，使 `insert` 和 `mixed` workload 可以真实覆盖普通 JDBC 单行写。
+
+验证结果：
+
+| 模式 | workload | batch | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `insert` | 1 | on | 1044.93 | 933 | 1528 | 3087 | 11188 | `vexra-adb/build/adb-benchmark/jdbc_insert_single_bulk_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 2024.29 | 390 | 1025 | 1920 | 6522 | `vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties` |
+
+diagnostics 显示单行 insert 正式窗口记录 `ADB_TABLE_BULK_ADD_ROW ADB_BENCH`
+2000 次，不再记录 `ADB_TABLE_ADD_ROW ADB_BENCH`；mixed 中写入部分记录
+`ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 200 次，点查和 range count 仍分别走已有快路径。
+本轮新增集成测试覆盖 prepared 单行 insert 和 literal 单行 insert 的 bulk 命中，并保留表达式
+literal 回退测试。
+
+单行 insert 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/single-insert-bulk-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=200" `
+  "-PadbBenchmarkOperations=2000" `
+  "-PadbBenchmarkStatementBatchSize=1" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_single_bulk_stage.properties"
+```
+
+mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-single-insert-bulk-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=200" `
+  "-PadbBenchmarkOperations=2000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties"
 ```
 
 ## 第六轮普通 JDBC insert 微优化结果

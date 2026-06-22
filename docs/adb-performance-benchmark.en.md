@@ -403,8 +403,8 @@ and the target table is an `AdbTable`, the wrapper converts parameters or
 literals into H2 `Row` objects and calls `AdbTable.bulkInsertAppendRows`. It
 also preserves JDBC auto-commit behavior by committing after a successful bulk
 write when `autoCommit=true`. Unsupported SQL forms, non-ADB tables,
-incomplete parameters, single-row inserts, and literal expressions continue to
-use the original h2db path.
+incomplete parameters, and literal expressions continue to use the original
+h2db path.
 
 Measured results:
 
@@ -440,9 +440,10 @@ JDBC insert auto-bulk reproduction command:
 ```
 
 Remaining limitations: the automatic bulk path currently covers parameterized
-multi-values `PreparedStatement` SQL and simple literal multi-values
-`Statement` SQL. It does not yet cover `INSERT ... SELECT`, `DEFAULT VALUES`,
-literal expressions/functions, `ON DUPLICATE KEY`, `RETURNING`, or the full
+`PreparedStatement` SQL and simple literal `Statement` SQL for `VALUES`
+inserts, including both single-row and multi-row forms. It does not yet cover
+`INSERT ... SELECT`, `DEFAULT VALUES`, literal expressions/functions,
+`ON DUPLICATE KEY`, `RETURNING`, or the full
 trigger and delta-table semantics available inside h2db's native `Insert`
 executor. A
 future h2db table-level bulk callback is still the cleaner path to full
@@ -668,6 +669,70 @@ Table-count reproduction command:
   "-PadbBenchmarkWarmupOperations=300" `
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_cache_stage.properties"
+```
+
+## Round 12 JDBC Single-Row INSERT Fast Path
+
+This round extends the `jdbc:adb:*` compatibility Driver's ordinary
+`INSERT INTO ... VALUES ...` automatic bulk path from multi-values statements
+to single-row values statements:
+
+```sql
+INSERT INTO TEST(ID, NAME) VALUES (?, ?)
+INSERT INTO TEST(ID, NAME) VALUES (1, 'a')
+```
+
+The matching boundary remains conservative: the target table must be an
+`AdbTable`, the column list must be explicit, PreparedStatement tuples must be
+made only of `?` parameters, and Statement literals only support simple
+numbers, strings, booleans, and `NULL`. Expressions, functions, subqueries,
+`DEFAULT VALUES`, `ON DUPLICATE KEY`, and `RETURNING` continue to fall back to
+h2db's original execution path. The benchmark's single-row write statement now
+uses ordinary `INSERT INTO` instead of `MERGE INTO`, so the `insert` and
+`mixed` workloads can exercise ordinary JDBC single-row writes directly.
+
+Measured results:
+
+| Mode | Workload | Batch | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `insert` | 1 | on | 1044.93 | 933 | 1528 | 3087 | 11188 | `vexra-adb/build/adb-benchmark/jdbc_insert_single_bulk_stage.properties` |
+| `jdbc` | `mixed` | 100 | on | 2024.29 | 390 | 1025 | 1920 | 6522 | `vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties` |
+
+Diagnostics show that the single-row insert measured window records
+`ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 2000 times and no
+`ADB_TABLE_ADD_ROW ADB_BENCH`; the mixed write portion records
+`ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 200 times, while point lookup and range
+count continue to use their existing fast paths. New integration tests cover
+prepared single-row INSERT and literal single-row INSERT bulk hits, while the
+expression-literal fallback test remains in place.
+
+Single-row insert reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/single-insert-bulk-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=insert" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=200" `
+  "-PadbBenchmarkOperations=2000" `
+  "-PadbBenchmarkStatementBatchSize=1" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_single_bulk_stage.properties"
+```
+
+Mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-single-insert-bulk-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=200" `
+  "-PadbBenchmarkOperations=2000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties"
 ```
 
 ## Round 6 Ordinary JDBC Insert Micro-Optimization

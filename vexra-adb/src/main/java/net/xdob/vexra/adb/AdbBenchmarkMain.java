@@ -1000,7 +1000,7 @@ public final class AdbBenchmarkMain {
 
     private BenchmarkStatements(Connection connection) throws Exception {
       this.connection = connection;
-      this.insert = connection.prepareStatement("MERGE INTO " + TABLE_NAME
+      this.insert = connection.prepareStatement("INSERT INTO " + TABLE_NAME
           + "(ID, NAME) VALUES (?, ?)");
       this.pointLookup = connection.prepareStatement("SELECT NAME FROM "
           + TABLE_NAME + " WHERE ID = ?");
