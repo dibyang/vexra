@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -157,10 +158,43 @@ class TxnManagerVisibleRowFastPathTest {
     assertTrue(compareUnsigned(lower, after) < 0);
   }
 
+  /**
+   * 验证单列可见值快路径会保持事务快照，并且只返回指定列。
+   *
+   * <p>该路径用于 JDBC 主键点查单列投影，底层会直接从 RowValue 落盘字节的 payload
+   * 子区间解码列值；这里用多列 row payload 防止退化成单值解码。</p>
+   */
+  @Test
+  void shouldDecodeVisibleColumnFromCommittedStoreValue() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "visible-column").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      RowKey key = RowKey.of(TabId.of(1, 0L), 1L);
+
+      putCommittedRow(store, key, 10L, 1L, "old-name");
+      putCommittedRow(store, key, 20L, 1L, "new-name");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      TxnManager.VisibleColumnValue visible =
+          manager.getVisibleColumn(reader, key, 1);
+
+      assertNotNull(visible);
+      assertEquals(10L, visible.commitTs());
+      assertEquals("old-name", visible.value().getString());
+      assertEquals(Long.valueOf(10L), reader.getReadVersion(key));
+    }
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
         .toBytes(), RowValue.encodeValue(row(value, commitTs))));
+  }
+
+  private static void putCommittedRow(LdbStore store, RowKey key,
+      long commitTs, long id, String name) throws Exception {
+    store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
+        .toBytes(), RowValue.encodeValue(row(id, name, commitTs))));
   }
 
   private static void putDeleted(LdbStore store, RowKey key, long commitTs)
@@ -179,6 +213,16 @@ class TxnManagerVisibleRowFastPathTest {
     RowValue row = new RowValue();
     row.commitTs = commitTs;
     row.payload = RowCodec.encode(ValueVarchar.get(value));
+    return row;
+  }
+
+  private static RowValue row(long id, String value, long commitTs) {
+    RowValue row = new RowValue();
+    row.commitTs = commitTs;
+    row.payload = RowCodec.encode(org.h2.value.ValueRow.get(new org.h2.value.Value[]{
+        org.h2.value.ValueBigint.get(id),
+        ValueVarchar.get(value)
+    }));
     return row;
   }
 

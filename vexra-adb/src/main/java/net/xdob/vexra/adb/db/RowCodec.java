@@ -366,11 +366,46 @@ public interface RowCodec {
     if (bytes.length == 0) {
       throw new IllegalArgumentException("decode bytes is empty");
     }
-    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    return decodeColumn(bytes, 0, bytes.length, columnIndex);
+  }
+
+  /**
+   * 从 byte 数组的指定子区间解码单列值。
+   *
+   * <p>该入口用于从 RowValue 落盘字节中直接读取 payload 子区间，避免先把 payload
+   * 复制成独立 byte[] 再进入列解码。</p>
+   *
+   * @param bytes 原始字节数组
+   * @param offset payload 起始偏移
+   * @param length payload 长度
+   * @param columnIndex 目标列号
+   * @return 指定列值；payload 不包含该列时返回 {@link ValueNull}
+   */
+  public static Value decodeColumn(byte[] bytes, int offset, int length,
+      int columnIndex) {
+    if (bytes == null) {
+      throw new IllegalArgumentException("decode bytes is null ");
+    }
+    if (length <= 0) {
+      throw new IllegalArgumentException("decode bytes is empty");
+    }
+    if (offset < 0 || length < 0 || offset > bytes.length - length) {
+      throw new IllegalArgumentException("invalid decode range");
+    }
+    ByteBuffer buf = ByteBuffer.wrap(bytes, offset, length).slice();
+    return decodeColumn(buf, columnIndex);
+  }
+
+  static Value decodeColumn(ByteBuffer buf, int columnIndex) {
+    int start = buf.position();
     int type = buf.getInt();
     if (type != ROW) {
-      return columnIndex == 0 ? safeDecode(ByteBuffer.wrap(bytes))
-          : ValueNull.INSTANCE;
+      if (columnIndex != 0) {
+        return ValueNull.INSTANCE;
+      }
+      ByteBuffer view = buf.duplicate();
+      view.position(start);
+      return safeDecode(view);
     }
 
     int size = buf.getInt();

@@ -3425,3 +3425,53 @@ benchmark：
 - `point_lookup` 仍快于 H2，约 `2.41x`，但该单项受 cache / store seek / 文件系统波动影响较大，不能用单轮样本判断细小优化收益。
 - `insert` 本轮 ADB/H2 都只有约 `500 ops/s`，和第四十七轮同时大幅偏离；更适合后续用更长窗口或 batch insert 口径复测。
 - `mixed` 仍是最需要优化的主项：ADB 本轮比第四十七轮提升约 `16.5%`，但只有 H2 的 `0.09x`，主要差距仍在 range count 外层、可见性解析、写入组合成本和 JDBC/table-engine 边界。
+
+## 第五十二轮：单列 point lookup 直接从可见 RowValue 子区间解码
+
+本轮继续第 3 项 `TxnMap2.getVisible / visible row` 解析路径优化。此前单列
+`SELECT NAME FROM ADB_BENCH WHERE ID = ?` 会先通过 `map.getVisible(rowKey)` 拿到
+`RowValue`，`RowValue.decodeValue(...)` 会把完整 payload 复制成独立 byte[]，之后
+`RowCodec.decodeColumn(...)` 再解码单列。
+
+本轮改动：
+
+1. `RowValue` 增加包内 header helper，允许读取 `commitTs`、删除标记、payload length 和 payload offset。
+2. `RowCodec.decodeColumn(...)` 增加 byte[] 子区间入口，可以直接从 RowValue 落盘字节的 payload 子区间解码目标列。
+3. `TxnManager.getVisibleColumn(...)` / `TxnMap2.getVisibleColumn(...)` 增加单列可见值读取入口：本地写、region point read、committed row cache 校验保持原语义；当需要扫描 committed store 时，直接从 `scan.value()` 的 payload 子区间解码列值，跳过 RowValue payload copy。
+4. `AdbPreparedPointLookupPlan` 的单列分支改用新入口；多列和 `SELECT *` 继续走原 `RowValue` 路径。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `RowCodecTest.decodeColumnReadsPayloadSubRangeWithoutCopy` 覆盖从 RowValue 编码字节的 payload 子区间解码列值。
+- `TxnManagerVisibleRowFastPathTest.shouldDecodeVisibleColumnFromCommittedStoreValue` 覆盖 snapshot 下跳过较新 committed 版本，并只返回选中列。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_visible_column_direct_20260622-173340.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_visible_column_direct-20260622-173340/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_visible_column_direct_20260622-173340.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_visible_column_direct-20260622-173340/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | 第五十一轮 ADB ops/s | 本轮 ops/s | 变化 | 第五十一轮 p99 us | 本轮 p99 us | 第五十一轮 alloc bytes/op | 本轮 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1168.22 | 1228.00 | +5.1% | 2083 | 2003 | 10138 | 10334 | `vexra-adb/build/adb-benchmark/adb_point_lookup_visible_column_direct_20260622-173340.properties` |
+| `mixed` | 2606.43 | 2762.43 | +6.0% | 8766 | 8243 | 371506 | 391563 | `vexra-adb/build/adb-benchmark/adb_mixed_visible_column_direct_20260622-173340.properties` |
+
+结论：
+
+- 直接从 RowValue payload 子区间解码列值对 `point_lookup` 和 `mixed` 都有正向吞吐信号，分别约 `+5.1%` 和 `+6.0%`。
+- allocation 没有同步下降，说明当前样本仍主要由 store value/cursor 边界、ResultSet 代理和外层 JDBC/table-engine 对象主导；本轮只消除了 committed store scan 命中时的一次 payload copy。
+- 该优化适合作为第 3 项的窄口径改进保留，但后续更高价值仍是按 JFR 继续判断是否应做专用 ResultSet，或继续压缩 committed cache 校验和 mixed 中 range/write 组合成本。

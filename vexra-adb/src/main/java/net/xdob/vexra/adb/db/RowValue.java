@@ -76,6 +76,22 @@ public class RowValue {
     return metadata;
   }
 
+  static long commitTs(byte[] data) {
+    return readLong(data, OFFSET_COMMIT_TS);
+  }
+
+  static boolean isDeleted(byte[] data) {
+    return data[OFFSET_DELETED] != 0;
+  }
+
+  static int payloadLength(byte[] data) {
+    return readInt(data, OFFSET_PAYLOAD_LENGTH);
+  }
+
+  static int payloadOffset() {
+    return OFFSET_PAYLOAD;
+  }
+
   private static long readLong(byte[] data, int offset) {
     return ((long) (data[offset] & 0xff) << 56)
         | ((long) (data[offset + 1] & 0xff) << 48)

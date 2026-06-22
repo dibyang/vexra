@@ -11,6 +11,7 @@ import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.adb.db.TxnMap2;
+import net.xdob.vexra.adb.db.TxnManager;
 import net.xdob.vexra.adb.key.RowKey;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
@@ -141,14 +142,18 @@ final class AdbPreparedPointLookupPlan {
     Throwable failure = null;
     try {
       long rowId = toLong(parameters[1]);
-      RowValue rowValue = visibleRowValue(session, table, rowId);
-      if (rowValue == null) {
+      boolean singleColumn = resolvedColumnIds.length == 1;
+      TxnManager.VisibleColumnValue visibleColumn = singleColumn
+          ? visibleSingleColumnValue(session, table, rowId) : null;
+      RowValue rowValue = !singleColumn
+          ? visibleRowValue(session, table, rowId) : null;
+      if ((singleColumn && visibleColumn == null)
+          || (!singleColumn && rowValue == null)) {
         decodedColumnCache.remove(Long.valueOf(rowId));
         decodedSingleColumnCache.remove(Long.valueOf(rowId));
       }
-      boolean singleColumn = resolvedColumnIds.length == 1;
-      Value singleValue = singleColumn && rowValue != null
-          ? decodedSingleValue(table, rowId, rowValue) : null;
+      Value singleValue = singleColumn && visibleColumn != null
+          ? decodedSingleValue(table, rowId, visibleColumn) : null;
       Value[] values = !singleColumn && rowValue != null
           ? decodedValues(table, rowId, rowValue) : null;
       if (!detailedSqlDiagnostics()) {
@@ -170,6 +175,22 @@ final class AdbPreparedPointLookupPlan {
     } finally {
       table.recordSqlDiagnostic("SELECT", "POINT_LOOKUP_FAST", startMillis,
           failure);
+    }
+  }
+
+  private TxnManager.VisibleColumnValue visibleSingleColumnValue(
+      SessionLocal session, AdbTable table, long rowId) throws SQLException {
+    TxnMap2 map = table.getTxnMap(session);
+    RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
+    if (!detailedSqlDiagnostics()) {
+      return map.getVisibleColumn(rowKey, resolvedColumnIds[0]);
+    }
+    long started = System.nanoTime();
+    try {
+      return map.getVisibleColumn(rowKey, resolvedColumnIds[0]);
+    } finally {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_VISIBLE_ROW",
+          System.nanoTime() - started);
     }
   }
 
@@ -298,6 +319,31 @@ final class AdbPreparedPointLookupPlan {
       Value value = RowCodec.decodeColumn(rowValue.payload,
           resolvedColumnIds[0]);
       cacheDecodedSingleValue(rowId, rowValue.commitTs, value);
+      return value;
+    } finally {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+          System.nanoTime() - started);
+    }
+  }
+
+  private Value decodedSingleValue(AdbTable table, long rowId,
+      TxnManager.VisibleColumnValue visibleColumn) {
+    long started = System.nanoTime();
+    long commitTs = visibleColumn.commitTs();
+    if (commitTs <= 0L) {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+          System.nanoTime() - started);
+      return visibleColumn.value();
+    }
+    CachedSingleColumnValue cached = decodedSingleColumnCache.get(rowId);
+    if (cached != null && cached.commitTs == commitTs) {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_HIT",
+          System.nanoTime() - started);
+      return cached.value();
+    }
+    try {
+      Value value = visibleColumn.value();
+      cacheDecodedSingleValue(rowId, commitTs, value);
       return value;
     } finally {
       table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",

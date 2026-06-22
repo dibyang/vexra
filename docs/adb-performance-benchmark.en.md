@@ -3950,3 +3950,75 @@ Conclusion:
   `16.5%` versus Round 47, but is still only `0.09x` H2 in this run. The likely
   gap remains in the range-count outer path, visibility parsing, combined write
   costs, and the JDBC / table-engine boundary.
+
+## Round 52: Decode Single-Column Point Lookup Directly from the Visible RowValue Payload Range
+
+This round continues item 3, the `TxnMap2.getVisible / visible row` parsing-path
+optimization. Previously, single-column
+`SELECT NAME FROM ADB_BENCH WHERE ID = ?` first called
+`map.getVisible(rowKey)` to obtain a `RowValue`. `RowValue.decodeValue(...)`
+copied the full payload into an independent byte array, and then
+`RowCodec.decodeColumn(...)` decoded the selected column.
+
+Changes:
+
+1. `RowValue` now exposes package-local header helpers for `commitTs`, the
+   delete flag, payload length, and payload offset.
+2. `RowCodec.decodeColumn(...)` now has a byte-range overload, allowing a
+   selected column to be decoded directly from the payload subrange inside the
+   encoded RowValue bytes.
+3. `TxnManager.getVisibleColumn(...)` / `TxnMap2.getVisibleColumn(...)` add a
+   single-column visible-value entry point. Local writes, region point-read
+   routing, and committed-row-cache validation keep the existing semantics. When
+   the committed store scan is needed, the selected column is decoded directly
+   from `scan.value()` without copying the RowValue payload first.
+4. `AdbPreparedPointLookupPlan` now uses the new path for single-column
+   projections. Multi-column queries and `SELECT *` keep the previous
+   `RowValue` path.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupReportsDetailedPhases --rerun-tasks
+```
+
+Result: passed.
+
+New tests:
+
+- `RowCodecTest.decodeColumnReadsPayloadSubRangeWithoutCopy` covers decoding a
+  column directly from the payload subrange inside encoded RowValue bytes.
+- `TxnManagerVisibleRowFastPathTest.shouldDecodeVisibleColumnFromCommittedStoreValue`
+  covers snapshot visibility with a newer committed version present, while
+  returning only the selected column.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_visible_column_direct_20260622-173340.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_visible_column_direct-20260622-173340/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_visible_column_direct_20260622-173340.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_visible_column_direct-20260622-173340/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | Round 51 ADB ops/s | This round ops/s | Change | Round 51 p99 us | This round p99 us | Round 51 alloc bytes/op | This round alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1168.22 | 1228.00 | +5.1% | 2083 | 2003 | 10138 | 10334 | `vexra-adb/build/adb-benchmark/adb_point_lookup_visible_column_direct_20260622-173340.properties` |
+| `mixed` | 2606.43 | 2762.43 | +6.0% | 8766 | 8243 | 371506 | 391563 | `vexra-adb/build/adb-benchmark/adb_mixed_visible_column_direct_20260622-173340.properties` |
+
+Conclusion:
+
+- Direct selected-column decoding from the RowValue payload subrange shows a
+  positive throughput signal for both `point_lookup` and `mixed`, at about
+  `+5.1%` and `+6.0%`.
+- Allocation did not drop in the same way, which indicates the current sample
+  is still dominated by the store value / cursor boundary, ResultSet proxy, and
+  outer JDBC / table-engine objects. This round only removes one payload copy
+  when a committed store scan is the source of the visible row.
+- This is worth keeping as a narrow item 3 improvement, but the next higher
+  value work should still use JFR evidence to decide whether to build dedicated
+  ResultSet implementations, or continue reducing committed-cache validation and
+  the mixed workload's range / write combined costs.

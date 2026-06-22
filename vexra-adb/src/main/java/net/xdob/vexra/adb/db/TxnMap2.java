@@ -274,6 +274,22 @@ public class TxnMap2 {
     return txnManager.getVisible(transaction, rowKey);
   }
 
+  /**
+   * 读取当前事务可见行的单列值。
+   *
+   * <p>该入口服务 JDBC 主键点查单列投影快路径，允许底层在 committed store 命中时直接从 RowValue
+   * 落盘字节的 payload 子区间解码目标列。</p>
+   *
+   * @param rowKey 行 key
+   * @param columnId 目标列号
+   * @return 可见列值；行不存在或已删除时返回 {@code null}
+   * @throws SQLException 可见性读取失败时抛出
+   */
+  public TxnManager.VisibleColumnValue getVisibleColumn(RowKey rowKey,
+      int columnId) throws SQLException {
+    return txnManager.getVisibleColumn(transaction, rowKey, columnId);
+  }
+
   public RowValue delete(DataKey key) throws SQLException {
     return txnManager.delete(transaction, key);
   }

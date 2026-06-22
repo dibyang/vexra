@@ -25,4 +25,24 @@ class RowCodecTest {
     assertEquals(7L, RowCodec.decodeColumn(payload, 0).getLong());
     assertSame(ValueNull.INSTANCE, RowCodec.decodeColumn(payload, 4));
   }
+
+  @Test
+  void decodeColumnReadsPayloadSubRangeWithoutCopy() {
+    Value[] values = new Value[]{
+        ValueBigint.get(9L),
+        ValueVarchar.get("from-row-value"),
+        ValueVarchar.get("tail")
+    };
+    RowValue rowValue = new RowValue();
+    rowValue.payload = RowCodec.encode(ValueRow.get(values));
+    byte[] encoded = RowValue.encodeValue(rowValue, 12L);
+
+    assertEquals("from-row-value", RowCodec.decodeColumn(encoded,
+        RowValue.payloadOffset(), RowValue.payloadLength(encoded), 1)
+        .getString());
+    assertEquals(9L, RowCodec.decodeColumn(encoded, RowValue.payloadOffset(),
+        RowValue.payloadLength(encoded), 0).getLong());
+    assertSame(ValueNull.INSTANCE, RowCodec.decodeColumn(encoded,
+        RowValue.payloadOffset(), RowValue.payloadLength(encoded), 4));
+  }
 }

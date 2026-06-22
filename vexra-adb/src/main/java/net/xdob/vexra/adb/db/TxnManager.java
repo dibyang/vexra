@@ -877,6 +877,46 @@ public class TxnManager {
     return visible;
   }
 
+  /**
+   * 读取当前事务可见的单列值。
+   *
+   * <p>该入口只面向主键点查单列投影快路径：当命中底层 committed store 版本时，直接从 RowValue
+   * 落盘字节的 payload 子区间解码目标列，避免先复制完整 payload。事务 read-set、region
+   * 路由和 committed row cache 校验沿用 {@link #getVisible(Transaction2, DataKey)}
+   * 的约束。</p>
+   *
+   * @param txn 当前事务
+   * @param rowKey 行 key
+   * @param columnId 目标列号
+   * @return 可见列值；行不存在、被删除或没有 payload 时返回 {@code null}
+   * @throws SQLException 读取 store 或 region 路由失败时抛出
+   */
+  public VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
+      int columnId) throws SQLException {
+    if (detailedSqlDiagnostics()) {
+      RowValue rowValue = getVisibleDetailed(txn, rowKey);
+      return visibleColumnFromRow(rowValue, columnId);
+    }
+
+    RowValue local = txn.getLocalWrite(rowKey);
+    if (local != null) {
+      return visibleColumnFromRow(local, columnId);
+    }
+
+    regionReadRouter.routePointRead(txn, rowKey);
+
+    RowValue cached = getVisibleCommittedFromCache(txn, rowKey);
+    if (cached != null) {
+      return visibleColumnFromRow(cached, columnId);
+    }
+
+    VisibleColumnValue visible = getVisibleCommittedColumn(txn, rowKey,
+        columnId);
+    long version = visible == null ? 0L : visible.commitTs();
+    txn.recordRead(rowKey, version);
+    return visible;
+  }
+
   private RowValue getVisibleDetailed(Transaction2 txn, DataKey rowKey)
       throws SQLException {
     long localStarted = System.nanoTime();
@@ -1084,6 +1124,64 @@ public class TxnManager {
       }
       throw new SQLException("Failed to get visible committed row", e);
     }
+  }
+
+  private VisibleColumnValue getVisibleCommittedColumn(Transaction2 txn,
+      RowKey rowKey, int columnId) throws SQLException {
+    byte[] prefix = rowKey.versionScanPrefixBytes();
+    try (VersionScanSource scan =
+        store.openVersionScanSource(ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, null);
+
+      while (scan.isValid()) {
+        byte[] rawKey = scan.key();
+        if (rawKey == null || !TableScanCursor.startsWith(rawKey, prefix)) {
+          return null;
+        }
+        if (!isRawVersionRowKey(rawKey)) {
+          return null;
+        }
+        if (!isRawCommittedVersion(rawKey)) {
+          scan.advance();
+          continue;
+        }
+
+        long commitTs = rawCommitTs(rawKey);
+        if (commitTs > txn.getStartTs()) {
+          scan.advance();
+          continue;
+        }
+
+        byte[] encoded = scan.value();
+        if (encoded == null || encoded.length == 0
+            || RowValue.isDeleted(encoded)) {
+          return null;
+        }
+        int payloadLength = RowValue.payloadLength(encoded);
+        if (payloadLength <= 0) {
+          return null;
+        }
+        Value value = RowCodec.decodeColumn(encoded, RowValue.payloadOffset(),
+            payloadLength, columnId);
+        return new VisibleColumnValue(commitTs, value);
+      }
+      return null;
+    } catch (Exception e) {
+      if (e instanceof SQLException) {
+        throw (SQLException) e;
+      }
+      throw new SQLException("Failed to get visible committed column", e);
+    }
+  }
+
+  private static VisibleColumnValue visibleColumnFromRow(RowValue rowValue,
+      int columnId) {
+    if (rowValue == null || rowValue.deleted || rowValue.payload == null
+        || rowValue.payload.length == 0) {
+      return null;
+    }
+    return new VisibleColumnValue(rowValue.commitTs,
+        RowCodec.decodeColumn(rowValue.payload, columnId));
   }
 
   private void recordReadVersion(Transaction2 txn, DataKey key, long version) {
@@ -1375,6 +1473,30 @@ public class TxnManager {
     copy.rowKey = rowId;
     copy.commitTs = source.commitTs;
     return copy;
+  }
+
+  /**
+   * 主键点查单列快路径的可见值结果。
+   *
+   * <p>该对象只保存已经解码出的 H2 {@link Value} 和对应 committed version，用于 JDBC
+   * 快路径构造 ResultSet 或复用上层列值缓存；它不持有底层 store value。</p>
+   */
+  public static final class VisibleColumnValue {
+    private final long commitTs;
+    private final Value value;
+
+    private VisibleColumnValue(long commitTs, Value value) {
+      this.commitTs = commitTs;
+      this.value = value;
+    }
+
+    public long commitTs() {
+      return commitTs;
+    }
+
+    public Value value() {
+      return value;
+    }
   }
 
   private long nextCommitTs() {
