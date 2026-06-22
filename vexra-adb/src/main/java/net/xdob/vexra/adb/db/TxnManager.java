@@ -962,12 +962,12 @@ public class TxnManager {
     boolean sawNewerCommitted = false;
     try {
       byte[] prefix = rowKey.toBytes();
-      byte[] end = KeyCodec.prefixEnd(prefix);
 
       try (VersionScanSource scan =
                store.openVersionScanSource(ScanDirection.FORWARD)) {
         long seekStarted = System.nanoTime();
-        scan.seekToRangeStart(prefix, end);
+        // 点查只需要定位到 row prefix 起点；forward cursor 不消费 upperExclusive。
+        scan.seekToRangeStart(prefix, null);
         recordSqlPhase("ADB_VISIBLE_STORE_SEEK",
             System.nanoTime() - seekStarted);
 
@@ -1027,11 +1027,11 @@ public class TxnManager {
   private RowValue getVisibleCommittedRow(Transaction2 txn, DataKey rowKey)
       throws SQLException {
     byte[] prefix = rowKey.toBytes();
-    byte[] end = KeyCodec.prefixEnd(prefix);
     boolean sawNewerCommitted = false;
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(prefix, end);
+      // 点查只需要定位到 row prefix 起点；forward cursor 不消费 upperExclusive。
+      scan.seekToRangeStart(prefix, null);
 
       while (scan.isValid()) {
         byte[] rawKey = scan.key();

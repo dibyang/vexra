@@ -2251,3 +2251,57 @@ top allocation frame 里最值得关注的是：
   分配。
 - 本轮 safe-cache 验证 key 直接编码属于小幅对象路径收缩；普通 mixed 吞吐仍回落到
   `1965.92 ops/s`，不能记录为吞吐优化。
+
+## 第三十三轮：point lookup 可见性扫描去掉无效 prefixEnd
+
+第三十二轮 JFR 显示，`TxnMap2.getVisible` 相关 allocation 主要来自 ldb
+`Slice`、`InternalKey`、`BlockEntry` 和 `Arrays.copyOf`。继续推进第 3 项时发现：
+点查可见性读取只会打开 `ScanDirection.FORWARD` 的 `VersionScanSource`，而
+`LdbVersionEntryCursor.seekToRangeStart(...)` 在 forward 模式只使用
+`lowerInclusive`，并不会消费 `upperExclusive`。因此 `getVisibleCommittedRow(...)`
+和 detail 诊断路径里为点查构造的 `KeyCodec.prefixEnd(prefix)` 没有实际作用，却会
+每次多做一次 `Arrays.copyOf`。
+
+改动：
+
+1. `TxnManager.getVisibleCommittedRow(...)` 只传入 row prefix 起点，不再构造
+   `prefixEnd`。
+2. `TxnManager.getVisibleCommittedDetailed(...)` 同步去掉 detail 路径里的无效
+   upper bound。
+3. 两处增加短注释，说明 forward cursor 不消费 `upperExclusive`，避免后续误恢复。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_visible_no_prefix_end_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-visible-no-prefix-end-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_no_prefix_end_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-no-prefix-end-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 1109.47 | 709 | 1695 | 2948 | 10069 | `vexra-adb/build/adb-benchmark/point_lookup_visible_no_prefix_end_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2286.59 | 2510 | 8402 | 12437 | 664586 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_no_prefix_end_stage.properties` |
+
+结论：
+
+- 本轮去掉了点查可见性扫描里每次都稳定存在、但 forward cursor 不使用的一次
+  `KeyCodec.prefixEnd(...)` / `Arrays.copyOf`。
+- `mixed` 从第三十二轮普通复跑的 `1965.92 ops/s` 回升到 `2286.59 ops/s`，但
+  allocation 仍在 `664KB/op` 量级，说明该改动只是读路径小幅收缩，不是主要瓶颈修复。
+- `point_lookup` 单跑没有形成吞吐收益，短窗口下仅记录为对象路径优化。
+- 下一轮若继续第 3 项，应进入更核心的 ldb 读边界：减少 `SnapshotCursor.key/value`
+  反复 byte[] 拷贝、`Slice.slice`、`InternalKey` 和 `BlockEntry` 分配；如果这些只能在
+  vexra-ldb 内解决，则需要给 ldb 提出 cursor raw-view / reusable entry API 需求。

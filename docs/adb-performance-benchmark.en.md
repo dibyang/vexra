@@ -2603,3 +2603,63 @@ Conclusion:
 - The safe-cache verify-key change is a small object-path optimization. The
   plain mixed benchmark still regressed to `1965.92 ops/s`, so it is not
   recorded as a throughput win.
+
+## Round 33: Remove Unused prefixEnd From Point-Lookup Visibility Scan
+
+Round 32 JFR showed that `TxnMap2.getVisible` allocation mostly came from ldb
+`Slice`, `InternalKey`, `BlockEntry`, and `Arrays.copyOf`. While continuing item
+3, this round found that point-lookup visibility reads always open a
+`ScanDirection.FORWARD` `VersionScanSource`, and
+`LdbVersionEntryCursor.seekToRangeStart(...)` only uses `lowerInclusive` in
+forward mode. The `upperExclusive` argument is ignored. Therefore the
+`KeyCodec.prefixEnd(prefix)` built by `getVisibleCommittedRow(...)` and the
+detailed diagnostics path was an unused `Arrays.copyOf` per visibility scan.
+
+Changes:
+
+1. `TxnManager.getVisibleCommittedRow(...)` passes only the row prefix seek key
+   and no longer builds `prefixEnd`.
+2. `TxnManager.getVisibleCommittedDetailed(...)` removes the same unused upper
+   bound from the detailed path.
+3. Both call sites include a short comment explaining that the forward cursor
+   does not consume `upperExclusive`, so the allocation is not reintroduced by
+   accident.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_visible_no_prefix_end_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-visible-no-prefix-end-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_no_prefix_end_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-no-prefix-end-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 1109.47 | 709 | 1695 | 2948 | 10069 | `vexra-adb/build/adb-benchmark/point_lookup_visible_no_prefix_end_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2286.59 | 2510 | 8402 | 12437 | 664586 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_no_prefix_end_stage.properties` |
+
+Conclusion:
+
+- This round removes one stable but unused `KeyCodec.prefixEnd(...)` /
+  `Arrays.copyOf` from every point-lookup visibility scan.
+- Mixed recovered from Round 32's plain rerun at `1965.92 ops/s` to
+  `2286.59 ops/s`, but allocation remains around `664KB/op`. This is a small
+  read-path shrink, not a root-cause fix.
+- The standalone `point_lookup` run did not show a throughput win, so this is
+  recorded only as an object-path optimization.
+- The next item 3 step should move deeper into the ldb read boundary: reducing
+  repeated `SnapshotCursor.key/value` byte[] copies, `Slice.slice`,
+  `InternalKey`, and `BlockEntry` allocation. If these cannot be solved in ADB,
+  vexra-ldb needs a cursor raw-view / reusable-entry API requirement.
