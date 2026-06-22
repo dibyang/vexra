@@ -1020,6 +1020,76 @@ Mixed reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_raw_stage.properties"
 ```
 
+## Round 17 Prepared Point Lookup Single-Value Fast Path
+
+This round further narrows the object boundary for prepared primary-key
+lookups shaped as `SELECT col FROM table WHERE ID = ?`:
+
+1. `RowCodec.decodeColumn` adds a single-column payload decoder, so
+   single-column projection no longer builds a `Value[]` first.
+2. `AdbPreparedPointLookupPlan` keeps a `rowId + commitTs -> Value` cache for
+   single-column projections. Multi-column projections and `SELECT *` continue
+   to use the existing `Value[]` cache.
+3. `AdbSimpleResultSet.singleValue` adds a single-value ResultSet handler, so
+   the fast path does not allocate an extra array after it already has one
+   `Value`.
+4. Existing `ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS` and
+   `ADB_POINT_LOOKUP_RESULT_BUILD` phase metrics remain available for
+   comparison with earlier point-lookup rounds.
+
+Verification commands:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest
+.\gradlew.bat :vexra-adb:test
+```
+
+Reproducible results:
+
+| Mode | Workload | Throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 2685.77 | 318 | 706 | 1111 | 9904 | `vexra-adb/build/adb-benchmark/point_lookup_single_value_stage.properties` |
+| `jdbc` | `mixed` | 1699.72 | 401 | 1450 | 2619 | 111358 | `vexra-adb/build/adb-benchmark/jdbc_mixed_point_single_value_stage.properties` |
+
+Compared with the previous comparable run after `range_count_raw_stage`,
+`mixed` improves from `1417.77 ops/s` to `1699.72 ops/s`, and p99 drops from
+`3282us` to `2619us`. `ADB_TABLE_POINT_LOOKUP_FAST` average latency drops from
+about `536us` to about `448us`. Allocation is mostly flat, which means this
+round mainly reduces small hot-path object and method-boundary cost rather
+than large payload or key materialization. If the next stage continues read
+optimization, the best target is the `PRIMARY_FIND` H2 `SingleRowCursor` /
+`DefaultRow` boundary. For overall mixed throughput, ordinary write-entry
+cost in `ADB_TABLE_BULK_ADD_ROW` and `ADB_TABLE_ADD_ROW` remains worth
+compressing.
+
+Point-lookup reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-single-value-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_single_value_stage.properties"
+```
+
+Mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-point-single-value-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkBatchSize=100" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_point_single_value_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

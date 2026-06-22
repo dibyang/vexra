@@ -45,6 +45,8 @@ final class AdbPreparedPointLookupPlan {
   private int[] resolvedColumnIds;
   private final ConcurrentHashMap<Long, CachedColumnValues> decodedColumnCache =
       new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Long, CachedSingleColumnValue>
+      decodedSingleColumnCache = new ConcurrentHashMap<>();
 
   private AdbPreparedPointLookupPlan(List<String> selectColumns,
       String tableName, String whereColumn, boolean selectAllColumns) {
@@ -141,15 +143,19 @@ final class AdbPreparedPointLookupPlan {
       RowValue rowValue = visibleRowValue(session, table, rowId);
       if (rowValue == null) {
         decodedColumnCache.remove(Long.valueOf(rowId));
+        decodedSingleColumnCache.remove(Long.valueOf(rowId));
       }
-      Value[] values = rowValue == null ? null
-          : decodedValues(table, rowId, rowValue);
+      boolean singleColumn = resolvedColumnIds.length == 1;
+      Value singleValue = singleColumn && rowValue != null
+          ? decodedSingleValue(table, rowId, rowValue) : null;
+      Value[] values = !singleColumn && rowValue != null
+          ? decodedValues(table, rowId, rowValue) : null;
       if (!detailedSqlDiagnostics()) {
-        return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+        return resultSet(singleColumn, singleValue, values);
       }
       long resultStarted = System.nanoTime();
       try {
-        return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+        return resultSet(singleColumn, singleValue, values);
       } finally {
         table.recordSqlPhase("ADB_POINT_LOOKUP_RESULT_BUILD",
             System.nanoTime() - resultStarted);
@@ -164,6 +170,15 @@ final class AdbPreparedPointLookupPlan {
       table.recordSqlDiagnostic("SELECT", "POINT_LOOKUP_FAST", startMillis,
           failure);
     }
+  }
+
+  private ResultSet resultSet(boolean singleColumn, Value singleValue,
+      Value[] values) {
+    if (singleColumn) {
+      return AdbSimpleResultSet.singleValue(resolvedSelectColumns.get(0),
+          singleValue);
+    }
+    return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
   }
 
   private boolean isPrimaryKeyLookup(AdbTable table) {
@@ -261,6 +276,34 @@ final class AdbPreparedPointLookupPlan {
     }
   }
 
+  private Value decodedSingleValue(AdbTable table, long rowId,
+      RowValue rowValue) {
+    long started = System.nanoTime();
+    if (rowValue.commitTs <= 0L) {
+      try {
+        return RowCodec.decodeColumn(rowValue.payload, resolvedColumnIds[0]);
+      } finally {
+        table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+            System.nanoTime() - started);
+      }
+    }
+    CachedSingleColumnValue cached = decodedSingleColumnCache.get(rowId);
+    if (cached != null && cached.commitTs == rowValue.commitTs) {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_HIT",
+          System.nanoTime() - started);
+      return cached.value();
+    }
+    try {
+      Value value = RowCodec.decodeColumn(rowValue.payload,
+          resolvedColumnIds[0]);
+      cacheDecodedSingleValue(rowId, rowValue.commitTs, value);
+      return value;
+    } finally {
+      table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
+          System.nanoTime() - started);
+    }
+  }
+
   private void cacheDecodedValues(long rowId, long commitTs, Value[] values) {
     if (DECODED_COLUMN_CACHE_LIMIT <= 0) {
       return;
@@ -270,6 +313,18 @@ final class AdbPreparedPointLookupPlan {
     }
     decodedColumnCache.put(Long.valueOf(rowId),
         new CachedColumnValues(commitTs, values));
+  }
+
+  private void cacheDecodedSingleValue(long rowId, long commitTs,
+      Value value) {
+    if (DECODED_COLUMN_CACHE_LIMIT <= 0) {
+      return;
+    }
+    if (decodedSingleColumnCache.size() >= DECODED_COLUMN_CACHE_LIMIT) {
+      decodedSingleColumnCache.clear();
+    }
+    decodedSingleColumnCache.put(Long.valueOf(rowId),
+        new CachedSingleColumnValue(commitTs, value));
   }
 
   private AdbTable adbTable(SessionLocal session) {
@@ -342,6 +397,20 @@ final class AdbPreparedPointLookupPlan {
 
     private Value[] values() {
       return values;
+    }
+  }
+
+  private static final class CachedSingleColumnValue {
+    private final long commitTs;
+    private final Value value;
+
+    private CachedSingleColumnValue(long commitTs, Value value) {
+      this.commitTs = commitTs;
+      this.value = value;
+    }
+
+    private Value value() {
+      return value;
     }
   }
 }

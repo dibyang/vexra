@@ -34,6 +34,23 @@ final class AdbSimpleResultSet {
   }
 
   /**
+   * 创建最多一行一列的 ResultSet。
+   *
+   * <p>主键点查单列投影已经拿到单个 {@link Value} 时使用该入口，避免为了通用
+   * handler 再构造 {@code Value[]}。</p>
+   *
+   * @param columnName 列名
+   * @param value 列值；{@code null} 表示空结果集
+   * @return ResultSet 代理
+   */
+  static ResultSet singleValue(String columnName, Value value) {
+    return (ResultSet) Proxy.newProxyInstance(
+        ResultSet.class.getClassLoader(),
+        new Class<?>[]{ResultSet.class},
+        new SingleValueHandler(columnName, value));
+  }
+
+  /**
    * 创建单列 long 值 ResultSet。
    *
    * <p>COUNT 快路径只返回一行一列 long 值，使用专用 handler 可以避免每次构造
@@ -266,6 +283,112 @@ final class AdbSimpleResultSet {
         return Boolean.valueOf(((Class<?>) args[0]).isInstance(proxy));
       }
       return Handler.defaultValue(method.getReturnType(), name);
+    }
+
+    private void checkOnRow() throws SQLException {
+      if (!onRow || closed) {
+        throw new SQLException("ResultSet is not positioned on a row");
+      }
+    }
+
+    private int findColumn(Object column) throws SQLException {
+      if (column instanceof Number) {
+        int index = ((Number) column).intValue();
+        if (index == 1) {
+          return 1;
+        }
+        throw new SQLException("Invalid column index: " + index);
+      }
+      String text = String.valueOf(column);
+      if (columnName.equalsIgnoreCase(text)) {
+        return 1;
+      }
+      throw new SQLException("Unknown column: " + text);
+    }
+  }
+
+  private static final class SingleValueHandler implements InvocationHandler {
+
+    private final String columnName;
+    private final Value value;
+    private boolean beforeFirst = true;
+    private boolean onRow;
+    private boolean closed;
+    private boolean wasNull;
+
+    private SingleValueHandler(String columnName, Value value) {
+      this.columnName = columnName;
+      this.value = value;
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args)
+        throws Throwable {
+      String name = method.getName();
+      if ("next".equals(name)) {
+        if (closed || !beforeFirst || value == null) {
+          onRow = false;
+          beforeFirst = false;
+          return Boolean.FALSE;
+        }
+        beforeFirst = false;
+        onRow = true;
+        return Boolean.TRUE;
+      }
+      if ("close".equals(name)) {
+        closed = true;
+        onRow = false;
+        return null;
+      }
+      if ("isClosed".equals(name)) {
+        return Boolean.valueOf(closed);
+      }
+      if ("wasNull".equals(name)) {
+        return Boolean.valueOf(wasNull);
+      }
+      if ("findColumn".equals(name)) {
+        return Integer.valueOf(findColumn(args[0]));
+      }
+      if ("getString".equals(name)) {
+        Value current = value(args[0]);
+        return current == null ? null : current.getString();
+      }
+      if ("getLong".equals(name)) {
+        Value current = value(args[0]);
+        return Long.valueOf(current == null ? 0L : current.getLong());
+      }
+      if ("getInt".equals(name)) {
+        Value current = value(args[0]);
+        return Integer.valueOf(current == null ? 0 : current.getInt());
+      }
+      if ("getBoolean".equals(name)) {
+        Value current = value(args[0]);
+        return Boolean.valueOf(current != null && current.getBoolean());
+      }
+      if ("getObject".equals(name)) {
+        Value current = value(args[0]);
+        return current == null ? null : current.getString();
+      }
+      if ("unwrap".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        Class<?> type = (Class<?>) args[0];
+        if (type.isInstance(proxy)) {
+          return proxy;
+        }
+        throw new SQLException("Not a wrapper for " + type.getName());
+      }
+      if ("isWrapperFor".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        return Boolean.valueOf(((Class<?>) args[0]).isInstance(proxy));
+      }
+      return Handler.defaultValue(method.getReturnType(), name);
+    }
+
+    private Value value(Object column) throws SQLException {
+      checkOnRow();
+      findColumn(column);
+      wasNull = value == org.h2.value.ValueNull.INSTANCE;
+      return wasNull ? null : value;
     }
 
     private void checkOnRow() throws SQLException {

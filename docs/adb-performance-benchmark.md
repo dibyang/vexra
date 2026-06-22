@@ -986,6 +986,68 @@ mixed 复现命令：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_raw_stage.properties"
 ```
 
+## 第十七轮 prepared point lookup 单列 Value 快路径结果
+
+本轮继续压缩 `SELECT col FROM table WHERE ID = ?` 这类 prepared 主键点查的对象边界：
+
+1. `RowCodec.decodeColumn` 新增单列 payload 解码入口，单列投影不再先构造
+   `Value[]`。
+2. `AdbPreparedPointLookupPlan` 为单列投影维护 `rowId + commitTs -> Value`
+   缓存；多列投影和 `SELECT *` 仍走原来的 `Value[]` 缓存。
+3. `AdbSimpleResultSet.singleValue` 新增单值 ResultSet handler，已经拿到单个
+   `Value` 时不再为了返回结果集额外构造数组。
+4. 现有 `ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS` 和
+   `ADB_POINT_LOOKUP_RESULT_BUILD` phase 继续保留，用于和前几轮点查诊断对比。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowCodecTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest
+.\gradlew.bat :vexra-adb:test
+```
+
+本轮可复现结果：
+
+| 模式 | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 2685.77 | 318 | 706 | 1111 | 9904 | `vexra-adb/build/adb-benchmark/point_lookup_single_value_stage.properties` |
+| `jdbc` | `mixed` | 1699.72 | 401 | 1450 | 2619 | 111358 | `vexra-adb/build/adb-benchmark/jdbc_mixed_point_single_value_stage.properties` |
+
+与上一轮 `range_count_raw_stage` 后的可比结果相比，`mixed` 从 `1417.77 ops/s`
+提升到 `1699.72 ops/s`，p99 从 `3282us` 降到 `2619us`；`ADB_TABLE_POINT_LOOKUP_FAST`
+平均耗时从约 `536us` 降到约 `448us`。allocation 基本持平，说明本轮主要减少的是热路径小对象和方法边界成本，
+不是大块 payload 或 key materialization。下一步若继续优化读路径，优先看 `PRIMARY_FIND`
+的 H2 `SingleRowCursor` / `DefaultRow` 边界；若优化综合吞吐，则普通写入入口 `ADB_TABLE_BULK_ADD_ROW`
+和 `ADB_TABLE_ADD_ROW` 仍值得继续压缩。
+
+point lookup 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-single-value-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_single_value_stage.properties"
+```
+
+mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-point-single-value-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkBatchSize=100" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_point_single_value_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB

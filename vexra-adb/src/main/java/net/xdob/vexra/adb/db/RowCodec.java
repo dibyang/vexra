@@ -354,6 +354,40 @@ public interface RowCodec {
     return new Value[]{value};
   }
 
+  /**
+   * 只解码单个列值，供主键点查单列投影绕过 {@code Value[]} 分配。
+   *
+   * @param bytes 行 payload
+   * @param columnIndex 需要解码的列号
+   * @return 指定列值；payload 不包含该列时返回 {@link ValueNull}
+   */
+  public static Value decodeColumn(byte[] bytes, int columnIndex) {
+    if (bytes == null) {
+      throw new IllegalArgumentException("decode bytes is null ");
+    }
+    if (bytes.length == 0) {
+      throw new IllegalArgumentException("decode bytes is empty");
+    }
+    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    int type = buf.getInt();
+    if (type != ROW) {
+      return columnIndex == 0 ? safeDecode(ByteBuffer.wrap(bytes))
+          : ValueNull.INSTANCE;
+    }
+
+    int size = buf.getInt();
+    for (int rowColumn = 0; rowColumn < size; rowColumn++) {
+      int len = buf.getInt();
+      if (rowColumn == columnIndex) {
+        byte[] valueBytes = new byte[len];
+        buf.get(valueBytes);
+        return safeDecode(ByteBuffer.wrap(valueBytes));
+      }
+      buf.position(buf.position() + len);
+    }
+    return ValueNull.INSTANCE;
+  }
+
   static boolean isSelectedColumn(int[] columnIndexes, int rowColumn) {
     for (int i = 0; i < columnIndexes.length; i++) {
       if (columnIndexes[i] == rowColumn) {
