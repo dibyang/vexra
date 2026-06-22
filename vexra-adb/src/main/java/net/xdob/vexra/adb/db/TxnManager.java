@@ -1431,8 +1431,15 @@ public class TxnManager {
         continue;
       }
 
+      long commitTs = rawCommitTs(rawKey);
+      if (commitTs > startTs) {
+        scan.advance();
+        rawKey = scan.isValid() ? scan.key() : null;
+        continue;
+      }
+
       RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
-      if (metadata != null && metadata.commitTs <= startTs) {
+      if (metadata != null) {
         skipCurrentRawLogicalRow(scan, null, firstRowKey);
         return !metadata.deleted && metadata.hasPayload();
       }

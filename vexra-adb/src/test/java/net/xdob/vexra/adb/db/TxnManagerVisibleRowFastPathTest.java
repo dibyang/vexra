@@ -1,6 +1,7 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
 import net.xdob.vexra.adb.key.VersionKey;
 import net.xdob.vexra.adb.ldb.LdbStore;
@@ -72,6 +73,35 @@ class TxnManagerVisibleRowFastPathTest {
       Transaction2 latestReader = new Transaction2(2L, 25L);
       RowValue latestVisible = manager.getVisible(latestReader, key);
       assertNull(latestVisible);
+    }
+  }
+
+  /**
+   * 验证 range count raw 快路径会跳过晚于快照的 committed 版本。
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldKeepSnapshotRangeCountWhenNewerVersionsExist()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir, "range-visible")
+        .getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+
+      putCommitted(store, RowKey.of(tabId, 1L), 10L, "old-1");
+      putCommitted(store, RowKey.of(tabId, 1L), 20L, "new-1");
+      putCommitted(store, RowKey.of(tabId, 2L), 10L, "old-2");
+      putDeleted(store, RowKey.of(tabId, 2L), 20L);
+      putCommitted(store, RowKey.of(tabId, 3L), 10L, "old-3");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      assertEquals(3L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
+          1L, 3L));
+
+      Transaction2 latestReader = new Transaction2(2L, 25L);
+      assertEquals(2L, manager.countVisibleRows(latestReader,
+          RowPrefix.of(tabId), 1L, 3L));
     }
   }
 

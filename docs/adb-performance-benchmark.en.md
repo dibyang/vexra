@@ -3325,3 +3325,72 @@ Conclusion:
 - Item 4 still has follow-up room: secondary-index bulk key construction,
   single-row insert commit/write-batch grouping, and a deeper h2db Insert batch
   callback are larger remaining write-entry opportunities.
+
+## Round 43: Raw commitTs Skip for Newer Range-Count Versions
+
+This round continues item 5, range-count outer / scan-entry optimization. After
+Round 39, the range-count raw path already avoids generic
+`VersionKey.fromBytes(...)` and payload decoding. However, when one logical row
+has multiple committed versions, it still read the value and created
+`RowValue.Metadata` before checking `metadata.commitTs <= startTs`. This is the
+same shape as the Round 41 point-lookup issue: newer versions can be identified
+from the `VersionRowKey` raw key and skipped before reading the value.
+
+Changes:
+
+1. `resolveVisibleCountableInCurrentRawLogicalRow(...)` now restores commitTs
+   through the existing `rawCommitTs(...)` after confirming the raw key is a
+   committed row version.
+2. If commitTs is newer than the current transaction `startTs`, the scan simply
+   advances to the next version of the same logical row. It does not call
+   `scan.value()` and does not allocate `RowValue.Metadata`.
+3. The change only affects the no-local-write raw range-count fast path. The
+   local-write path keeps its existing `rowsCoveredByStoreScan` and local-delta
+   semantics unchanged.
+
+Verification commands:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `shouldKeepSnapshotRangeCountWhenNewerVersionsExist` covers range count on an
+  old snapshot with newer update/delete versions, and verifies that a newer
+  snapshot observes the delete in the count.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_raw_commit_ts_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-raw-commit-ts-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_range_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-raw-commit-ts-range-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 916.59 | 1013 | 1790 | 2548 | 502091 | `vexra-adb/build/adb-benchmark/range_count_raw_commit_ts_stage.properties` |
+| `mixed` | 8 | 2413.52 | 2467 | 8388 | 11377 | 710757 | `vexra-adb/build/adb-benchmark/jdbc_mixed_raw_commit_ts_range_stage.properties` |
+
+Conclusion:
+
+- In the single-version benchmark, `range_scan` allocation remains around
+  `502KB/op`, and `mixed` remains around `710KB/op`. This confirms that the
+  dominant allocation source is not `RowValue.Metadata`; it is still the ldb
+  cursor key/value/Slice/BlockEntry boundary.
+- The optimization is most useful for multi-version old snapshots: range count
+  can skip newer committed update/delete versions without reading their values.
+- Item 5 is still not fully solved. Materially reducing wide range count and
+  mixed allocation still requires segment/block-level count metadata or a
+  `vexra-ldb` raw-view / reusable-entry cursor API.
