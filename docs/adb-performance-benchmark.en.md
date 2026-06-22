@@ -4158,3 +4158,64 @@ Conclusion:
 - Follow-up work still needs to reduce range-count ldb cursor seek / block
   entry construction cost, or push the count-only path closer to the
   store/block layer.
+
+## Round 55: Direct Single-Row Prepared Insert Bulk Entry
+
+This round continues objective item 4 by optimizing the `BULK_ADD_ROW / ADD_ROW`
+write entry. Parameterized single-row
+`INSERT INTO ... VALUES (?, ?)` already hit the ADB bulk insert path, but it
+still constructed `Collections.singletonList(row)` and then entered the
+single-row branch inside `bulkInsertAppendRows(...)`. In `mixed`, 10% of
+operations are single-row append inserts. The object boundary is small, but it
+is deterministic write-entry overhead.
+
+Changes:
+
+1. `AdbTable` now has `bulkInsertAppendRow(SessionLocal, Row)`, which executes
+   single-row uniqueness checks, encoded-row writes, and optional secondary
+   index registration directly.
+2. `bulkInsertAppendRows(...)` delegates to the new single-row entry when
+   `rows.size() == 1`. The multi-row path keeps the previous batch duplicate
+   detection and batch append high-water logic.
+3. `AdbPreparedInsertPlan` now constructs a single `Row` and calls the new entry
+   directly when `rowCount == 1`. Multi-values INSERT still uses the previous
+   multi-row bulk path.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_insert_single_row_bulk_entry_20260622-181304.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_insert_single_row_bulk_entry-20260622-181304/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_single_row_bulk_entry_20260622-181304.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_single_row_bulk_entry-20260622-181304/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | --- |
+| `insert` | 697.51 | 3070 | 37408 | `vexra-adb/build/adb-benchmark/adb_insert_single_row_bulk_entry_20260622-181304.properties` |
+| `mixed` | 3024.19 | 8140 | 387340 | `vexra-adb/build/adb-benchmark/adb_mixed_single_row_bulk_entry_20260622-181304.properties` |
+
+Conclusion:
+
+- `mixed` recovered from the Round 54 non-diagnostic sample at
+  `2727.27 ops/s` to `3024.19 ops/s`, and allocation continued to fall from
+  `388679 B/op` to `387340 B/op`.
+- Compared with Round 52's `2762.43 ops/s`, this round is about `+9.5%`. It is
+  also slightly above the later ADB/H2 retest sample at `2994.01 ops/s`, which
+  is a positive signal for the combination of write-entry object cleanup and
+  range-count local-write filtering.
+- The standalone `insert` sample reached `697.51 ops/s`, slightly above the
+  later ADB/H2 retest sample at `680.74 ops/s`. This workload is still strongly
+  affected by file-store flush behavior, so it needs a longer window before it
+  can be treated as a stable trend.

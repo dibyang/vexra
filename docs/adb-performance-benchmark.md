@@ -3592,3 +3592,54 @@ block 迭代和 visible row 版本定位。进一步检查 benchmark 后发现�
   allocation 清理，而不是吞吐主优化完成。
 - 后续还需要继续压缩 range count 的 ldb cursor seek / block entry 构造成本，或者把
   count-only 路径进一步下沉到更接近 store/block 的层次。
+
+## 第五十五轮：单行 prepared insert 直达 bulk row 入口
+
+本轮继续目标第 4 项，优化 `BULK_ADD_ROW / ADD_ROW` 写入入口。此前参数化单行
+`INSERT INTO ... VALUES (?, ?)` 已经能命中 ADB bulk insert，但执行时仍会先构造
+`Collections.singletonList(row)`，再进入 `bulkInsertAppendRows(...)` 的单行分支。
+在 `mixed` 中 10% 操作为单行 append insert，这部分对象边界虽然不大，但属于确定性的
+写入入口成本。
+
+本轮改动：
+
+1. `AdbTable` 新增 `bulkInsertAppendRow(SessionLocal, Row)`，单行写入直接执行唯一性检查、
+   encoded row 写入和可选二级索引登记。
+2. `bulkInsertAppendRows(...)` 在 `rows.size() == 1` 时委托到新单行入口，多行路径保持
+   原批内去重和 batch append high-water 逻辑。
+3. `AdbPreparedInsertPlan` 在 `rowCount == 1` 时直接构造单行 `Row` 并调用新入口，
+   不再创建 singleton list；多值 INSERT 仍走原多行 bulk 路径。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountUsesRawPathWhenLocalWritesAreOutsideRange --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_insert_single_row_bulk_entry_20260622-181304.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_insert_single_row_bulk_entry-20260622-181304/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_single_row_bulk_entry_20260622-181304.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_single_row_bulk_entry-20260622-181304/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | --- |
+| `insert` | 697.51 | 3070 | 37408 | `vexra-adb/build/adb-benchmark/adb_insert_single_row_bulk_entry_20260622-181304.properties` |
+| `mixed` | 3024.19 | 8140 | 387340 | `vexra-adb/build/adb-benchmark/adb_mixed_single_row_bulk_entry_20260622-181304.properties` |
+
+结论：
+
+- `mixed` 从第五十四轮无诊断样本 `2727.27 ops/s` 回升到 `3024.19 ops/s`，
+  allocation 继续从 `388679 B/op` 降到 `387340 B/op`。
+- 与第五十二轮 `2762.43 ops/s` 相比，本轮 mixed 约 `+9.5%`；与后续 ADB/H2 复测样本
+  `2994.01 ops/s` 相比略高，说明写入入口小对象清理和 range count 本地写过滤合并后有正向信号。
+- `insert` 单项为 `697.51 ops/s`，略高于后续 ADB/H2 复测样本 `680.74 ops/s`，
+  但该单项受文件库 flush 影响较大，仍需更长窗口判断趋势。

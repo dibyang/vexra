@@ -4,7 +4,6 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
@@ -142,8 +141,9 @@ final class AdbPreparedInsertPlan {
     if (table == null) {
       return null;
     }
-    List<Row> rows = rows(session, table, parameters);
-    int count = table.bulkInsertAppendRows(session, rows);
+    int count = rowCount == 1
+        ? table.bulkInsertAppendRow(session, row(session, table, parameters))
+        : table.bulkInsertAppendRows(session, rows(session, table, parameters));
     if (connection.getAutoCommit()) {
       connection.commit();
     }
@@ -166,8 +166,9 @@ final class AdbPreparedInsertPlan {
     if (table == null) {
       return null;
     }
-    List<Row> rows = rows(session, table, literalValues);
-    int count = table.bulkInsertAppendRows(session, rows);
+    int count = rowCount == 1
+        ? table.bulkInsertAppendRow(session, row(session, table, literalValues))
+        : table.bulkInsertAppendRows(session, rows(session, table, literalValues));
     if (connection.getAutoCommit()) {
       connection.commit();
     }
@@ -198,10 +199,6 @@ final class AdbPreparedInsertPlan {
       ParameterAccessor parameters) {
     Column[] tableColumns = tableColumns(table);
     Column[] insertColumns = insertColumns(table);
-    if (rowCount == 1) {
-      return Collections.singletonList(row(session, table, parameters,
-          tableColumns, insertColumns, 1));
-    }
     List<Row> rows = new ArrayList<>(rowCount);
     int parameter = 1;
     for (int r = 0; r < rowCount; r++) {
@@ -210,6 +207,32 @@ final class AdbPreparedInsertPlan {
       parameter += insertColumns.length;
     }
     return rows;
+  }
+
+  private Row row(SessionLocal session, AdbTable table,
+      Object[] parameters) {
+    return row(session, table, new ParameterAccessor() {
+      @Override
+      public Object get(int parameter) {
+        return parameters[parameter];
+      }
+    });
+  }
+
+  private Row row(SessionLocal session, AdbTable table,
+      final List<Object> parameters) {
+    return row(session, table, new ParameterAccessor() {
+      @Override
+      public Object get(int parameter) {
+        return parameters.get(parameter - 1);
+      }
+    });
+  }
+
+  private Row row(SessionLocal session, AdbTable table,
+      ParameterAccessor parameters) {
+    return row(session, table, parameters, tableColumns(table),
+        insertColumns(table), 1);
   }
 
   /**

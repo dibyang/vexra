@@ -699,6 +699,9 @@ public class AdbTable extends TableBase {
     if (rows == null || rows.isEmpty()) {
       return 0;
     }
+    if (rows.size() == 1) {
+      return bulkInsertAppendRow(session, rows.get(0));
+    }
     if (getSqlDistributedWriteRuntime() != null
         || txnManager.getRegionCommitCoordinator() != null) {
       throw DbException.getUnsupportedException(
@@ -714,63 +717,48 @@ public class AdbTable extends TableBase {
     try {
       long txnId = map.getTransaction().getTxnId();
       TabId tabId = map.getTabId(getId());
-      if (rows.size() == 1) {
-        Row row = rows.get(0);
+      long minRowId = Long.MAX_VALUE;
+      long maxRowId = Long.MIN_VALUE;
+      long previousRowId = Long.MIN_VALUE;
+      boolean hasPreviousRowId = false;
+      boolean strictlyIncreasingRowIds = true;
+      for (Row row : rows) {
         prepareBulkRow(row);
-        RowKey rowKey = RowKey.of(tabId, row.getKey());
-        RowValue old = null;
-        if (!map.canSkipAppendUniqueCheck(rowKey)) {
-          old = map.getVisible(rowKey);
-          if (isExistingRow(old)) {
-            throw duplicateKey(row.getKey(), old);
-          }
+        long rowId = row.getKey();
+        if (hasPreviousRowId && rowId <= previousRowId) {
+          strictlyIncreasingRowIds = false;
         }
-        map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
-        count = 1;
-      } else {
-        long minRowId = Long.MAX_VALUE;
-        long maxRowId = Long.MIN_VALUE;
-        long previousRowId = Long.MIN_VALUE;
-        boolean hasPreviousRowId = false;
-        boolean strictlyIncreasingRowIds = true;
-        for (Row row : rows) {
-          prepareBulkRow(row);
-          long rowId = row.getKey();
-          if (hasPreviousRowId && rowId <= previousRowId) {
-            strictlyIncreasingRowIds = false;
-          }
-          previousRowId = rowId;
-          hasPreviousRowId = true;
-          minRowId = Math.min(minRowId, rowId);
-          maxRowId = Math.max(maxRowId, rowId);
-        }
-        if (!strictlyIncreasingRowIds) {
-          assertNoDuplicateBulkRowIds(rows);
-        }
-        boolean skipBatchUniqueCheck = map.canSkipAppendUniqueChecks(tabId,
-            minRowId, maxRowId);
-        if (skipBatchUniqueCheck) {
-          for (Row row : rows) {
-            RowKey rowKey = RowKey.of(tabId, row.getKey());
-            map.putEncodedAppendAlreadyChecked(rowKey, rowValue(txnId, row),
-                null);
-          }
-          map.recordAppendHighWater(tabId, maxRowId);
-        } else {
-          for (Row row : rows) {
-            RowKey rowKey = RowKey.of(tabId, row.getKey());
-            RowValue old = null;
-            if (!map.canSkipAppendUniqueCheck(rowKey)) {
-              old = map.getVisible(rowKey);
-              if (isExistingRow(old)) {
-                throw duplicateKey(row.getKey(), old);
-              }
-            }
-            map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
-          }
-        }
-        count = rows.size();
+        previousRowId = rowId;
+        hasPreviousRowId = true;
+        minRowId = Math.min(minRowId, rowId);
+        maxRowId = Math.max(maxRowId, rowId);
       }
+      if (!strictlyIncreasingRowIds) {
+        assertNoDuplicateBulkRowIds(rows);
+      }
+      boolean skipBatchUniqueCheck = map.canSkipAppendUniqueChecks(tabId,
+          minRowId, maxRowId);
+      if (skipBatchUniqueCheck) {
+        for (Row row : rows) {
+          RowKey rowKey = RowKey.of(tabId, row.getKey());
+          map.putEncodedAppendAlreadyChecked(rowKey, rowValue(txnId, row),
+              null);
+        }
+        map.recordAppendHighWater(tabId, maxRowId);
+      } else {
+        for (Row row : rows) {
+          RowKey rowKey = RowKey.of(tabId, row.getKey());
+          RowValue old = null;
+          if (!map.canSkipAppendUniqueCheck(rowKey)) {
+            old = map.getVisible(rowKey);
+            if (isExistingRow(old)) {
+              throw duplicateKey(row.getKey(), old);
+            }
+          }
+          map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+        }
+      }
+      count = rows.size();
       for (Index index : indexes) {
         if (index instanceof AdbSecondaryIndex) {
           ((AdbSecondaryIndex) index).bulkInsertRows(session, rows);
@@ -789,6 +777,66 @@ public class AdbTable extends TableBase {
     }
     analyzeIfRequired(session);
     return count;
+  }
+
+  /**
+   * 在当前 JDBC session 的 ADB 事务内追加写入单行。
+   *
+   * <p>该入口服务参数化单行 INSERT，避免先创建 singleton list 再进入多行 bulk
+   * 分支。唯一性检查、savepoint 回滚、二级索引登记和事务提交边界与
+   * {@link #bulkInsertAppendRows(SessionLocal, List)} 保持一致。</p>
+   *
+   * @param session 当前 H2 session
+   * @param row 需要插入的 row
+   * @return 成功写入当前事务的 row 数；row 为 null 时返回 0
+   */
+  public int bulkInsertAppendRow(SessionLocal session, Row row) {
+    if (row == null) {
+      return 0;
+    }
+    if (getSqlDistributedWriteRuntime() != null
+        || txnManager.getRegionCommitCoordinator() != null) {
+      throw DbException.getUnsupportedException(
+          "ADB bulk insert fast path is local-only");
+    }
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
+    syncLastModificationIdWithDatabase();
+    TxnMap2 map = getTxnMap(session);
+    long savepointId = System.nanoTime();
+    map.setSavepoint(savepointId);
+    try {
+      long txnId = map.getTransaction().getTxnId();
+      TabId tabId = map.getTabId(getId());
+      prepareBulkRow(row);
+      RowKey rowKey = RowKey.of(tabId, row.getKey());
+      RowValue old = null;
+      if (!map.canSkipAppendUniqueCheck(rowKey)) {
+        old = map.getVisible(rowKey);
+        if (isExistingRow(old)) {
+          throw duplicateKey(row.getKey(), old);
+        }
+      }
+      map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+      for (Index index : indexes) {
+        if (index instanceof AdbSecondaryIndex) {
+          ((AdbSecondaryIndex) index).bulkInsertRows(session,
+              Collections.singletonList(row));
+        }
+      }
+    } catch (SQLException e) {
+      failure = convertException(e);
+      rollbackBulkSavepoint(map, savepointId, failure);
+      throw failure;
+    } catch (RuntimeException e) {
+      failure = e;
+      rollbackBulkSavepoint(map, savepointId, failure);
+      throw e;
+    } finally {
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
+    }
+    analyzeIfRequired(session);
+    return 1;
   }
 
   private static void rollbackBulkSavepoint(TxnMap2 map, long savepointId,
