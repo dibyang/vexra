@@ -1827,3 +1827,56 @@ trusted detail 关键 phase：
   in-memory cache。默认策略继续保留安全校验。
 - 下一步若要把这部分收益安全默认化，需要在 `DbStore.restore(...)` / backup-restore runtime
   与 `TxnManager` 之间建立 cache invalidation / generation 机制；否则只能作为纯本地、无 restore 干扰的压测开关。
+
+## 第二十六轮：trusted committed cache 的 restore 失效边界
+
+第二十五轮证明跳过 committed cache hit 的物理版本校验有明确收益，但它不能直接默认开启，
+因为 restore / snapshot 安装后，同进程内旧的 committed row、row-count 和 rowId hint cache
+可能继续指向 restore 前的数据。本轮先把这个风险边界落到代码里：
+
+1. `TxnManager` 新增实例级 `trustCommittedRowCache` 开关，默认仍来自
+   `-Dvexra.adb.rowCache.trustCommitted=true`，测试可以直接构造 trusted manager 覆盖该路径。
+2. `TxnManager.invalidateStoreDerivedCaches()` 会同时清理 committed row cache、row-count cache
+   和 max rowId hint。
+3. `AdbRuntimeOperationsBridge` 新增可选 `TxnManager` 构造参数；当 runtime restore 成功后，
+   会主动调用 `invalidateStoreDerivedCaches()`。
+4. 旧的 `AdbRuntimeOperationsBridge(DbStore, AdbControlPlaneClient, String)` 构造函数保持兼容；
+   未传入 manager 的调用方语义不变。
+
+测试增强：
+
+- `AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill` 使用 trusted
+  `TxnManager`：先 checkpoint `before-backup`，再提交并缓存 `after-backup`，restore 后必须读回
+  `before-backup`。如果 restore 不清缓存，该用例会在 trusted cache 模式下返回旧的
+  `after-backup`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest --rerun-tasks
+```
+
+验证结果：通过。
+
+trusted mixed 8 线程复跑命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_cache_restore_invalidation_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-cache-restore-invalidation-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | trusted cache, restore invalidation code | 2446.98 | 2370 | 8240 | 10900 | 663423 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_cache_restore_invalidation_stage.properties` |
+
+结论：
+
+- 本轮代码没有改 point lookup / range count 热路径，因此不把单次 mixed 结果作为新的性能收益结论。
+- `allocation bytes/op` 与第二十五轮 trusted default 基本同量级，说明新增的 restore 失效边界没有给常规
+  mixed 热路径带来额外对象分配。
+- 单次 throughput 低于第二十五轮 trusted default，属于本轮需继续用多轮复跑确认的波动；由于代码只在
+  restore 后执行缓存清理，优先判断为 benchmark 方差而不是热路径回退。
+- 该阶段让 `trustCommitted` 从“纯压测开关”前进为“通过 runtime restore 可控失效的压测/局部优化开关”。
+  下一步要继续把收益默认化，需要覆盖 region snapshot installer、直接 `DbStore.restore(...)` 调用和外部
+  store 变更通知，或者引入 store generation。

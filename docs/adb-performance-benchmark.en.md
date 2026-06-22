@@ -2108,3 +2108,67 @@ Conclusion:
   runtime and `TxnManager` need cache invalidation or a store generation
   mechanism. Until then, this remains a pure-local benchmark switch for runs
   without restore interference.
+
+## Round 26: Restore Invalidation Boundary for Trusted Committed Cache
+
+Round 25 proved that skipping physical committed-version validation on committed
+cache hits has a clear upside, but it cannot become the default as-is. After
+restore or snapshot installation, old in-process committed row, row-count, and
+rowId hint caches may still point at pre-restore data. This round makes that
+risk boundary explicit in code:
+
+1. `TxnManager` now has an instance-level `trustCommittedRowCache` flag. The
+   default constructor still reads `-Dvexra.adb.rowCache.trustCommitted=true`,
+   while tests can directly construct a trusted manager.
+2. `TxnManager.invalidateStoreDerivedCaches()` clears committed row cache,
+   row-count cache, and max rowId hints together.
+3. `AdbRuntimeOperationsBridge` has a new optional `TxnManager` constructor
+   parameter. After a successful runtime restore, it calls
+   `invalidateStoreDerivedCaches()`.
+4. The existing `AdbRuntimeOperationsBridge(DbStore, AdbControlPlaneClient,
+   String)` constructor remains compatible; callers that do not pass a manager
+   keep the old behavior.
+
+Test coverage:
+
+- `AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill` now uses
+  a trusted `TxnManager`: it checkpoints `before-backup`, commits and caches
+  `after-backup`, then restores and must read `before-backup`. Without restore
+  cache invalidation, this test would return the stale `after-backup` value in
+  trusted-cache mode.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest --rerun-tasks
+```
+
+Result: passed.
+
+Trusted mixed 8-thread rerun command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_cache_restore_invalidation_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-cache-restore-invalidation-stage/adb-benchmark
+```
+
+Result:
+
+| workload | mode | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | trusted cache, restore invalidation code | 2446.98 | 2370 | 8240 | 10900 | 663423 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_cache_restore_invalidation_stage.properties` |
+
+Conclusion:
+
+- This round does not change the point lookup or range count hot path, so the
+  single mixed result is not treated as a new throughput improvement.
+- `allocation bytes/op` is in the same range as the Round 25 trusted default
+  run, so the restore invalidation boundary did not add steady-state allocation
+  overhead to the mixed hot path.
+- Throughput was lower than the Round 25 trusted default in this single rerun;
+  because the new code only clears caches after restore, this is recorded as a
+  benchmark-variance risk to rerun rather than direct hot-path regression.
+- This moves `trustCommitted` from a pure benchmark switch toward a
+  runtime-restore-safe local optimization switch. To make the benefit default,
+  the next step is covering region snapshot installer, direct
+  `DbStore.restore(...)` callers, and external store-change notification, or
+  introducing a store generation mechanism.

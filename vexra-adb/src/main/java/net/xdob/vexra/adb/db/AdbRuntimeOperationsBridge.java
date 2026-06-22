@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class AdbRuntimeOperationsBridge {
   private final DbStore store;
+  private final TxnManager txnManager;
   private final AdbControlPlaneClient controlPlaneClient;
   private final String clusterVersion;
   private final AtomicBoolean backupRunning = new AtomicBoolean(false);
@@ -34,7 +35,25 @@ public final class AdbRuntimeOperationsBridge {
    */
   public AdbRuntimeOperationsBridge(DbStore store,
       AdbControlPlaneClient controlPlaneClient, String clusterVersion) {
+    this(store, null, controlPlaneClient, clusterVersion);
+  }
+
+  /**
+   * 创建带事务管理器缓存失效能力的 ADB runtime 运维桥接器。
+   *
+   * <p>restore 会整体替换底层 store 的可见内容；当调用方提供当前进程使用的
+   * {@link TxnManager} 时，restore 成功后会清理 committed row、row-count 和 rowId
+   * hint 缓存，避免压测信任缓存模式或后续读路径复用旧 store 内容。</p>
+   *
+   * @param store ADB store
+   * @param txnManager 需要随 restore 失效缓存的事务管理器；允许为 null
+   * @param controlPlaneClient ADB 控制面客户端
+   * @param clusterVersion 集群版本
+   */
+  public AdbRuntimeOperationsBridge(DbStore store, TxnManager txnManager,
+      AdbControlPlaneClient controlPlaneClient, String clusterVersion) {
     this.store = Objects.requireNonNull(store, "store == null");
+    this.txnManager = txnManager;
     this.controlPlaneClient = Objects.requireNonNull(controlPlaneClient,
         "controlPlaneClient == null");
     this.clusterVersion = clusterVersion == null ? "" : clusterVersion.trim();
@@ -105,7 +124,12 @@ public final class AdbRuntimeOperationsBridge {
    */
   public void restore(BackupRestorePlan plan) throws IOException {
     requireMode(plan, BackupRestoreMode.FULL, "restore");
-    runBackupOperation(() -> store.restore(plan.getLocation()));
+    runBackupOperation(() -> {
+      store.restore(plan.getLocation());
+      if (txnManager != null) {
+        txnManager.invalidateStoreDerivedCaches();
+      }
+    });
   }
 
   private void runBackupOperation(BackupOperation operation) throws IOException {

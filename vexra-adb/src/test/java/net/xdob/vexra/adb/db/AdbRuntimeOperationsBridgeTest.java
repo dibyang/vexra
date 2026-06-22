@@ -93,11 +93,11 @@ class AdbRuntimeOperationsBridgeTest {
     File backupDir = new File(tempDir, "backup-dir");
     RowKey key = rowKey(7);
     try (LdbStore store = new LdbStore(storeDir.getAbsolutePath())) {
-      TxnManager manager = new TxnManager(store);
+      TxnManager manager = new TxnManager(store, true);
       putCommitted(manager, key, "before-backup");
 
       AdbRuntimeOperationsBridge bridge =
-          new AdbRuntimeOperationsBridge(store,
+          new AdbRuntimeOperationsBridge(store, manager,
               new InMemoryAdbControlPlaneClient(Collections.singletonList(
                   region("r1", new KeyRange(new byte[0], new byte[0]),
                       "node-a", 1, 1)), 100), "0.4.0-test");
@@ -107,11 +107,10 @@ class AdbRuntimeOperationsBridgeTest {
 
       bridge.backup(plan);
       putCommitted(manager, key, "after-backup");
+      assertEquals("after-backup", readVisible(manager, key));
       bridge.restore(plan);
 
-      RowValue value = manager.getVisible(manager.beginTransaction(), key);
-      assertNotNull(value);
-      assertEquals("before-backup", RowCodec.decode(value.payload).getString());
+      assertEquals("before-backup", readVisible(manager, key));
     }
   }
 
@@ -140,6 +139,18 @@ class AdbRuntimeOperationsBridgeTest {
     Transaction2 txn = manager.beginTransaction();
     manager.put(txn, key, rowValue(value));
     manager.commit(txn);
+  }
+
+  private static String readVisible(TxnManager manager, RowKey key)
+      throws Exception {
+    Transaction2 txn = manager.beginTransaction();
+    try {
+      RowValue value = manager.getVisible(txn, key);
+      assertNotNull(value);
+      return RowCodec.decode(value.payload).getString();
+    } finally {
+      manager.rollback(txn);
+    }
   }
 
   private static RowKey rowKey(long rowId) {

@@ -22,7 +22,7 @@ public class TxnManager {
    * committed row cache 默认校验底层 committed version 仍然存在，保护 restore 后读取不返回旧缓存。
    * 如需在纯本地压测中评估最短点查路径，可通过系统属性显式信任本进程提交后刷入的缓存项。
    */
-  private static final boolean TRUST_COMMITTED_ROW_CACHE =
+  private static final boolean DEFAULT_TRUST_COMMITTED_ROW_CACHE =
       Boolean.getBoolean("vexra.adb.rowCache.trustCommitted");
   private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
   private static final int RAW_ROW_KEY_PREFIX_LENGTH = 21;
@@ -45,6 +45,7 @@ public class TxnManager {
       new ConcurrentHashMap<>();
   private final Map<TabId, Object> rowCountLoadLocks =
       new ConcurrentHashMap<>();
+  private final boolean trustCommittedRowCache;
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -57,13 +58,31 @@ public class TxnManager {
   private volatile boolean detailedSqlDiagnostics;
 
   public TxnManager(DbStore store) {
+    this(store, DEFAULT_TRUST_COMMITTED_ROW_CACHE);
+  }
+
+  TxnManager(DbStore store, boolean trustCommittedRowCache) {
     this.store = store;
+    this.trustCommittedRowCache = trustCommittedRowCache;
     this.txnIdGen = new TxnIdGenerator(store);
     this.tsGen = new CommitTSGenerator(store);
   }
 
   public DbStore getStore() {
     return store;
+  }
+
+  /**
+   * 使所有从底层 store 派生的进程内缓存失效。
+   *
+   * <p>该方法用于 restore、region snapshot 安装等会整体替换 store 可见内容的运维边界。
+   * committed row cache 在压测模式下可以跳过物理版本校验，因此 restore 成功后必须主动清理；
+   * row-count 与 rowId hint 也同样来自持久化内容，需要一起失效。</p>
+   */
+  public void invalidateStoreDerivedCaches() {
+    committedRowCache.clear();
+    rowCountCache.clear();
+    maxRowIdHints.clear();
   }
 
   public LockManager getLockManager() {
@@ -871,7 +890,7 @@ public class TxnManager {
     if (cached == null || cached.commitTs > txn.getStartTs()) {
       return null;
     }
-    if (!TRUST_COMMITTED_ROW_CACHE
+    if (!trustCommittedRowCache
         && !cachedCommittedVersionExists(rowKey, cached.commitTs)) {
       committedRowCache.remove(rowKey, cached);
       return null;
@@ -895,7 +914,7 @@ public class TxnManager {
       if (cached == null || cached.commitTs > txn.getStartTs()) {
         return null;
       }
-      if (!TRUST_COMMITTED_ROW_CACHE) {
+      if (!trustCommittedRowCache) {
         long validateStarted = System.nanoTime();
         boolean exists = cachedCommittedVersionExists(rowKey, cached.commitTs);
         recordSqlPhase("ADB_VISIBLE_COMMITTED_CACHE_VALIDATE",
