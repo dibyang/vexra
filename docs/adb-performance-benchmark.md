@@ -2482,3 +2482,61 @@ benchmark：
 - 单独 `range_scan` 和 `table_count` 没有形成吞吐收益，外层 session 缓存只能算小幅边界收缩。
 - 第 5 项继续向前时，更大的收益应来自 segment/block-level count 或 ldb 层 count
   元数据，而不是继续压 JDBC 外层几个对象。
+
+## 第三十七轮：prepared 点查与写入快路径 session 缓存
+
+第三十六轮已经验证 prepared count 计划可以安全缓存 `SessionLocal`。本轮把同一策略扩展到
+两个高频入口：
+
+1. `AdbPreparedPointLookupPlan` 缓存当前 `PreparedStatement` 绑定连接的 `SessionLocal`，
+   重复 point lookup 不再每次 `connection.unwrap(JdbcConnection.class).getSession()`。
+2. `AdbPreparedInsertPlan` 缓存当前 insert 计划的 `SessionLocal`，覆盖 prepared insert
+   重复执行路径；literal insert 计划生命周期很短，但同一入口复用该实现。
+3. 新增 `repeatedPreparedPointLookupReusesPlanSession`，验证同一个 point lookup
+   `PreparedStatement` 更换参数重复执行仍返回正确行，并命中 `ADB_TABLE_POINT_LOOKUP_FAST`。
+4. 复用 `repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata` 验证 prepared insert
+   重复执行仍命中 `ADB_TABLE_BULK_ADD_ROW`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedPointLookupReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-session-cache-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | fast path avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 818.33 | 1011 | 2567 | 8035 | 9995 | 1206 (`ADB_TABLE_POINT_LOOKUP_FAST`) | `vexra-adb/build/adb-benchmark/point_lookup_prepared_session_cache_stage.properties` |
+| `insert` | `jdbc` | 1 | 659.78 | 1374 | 2675 | 3600 | 36230 | 485 (`ADB_TABLE_BULK_ADD_ROW`) | `vexra-adb/build/adb-benchmark/jdbc_insert_prepared_session_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2354.79 | 2498 | 8594 | 12967 | 662798 | 3153 (`ADB_TABLE_BULK_ADD_ROW`) | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_session_cache_stage.properties` |
+
+结论：
+
+- `insert` 单跑从第三十五轮 `497.59 ops/s` 提升到 `659.78 ops/s`，p99 从
+  `6788us` 降到 `3600us`，说明 prepared insert 快路径外层 session 缓存对写入入口有实际价值。
+- mixed 8 线程吞吐从第三十六轮 `2304.15 ops/s` 小幅提升到 `2354.79 ops/s`，
+  分配从 `711170` 降到 `662798 bytes/op`；p99 从 `12078us` 波动到 `12967us`。
+- `point_lookup` 单跑本轮结果低于第三十四轮，且 allocation 仍约 `10KB/op`，说明点查剩余瓶颈
+  不在 `Connection.unwrap(...)`，而更可能在 ldb 读取边界、版本扫描和结果集对象路径。
+- 到本轮为止，ADB 侧 prepared plan 外层 session/table/column 元数据缓存基本完成。后续更有价值的优化
+  应优先转向：
+  1. ldb cursor raw-view / reusable-entry，减少 range count 和 point lookup 的 key/value 拷贝；
+  2. 写入端 group commit / write batch 聚合，降低普通 JDBC insert 的提交成本；
+  3. segment/block-level count 元数据，避免 range count 对大量 entry 做可见性扫描。

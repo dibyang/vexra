@@ -2859,3 +2859,71 @@ Conclusion:
 - Further item 5 work needs a larger mechanism such as segment/block-level count
   or ldb-level count metadata, rather than continuing to shave a few JDBC outer
   objects.
+
+## Round 37: Prepared Point-Lookup and Write Fast-Path Session Cache
+
+Round 36 verified that prepared count plans can safely cache `SessionLocal`.
+This round applies the same strategy to two high-frequency entries:
+
+1. `AdbPreparedPointLookupPlan` caches the `SessionLocal` bound to the current
+   `PreparedStatement` connection, avoiding repeated
+   `connection.unwrap(JdbcConnection.class).getSession()` on point lookup.
+2. `AdbPreparedInsertPlan` caches the `SessionLocal` for repeated prepared
+   insert execution; literal insert plans are short-lived but share the same
+   implementation.
+3. `repeatedPreparedPointLookupReusesPlanSession` verifies that re-executing the
+   same point-lookup `PreparedStatement` with different parameters still returns
+   the correct rows and hits `ADB_TABLE_POINT_LOOKUP_FAST`.
+4. `repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata` continues to
+   verify that repeated prepared insert execution hits `ADB_TABLE_BULK_ADD_ROW`.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedPointLookupReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-session-cache-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | fast path avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 818.33 | 1011 | 2567 | 8035 | 9995 | 1206 (`ADB_TABLE_POINT_LOOKUP_FAST`) | `vexra-adb/build/adb-benchmark/point_lookup_prepared_session_cache_stage.properties` |
+| `insert` | `jdbc` | 1 | 659.78 | 1374 | 2675 | 3600 | 36230 | 485 (`ADB_TABLE_BULK_ADD_ROW`) | `vexra-adb/build/adb-benchmark/jdbc_insert_prepared_session_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2354.79 | 2498 | 8594 | 12967 | 662798 | 3153 (`ADB_TABLE_BULK_ADD_ROW`) | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_session_cache_stage.properties` |
+
+Conclusion:
+
+- Standalone `insert` improved from Round 35's `497.59 ops/s` to
+  `659.78 ops/s`, and p99 moved from `6788us` to `3600us`. The prepared insert
+  outer session cache has real value for the write entry.
+- Mixed 8-thread throughput moved slightly from Round 36's `2304.15 ops/s` to
+  `2354.79 ops/s`, and allocation moved from `711170` to
+  `662798 bytes/op`; p99 fluctuated from `12078us` to `12967us`.
+- Standalone `point_lookup` was lower than Round 34, with allocation still near
+  `10KB/op`. Its remaining bottleneck is unlikely to be `Connection.unwrap(...)`
+  and is more likely in the ldb read boundary, version scan, or result-set object
+  path.
+- At this point the ADB-side prepared-plan outer session/table/column metadata
+  caching work is mostly complete. The higher-value next optimizations are:
+  1. ldb cursor raw-view / reusable-entry to reduce key/value copies in range
+     count and point lookup;
+  2. write-side group commit / write batch aggregation to reduce ordinary JDBC
+     insert commit cost;
+  3. segment/block-level count metadata to avoid visibility scans over many
+     entries during range count.

@@ -38,6 +38,7 @@ final class AdbPreparedInsertPlan {
   private AdbTable resolvedTable;
   private Column[] cachedTableColumns;
   private Column[] cachedInsertColumns;
+  private SessionLocal cachedSession;
 
   private AdbPreparedInsertPlan(String tableName, List<String> columnNames,
       int rowCount, List<Object> literalValues) {
@@ -136,7 +137,7 @@ final class AdbPreparedInsertPlan {
     if (!hasAllParameters(parameters, parameterSet)) {
       return null;
     }
-    SessionLocal session = session(connection);
+    SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
@@ -160,7 +161,7 @@ final class AdbPreparedInsertPlan {
     if (literalValues == null || literalValues.size() != parameterCount()) {
       return null;
     }
-    SessionLocal session = session(connection);
+    SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
@@ -288,13 +289,24 @@ final class AdbPreparedInsertPlan {
     return cachedInsertColumns;
   }
 
-  private static SessionLocal session(Connection connection) throws SQLException {
+  /**
+   * 返回当前 insert 计划绑定连接的 H2 session。
+   *
+   * <p>prepared insert 计划随 PreparedStatement 创建；literal 计划只服务单次
+   * Statement 执行。缓存 session 可以减少重复 executeUpdate 时的 unwrap 和类型检查成本。</p>
+   */
+  private SessionLocal resolveSession(Connection connection)
+      throws SQLException {
+    if (cachedSession != null) {
+      return cachedSession;
+    }
     Session session = connection.unwrap(JdbcConnection.class).getSession();
     if (!(session instanceof SessionLocal)) {
       throw new SQLException("Unsupported H2 session type: "
           + session.getClass().getName());
     }
-    return (SessionLocal) session;
+    cachedSession = (SessionLocal) session;
+    return cachedSession;
   }
 
   private static Value toValue(SessionLocal session, Object value) {

@@ -43,6 +43,7 @@ final class AdbPreparedPointLookupPlan {
   private AdbTable resolvedTable;
   private List<String> resolvedSelectColumns;
   private int[] resolvedColumnIds;
+  private SessionLocal cachedSession;
   private final ConcurrentHashMap<Long, CachedColumnValues> decodedColumnCache =
       new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Long, CachedSingleColumnValue>
@@ -131,7 +132,7 @@ final class AdbPreparedPointLookupPlan {
         || parameterSet.length <= 1 || !parameterSet[1]) {
       return null;
     }
-    SessionLocal session = session(connection);
+    SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
@@ -340,13 +341,24 @@ final class AdbPreparedPointLookupPlan {
     return table instanceof AdbTable ? (AdbTable) table : null;
   }
 
-  private static SessionLocal session(Connection connection) throws SQLException {
+  /**
+   * 返回当前 PreparedStatement 绑定连接的 H2 session。
+   *
+   * <p>点查计划随 PreparedStatement 创建，生命周期绑定单个 JDBC 连接；缓存 session
+   * 可以避免每次 point lookup 快路径执行都重复 unwrap 和类型检查。</p>
+   */
+  private SessionLocal resolveSession(Connection connection)
+      throws SQLException {
+    if (cachedSession != null) {
+      return cachedSession;
+    }
     Session session = connection.unwrap(JdbcConnection.class).getSession();
     if (!(session instanceof SessionLocal)) {
       throw new SQLException("Unsupported H2 session type: "
           + session.getClass().getName());
     }
-    return (SessionLocal) session;
+    cachedSession = (SessionLocal) session;
+    return cachedSession;
   }
 
   private static long toLong(Object value) throws SQLException {
