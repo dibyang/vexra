@@ -712,11 +712,12 @@ public class AdbTable extends TableBase {
     map.setSavepoint(savepointId);
     int count = 0;
     try {
-      List<BulkRowWrite> rowWrites = new ArrayList<>(rows.size());
-      Set<Long> rowIds = new HashSet<>();
+      long txnId = map.getTransaction().getTxnId();
+      TabId tabId = map.getTabId(getId());
+      Set<Long> rowIds = new HashSet<>(hashCapacity(rows.size()));
       for (Row row : rows) {
         prepareBulkRow(row);
-        RowKey rowKey = RowKey.of(map.getTabId(getId()), row.getKey());
+        RowKey rowKey = RowKey.of(tabId, row.getKey());
         if (!rowIds.add(row.getKey())) {
           throw duplicateKey(row.getKey(), null);
         }
@@ -727,11 +728,7 @@ public class AdbTable extends TableBase {
             throw duplicateKey(row.getKey(), old);
           }
         }
-        rowWrites.add(new BulkRowWrite(rowKey,
-            rowValue(map.getTransaction().getTxnId(), row), old));
-      }
-      for (BulkRowWrite rowWrite : rowWrites) {
-        map.putEncoded(rowWrite.rowKey, rowWrite.value, rowWrite.oldValue);
+        map.putEncoded(rowKey, rowValue(txnId, row), old);
       }
       for (Index index : indexes) {
         if (index instanceof AdbSecondaryIndex) {
@@ -768,6 +765,13 @@ public class AdbTable extends TableBase {
         && old.payload.length > 0;
   }
 
+  /**
+   * 为同批主键去重集合预估容量，避免 bulk insert 热路径中发生 HashSet 扩容。
+   */
+  private static int hashCapacity(int expectedSize) {
+    return Math.max(16, (int) (expectedSize / 0.75F) + 1);
+  }
+
   private void prepareBulkRow(Row row) {
     if (primaryIndex.getMainIndexColumn() == SearchRow.ROWID_INDEX) {
       if (row.getKey() == 0) {
@@ -796,18 +800,6 @@ public class AdbTable extends TableBase {
         getName() + " primary key " + rowId + ' ' + oldRow);
     e.setSource(primaryIndex);
     return e;
-  }
-
-  private static final class BulkRowWrite {
-    private final RowKey rowKey;
-    private final RowValue value;
-    private final RowValue oldValue;
-
-    private BulkRowWrite(RowKey rowKey, RowValue value, RowValue oldValue) {
-      this.rowKey = rowKey;
-      this.value = value;
-      this.oldValue = oldValue;
-    }
   }
 
   @Override

@@ -695,6 +695,31 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rollsBackEarlierBulkRowsWhenSameBatchContainsDuplicatePrimaryKey() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-same-batch-duplicate").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+
+                AdbTable table = adbTable(connection, "TEST");
+                DbException error = Assertions.assertThrows(DbException.class,
+                        () -> table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                                row(1L, "first"),
+                                row(2L, "second"),
+                                row(1L, "duplicate"))));
+                Assertions.assertTrue(error.getMessage().contains("primary key"), error.getMessage());
+                Assertions.assertEquals(0L, countRows(statement));
+                connection.rollback();
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void bulkInsertsRowsAndSecondaryIndexEntries() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-secondary-index").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

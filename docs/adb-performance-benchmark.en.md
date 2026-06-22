@@ -1780,3 +1780,101 @@ Next analysis guidance:
 - If JFR proves Proxy/handler allocation is dominant, implement a dedicated
   `ResultSet` class next; otherwise continue reducing `TxnMap2.getVisible` and
   table-engine/JDBC entry overhead.
+
+## Round 22: Mixed 8-Thread JFR Capture and Bulk Write Entry Cleanup
+
+This round first ran the full `mixed` 8-thread JFR benchmark required by the
+performance plan, instead of guessing whether Proxy / ResultSet allocations are
+dominant:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 `
+  -Workload mixed `
+  -Rows 5000 `
+  -WarmupOperations 300 `
+  -Operations 3000 `
+  -Threads 8 `
+  -OutputDir vexra-adb/build/adb-benchmark/jfr-mixed-8
+```
+
+Capture result:
+
+| File | Result |
+| --- | --- |
+| `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.jfr` | generated, 947880 bytes |
+| `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.properties` | `passed=true`, `mixed` 3000 operations |
+
+The local JDK 8 only provides `jcmd`; it does not provide `jfr.exe`, JDK
+Mission Control, or a local JFR parser jar. Therefore this round could not
+print allocation hot spots offline on this machine. To make the analysis
+repeatable on a machine with tooling, this round adds
+`scripts/adb-jfr-hotspots.ps1`. With a JDK 11+ `jfr` CLI, it exports:
+
+1. `summary.txt`
+2. `allocation-events.txt`
+3. `execution-samples.txt`
+4. `adb-focus.txt`, matching `java.lang.reflect.Proxy`,
+   `AdbSimpleResultSet`, `AdbPreparedStatementProxy`, `TxnMap2.getVisible`,
+   `DefaultVisibleRowResolver`, `RowValue.decodeValue`, `RowCodec`, and
+   commit/write-batch related terms.
+
+Usage:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 `
+  -JfrFile vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.jfr
+```
+
+The same JFR capture produced this `mixed` 8-thread result:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2401.92 | 2268 | 7832 | 11594 | 683419 | `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.properties` |
+
+Because local JFR tooling still has not proven Proxy / ResultSet allocations as
+the dominant source, this round did not implement a dedicated `ResultSet`.
+Instead, it made a conservative cleanup in the `BULK_ADD_ROW` entry that SQL
+diagnostics already show as still expensive:
+
+1. `bulkInsertAppendRows` no longer builds a `BulkRowWrite` list and then
+   iterates the batch a second time.
+2. Each batch resolves `txnId` and `TabId` once, instead of repeating that work
+   for each row.
+3. The same-batch primary-key `HashSet` is initialized from the expected batch
+   size to reduce resize churn.
+4. The existing savepoint boundary is preserved: primary-key conflicts, unique
+   index conflicts, and secondary-index write failures still roll back the full
+   batch.
+
+A new test covers the main semantic risk: if a later row in the same batch has
+a duplicate primary key, earlier rows already written by the direct path must
+be rolled back.
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Verification result: passed.
+
+Sequential benchmark result:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 819.00 | 972 | 2604 | 3600 | 37504 | `vexra-adb/build/adb-benchmark/insert_bulk_direct_write_stage_r3.properties` |
+| `mixed` | 8 | 2479.34 | 2242 | 8142 | 11505 | 733347 | `vexra-adb/build/adb-benchmark/jdbc_mixed_bulk_direct_write_stage_r3.properties` |
+
+Conclusion:
+
+- The `mixed` 8-thread result stayed close to the Round 20 measured-window
+  result, so the bulk write entry cleanup did not damage the combined path.
+- The `insert` p50/p95/p99 values improved clearly versus the r2 sequential
+  rerun, which is a positive signal for removing intermediate write objects and
+  repeated per-row table lookup. This still needs longer repeated runs before it
+  should be treated as a stable headline number.
+- The `mixed` `allocation.bytesPerOperation` is still about `733KB/op`, which
+  means the removed `BulkRowWrite` objects are not the dominant allocation
+  source.
+- Until JFR CLI / JMC output proves Proxy / ResultSet allocation dominance, the
+  dedicated `ResultSet` work remains intentionally deferred. The next valuable
+  step is to export `adb-focus.txt` in a JFR-capable environment or continue
+  splitting the `TxnMap2.getVisible` / write-batch internal phases.

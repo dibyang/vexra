@@ -1548,3 +1548,84 @@ smoke test 结果：
   handler、`TxnMap2.getVisible`、`RowValue.decodeValue`、`PreparedStatement` proxy 调用栈。
 - 若 JFR 证明 Proxy/handler 分配是大头，再考虑实现专用 `ResultSet` 类；否则继续压
   `TxnMap2.getVisible` 和 table-engine/JDBC 外层入口。
+
+## 第二十二轮：mixed 8 线程 JFR 采集与 bulk 写入口低分配整理
+
+本轮先按性能优化计划跑完整 `mixed` 8 线程 JFR，不再基于猜测判断 Proxy / ResultSet
+是否是对象分配大头：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 `
+  -Workload mixed `
+  -Rows 5000 `
+  -WarmupOperations 300 `
+  -Operations 3000 `
+  -Threads 8 `
+  -OutputDir vexra-adb/build/adb-benchmark/jfr-mixed-8
+```
+
+采集结果：
+
+| 文件 | 结果 |
+| --- | --- |
+| `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.jfr` | 已生成，947880 bytes |
+| `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.properties` | `passed=true`，`mixed` 3000 operations |
+
+本地 JDK 8 只有 `jcmd`，没有 `jfr.exe` / JDK Mission Control / JFR parser
+jar，因此本轮无法在本机离线打印 allocation hot spots。为保证后续可以复现分析，
+新增 `scripts/adb-jfr-hotspots.ps1`：在具备 JDK 11+ `jfr` CLI 的环境上，对指定
+`.jfr` 导出：
+
+1. `summary.txt`
+2. `allocation-events.txt`
+3. `execution-samples.txt`
+4. `adb-focus.txt`，聚合 `java.lang.reflect.Proxy`、`AdbSimpleResultSet`、
+   `AdbPreparedStatementProxy`、`TxnMap2.getVisible`、`DefaultVisibleRowResolver`、
+   `RowValue.decodeValue`、`RowCodec` 和 commit/write batch 相关关键词。
+
+使用方式：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 `
+  -JfrFile vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.jfr
+```
+
+JFR 采集同轮的 `mixed` 8 线程结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2401.92 | 2268 | 7832 | 11594 | 683419 | `vexra-adb/build/adb-benchmark/jfr-mixed-8/adb-mixed-20260622-112110.properties` |
+
+由于 JFR 尚未能在本机解析出 Proxy / ResultSet allocation 大头，本轮没有贸然实现专用
+`ResultSet`，而是先推进已经由 SQL diagnostics 证明仍较高的 `BULK_ADD_ROW` 入口整理：
+
+1. `bulkInsertAppendRows` 去掉 `BulkRowWrite` 中间列表，不再先构造整批写入封装对象再二次遍历。
+2. 每批只解析一次 `txnId` 和 `TabId`，避免每行重复读取事务 id 和表 epoch 缓存。
+3. `HashSet` 按批大小预估容量，减少同批主键去重集合扩容。
+4. 仍保留 savepoint 保护：任何主键冲突、唯一索引冲突或二级索引写入失败都会回滚整批。
+
+新增测试覆盖同批重复主键时已经写入的前置行必须被回滚：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+顺序 benchmark 结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 819.00 | 972 | 2604 | 3600 | 37504 | `vexra-adb/build/adb-benchmark/insert_bulk_direct_write_stage_r3.properties` |
+| `mixed` | 8 | 2479.34 | 2242 | 8142 | 11505 | 733347 | `vexra-adb/build/adb-benchmark/jdbc_mixed_bulk_direct_write_stage_r3.properties` |
+
+结论：
+
+- `mixed` 8 线程与第 20 轮正式窗口结果接近，说明本轮 bulk 写入口整理没有破坏综合路径。
+- `insert` p50/p95/p99 明显好于 r2 顺序复跑，说明批写入口减少中间对象和重复查表有正向效果，但该结果仍需多轮长跑确认。
+- `mixed` 的 `allocation.bytesPerOperation` 仍约 `733KB/op`，说明最大分配源不在被移除的
+  `BulkRowWrite` 小对象上；后续仍需依赖 JFR CLI / JMC 输出确认 Proxy、ResultSet、
+  visible row、decode 和 commit/write batch 的真实占比。
+- 在没有 JFR 证据证明 Proxy / ResultSet 是大头前，暂不实现专用 `ResultSet`；下一步更有价值的是在
+  JFR 可解析环境导出 `adb-focus.txt`，或继续拆 `TxnMap2.getVisible` / write batch
+  内部阶段。
