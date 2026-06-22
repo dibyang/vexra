@@ -2363,3 +2363,68 @@ Conclusion:
   bulk unique-check work; it is breaking down `ADB_COMMIT_WRITE`, write batch,
   and fsync cost, or making more ordinary JDBC scenarios truly aggregate into
   batched commits.
+
+## Round 30: Commit Write Encoding Without RowValue Copy
+
+Round 29 showed that plain single-row `jdbc insert` was still slow, and
+`ADB_COMMIT_WRITE` remained a stable visible write-stage cost. This round makes
+a narrow low-risk allocation optimization: local commit write batch no longer
+calls `copyForCommit(...)` to create a temporary `RowValue` for every written
+key. Instead, encoding writes the current `commitTs` directly into the bytes.
+
+Changes:
+
+1. `RowValue.encodeValue(RowValue, long commitTs)` adds an overload that
+   overrides the encoded commit timestamp without mutating the source object.
+2. `TxnManager.commitLocalDirect(...)` uses this overload when writing local
+   committed versions.
+3. `RowValueTest.encodeValueWithCommitTsDoesNotMutateSource` covers the
+   encoded result and source-object immutability.
+4. `refreshCommittedRowCache(...)` still keeps its post-commit cache copy, so
+   transaction-local objects are not exposed directly through committed cache.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-commit-encode-override-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-commit-encode-override-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-commit-encode-override-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 470.29 | 2129 | 3362 | 4412 | 36698 | 19 | `vexra-adb/build/adb-benchmark/jdbc_insert_commit_encode_override_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2419.35 | 2379 | 8125 | 11401 | 662984 | 54 | `vexra-adb/build/adb-benchmark/jdbc_mixed_commit_encode_override_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 68181.82 | 13 | 20 | 20 | 2836 | - | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_commit_encode_override_stage.properties` |
+
+Conclusion:
+
+- This round removes one temporary `RowValue` copy object per row from the local
+  commit write batch, which directly advances the item 1/4 goal of reducing
+  commit / write batch objects.
+- Plain `jdbc insert` allocation dropped from Round 29's `38034` to `36698`
+  bytes/op, but throughput and p99 regressed in this short run, so this is not
+  recorded as a throughput win.
+- Mixed 8-thread allocation stayed in the same range as Round 29, while
+  throughput moved from `2572.90 ops/s` down to `2419.35 ops/s`. The change is
+  too small to dominate point lookup, range count, and storage-write variance.
+- The next write optimization should target larger structural costs inside
+  `ADB_COMMIT_WRITE`: `VersionKey.toBytes()`, `RowValue.encodeValue()`,
+  `AdbWriteBatch` entry allocation, and lower-level ldb write batch / fsync,
+  rather than only removing one Java copy object.

@@ -1298,9 +1298,9 @@ public class TxnManager {
       List<Meta> metas) throws SQLException {
     store.writeBatch(batch -> {
       for (Map.Entry<DataKey, RowValue> entry : txn.getWriteSet().entrySet()) {
-        RowValue rowValue = copyForCommit(entry.getValue(), commitTs);
         VersionKey versionKey = VersionKey.of(entry.getKey(), true, commitTs);
-        batch.put(versionKey.toBytes(), RowValue.encodeValue(rowValue));
+        batch.put(versionKey.toBytes(),
+            RowValue.encodeValue(entry.getValue(), commitTs));
       }
       if (metas != null) {
         for (Meta meta : metas) {

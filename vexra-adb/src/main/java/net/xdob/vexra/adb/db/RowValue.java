@@ -11,9 +11,24 @@ public class RowValue {
 
   // -------------------- 缂栫爜/瑙ｇ爜 --------------------
   public static byte[] encodeValue(RowValue value) {
+    return encodeValue(value, value.commitTs);
+  }
+
+  /**
+   * 使用指定 commitTs 编码 row value，但不修改传入对象。
+   *
+   * <p>本地 commit 写 batch 会把事务本地 write set 中的未提交 RowValue 写成 committed
+   * version。该路径只需要落盘字节里的 commitTs 变为真实提交时间，不需要为每一行复制一个
+   * 临时 RowValue 对象；传入对象仍保持事务内状态，提交失败时可以继续用于重试或回滚。</p>
+   *
+   * @param value 待编码的 row value
+   * @param commitTs 写入字节中的提交时间戳
+   * @return 可持久化的 row value 字节
+   */
+  public static byte[] encodeValue(RowValue value, long commitTs) {
     DynamicByteBuffer buffer = DynamicByteBuffer.c();
     buffer.putLong(value.txnId);
-    buffer.putLong(value.commitTs);
+    buffer.putLong(commitTs);
     buffer.put(value.deleted ? (byte) 1 : (byte) 0);
     buffer.putBytesWithLength(value.payload);
     return buffer.toArray();

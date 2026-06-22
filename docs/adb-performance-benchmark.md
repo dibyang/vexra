@@ -2035,3 +2035,58 @@ benchmark：
   `1004.35 ops/s`。本轮单行分支已经避免了多行批处理额外循环，因此下一阶段若继续优化写入，
   最有价值的方向不是再拆 bulk 唯一性判定，而是拆 `ADB_COMMIT_WRITE` / write batch / fsync
   路径，或让更多普通 JDBC 场景真正聚合成批量提交。
+
+## 第三十轮：commit 写入编码少一次 RowValue 复制
+
+第二十九轮显示普通单行 `jdbc insert` 仍慢，且 `ADB_COMMIT_WRITE` 是写入阶段里稳定可见的成本。
+本轮先做一个低风险对象分配优化：本地 commit 写 batch 不再为每个写入 key 调用
+`copyForCommit(...)` 创建临时 `RowValue`，而是在编码时直接写入本次 `commitTs`。
+
+改动：
+
+1. `RowValue.encodeValue(RowValue, long commitTs)` 新增“覆盖编码 commitTs 但不修改源对象”的重载。
+2. `TxnManager.commitLocalDirect(...)` 在本地 durable commit 写入 committed version 时直接使用该重载。
+3. `RowValueTest.encodeValueWithCommitTsDoesNotMutateSource` 覆盖编码结果和源对象不变性。
+4. `refreshCommittedRowCache(...)` 仍保留提交后 cache 副本，避免把事务本地对象直接暴露给 committed cache。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-commit-encode-override-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-commit-encode-override-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_commit_encode_override_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-commit-encode-override-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 470.29 | 2129 | 3362 | 4412 | 36698 | 19 | `vexra-adb/build/adb-benchmark/jdbc_insert_commit_encode_override_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2419.35 | 2379 | 8125 | 11401 | 662984 | 54 | `vexra-adb/build/adb-benchmark/jdbc_mixed_commit_encode_override_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 68181.82 | 13 | 20 | 20 | 2836 | - | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_commit_encode_override_stage.properties` |
+
+结论：
+
+- 本轮减少了本地 commit 写 batch 中每行一个临时 `RowValue` 复制对象，符合第 1/4 项里对
+  commit / write batch 相关对象的收缩目标。
+- 普通 `jdbc insert` 的 `allocation.bytesPerOperation` 从第二十九轮 `38034` 降到 `36698`，
+  但吞吐和 p99 在本次短跑里变差，不能把它记为吞吐优化。
+- mixed 8 线程分配与第二十九轮基本同量级，吞吐从 `2572.90 ops/s` 回落到 `2419.35 ops/s`；
+  该改动太小，不足以抵消 point lookup / range count / 磁盘写入波动。
+- 下一阶段如果继续优化写入，应继续拆更大的结构性成本：`ADB_COMMIT_WRITE` 内的
+  `VersionKey.toBytes()`、`RowValue.encodeValue()`、`AdbWriteBatch` entry 分配、底层 ldb
+  write batch / fsync，而不是只减少单个 Java 对象复制。
