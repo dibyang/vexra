@@ -951,6 +951,75 @@ replace `-PadbBenchmarkWorkload` with `insert`, `range_scan`, `table_count`, or
 | `table_count` | `vexra-adb/build/adb-benchmark/table_count_allocation_stage.properties` |
 | `primary_find` | `vexra-adb/build/adb-benchmark/primary_find_allocation_stage.properties` |
 
+## Round 16 Range Count Raw-Key Low-Allocation Scan
+
+This round targets the high allocation hotspot exposed by Round 15's
+`range_scan` split. `TxnManager.countVisibleRows` now has a raw-key fast path
+when the current transaction has no local writes:
+
+1. If `txn.getWriteSet().isEmpty()`, range count no longer constructs
+   `VersionKey`, `DataKey`, and row-prefix byte arrays for every logical row.
+   It decodes `rowId` and the committed flag directly from the fixed offsets
+   in the version-row key.
+2. Logical-row grouping compares the first 21 bytes of the raw key and still
+   uses `RowValue.decodeMetadata` for `commitTs`, `deleted`, and payload
+   existence checks.
+3. As soon as the transaction has local insert/delete entries, the old
+   conservative path remains in use, preserving same-transaction local write,
+   rollback, and store-version override semantics.
+4. `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` was added as a phase metric to confirm
+   whether prepared range count hits the raw-key path.
+
+Verification command:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest
+```
+
+Reproducible results:
+
+| Mode | Workload | Throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `range_scan` | 1676.91 | 419 | 1445 | 1880 | 501959 | `vexra-adb/build/adb-benchmark/range_count_raw_stage.properties` |
+| `jdbc` | `mixed` | 1417.77 | 473 | 1641 | 3282 | 111014 | `vexra-adb/build/adb-benchmark/jdbc_mixed_range_raw_stage.properties` |
+
+Compared with Round 15's allocation split, `range_scan` improves from
+`1209.68 ops/s` to `1676.91 ops/s`, and allocation drops from
+`1245527 bytes/op` to `501959 bytes/op`. The `mixed` workload improves from
+`934.87 ops/s` to `1417.77 ops/s`, with allocation dropping from
+`275308 bytes/op` to `111014 bytes/op`. This confirms that the heaviest
+current range-count cost is per-row key materialization rather than ldb itself.
+Further range-count work should move toward segment / block-level count; for
+mixed-workload optimization, priority should return to `POINT_LOOKUP_FAST`,
+`PRIMARY_FIND`, and ordinary write-entry object boundaries.
+
+Range-count raw-key reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-raw-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=range_scan" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_raw_stage.properties"
+```
+
+Mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-range-raw-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkBatchSize=100" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_raw_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

@@ -379,6 +379,8 @@ class AdbTableProviderIntegrationTest {
                     .snapshot();
             Assertions.assertTrue(snapshot.getOperationStats().containsKey(
                     "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertFalse(snapshot.getOperationStats().containsKey(
                     "ADB_TABLE_PRIMARY_FIND TEST"), snapshot.getOperationStats().keySet().toString());
         } finally {

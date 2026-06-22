@@ -25,6 +25,10 @@ public class TxnManager {
   private static final boolean TRUST_COMMITTED_ROW_CACHE =
       Boolean.getBoolean("vexra.adb.rowCache.trustCommitted");
   private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
+  private static final int RAW_ROW_KEY_PREFIX_LENGTH = 21;
+  private static final int RAW_VERSION_ROW_KEY_LENGTH = 30;
+  private static final int RAW_ROW_ID_OFFSET = 13;
+  private static final int RAW_COMMITTED_OFFSET = 21;
 
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
@@ -658,6 +662,11 @@ public class TxnManager {
         tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
 
     byte[] tablePrefix = prefixKey.toBytes();
+    if (txn.getWriteSet().isEmpty()) {
+      return countVisibleRowsWithoutLocalWrites(txn, prefixKey, tablePrefix,
+          min, max);
+    }
+
     Set<DataKey> localRowsCoveredByStoreScan = new HashSet<>();
     long count = 0L;
 
@@ -704,6 +713,50 @@ public class TxnManager {
 
     return count + countLocalRowsMissingFromStore(txn, tablePrefix, min, max,
         localRowsCoveredByStoreScan);
+  }
+
+  private long countVisibleRowsWithoutLocalWrites(Transaction2 txn,
+      PrefixKey prefixKey, byte[] tablePrefix, Long min, Long max) {
+    long started = System.nanoTime();
+    long count = 0L;
+
+    try {
+      try (VersionScanSource scan =
+          store.openVersionScanSource(ScanDirection.FORWARD)) {
+        scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
+            tableScanEndKey(prefixKey, max));
+
+        while (scan.isValid() && TableScanCursor.startsWith(scan.key(),
+            tablePrefix)) {
+          byte[] rawKey = scan.key();
+          if (!isRawVersionRowKey(rawKey)) {
+            break;
+          }
+          long rowId = rawRowId(rawKey);
+
+          if (!inRowIdRange(rowId, min, max)) {
+            if (max != null && rowId > max) {
+              break;
+            }
+            skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+            continue;
+          }
+
+          if (resolveVisibleCountableInCurrentRawLogicalRow(scan, rawKey,
+              txn.getStartTs())) {
+            count++;
+          }
+        }
+      }
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    } finally {
+      recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT_RAW",
+          System.nanoTime() - started);
+    }
+    return count;
   }
 
 
@@ -1061,6 +1114,29 @@ public class TxnManager {
     return false;
   }
 
+  private static boolean resolveVisibleCountableInCurrentRawLogicalRow(
+      VersionScanSource scan, byte[] firstRowKey, long startTs) {
+    while (scan.isValid()) {
+      byte[] rawKey = scan.key();
+      if (!sameRawLogicalRow(rawKey, firstRowKey)) {
+        return false;
+      }
+      if (!isRawCommittedVersion(rawKey)) {
+        scan.advance();
+        continue;
+      }
+
+      RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
+      if (metadata != null && metadata.commitTs <= startTs) {
+        skipCurrentRawLogicalRow(scan, null, firstRowKey);
+        return !metadata.deleted && metadata.hasPayload();
+      }
+
+      scan.advance();
+    }
+    return false;
+  }
+
   private static long countLocalRowsMissingFromStore(Transaction2 txn,
       byte[] tablePrefix, Long minRowId, Long maxRowId,
       Set<DataKey> rowsCoveredByStoreScan) {
@@ -1121,6 +1197,70 @@ public class TxnManager {
         return;
       }
     }
+  }
+
+  private static void skipCurrentRawLogicalRow(VersionScanSource scan,
+      byte[] tablePrefix, byte[] currentRowKey) {
+    while (scan.isValid()) {
+      scan.advance();
+      if (!scan.isValid()) {
+        return;
+      }
+
+      byte[] key = scan.key();
+      if (tablePrefix != null
+          && !TableScanCursor.startsWith(key, tablePrefix)) {
+        return;
+      }
+      if (!sameRawLogicalRow(key, currentRowKey)) {
+        return;
+      }
+    }
+  }
+
+  private static boolean isRawVersionRowKey(byte[] rawKey) {
+    return rawKey != null && rawKey.length == RAW_VERSION_ROW_KEY_LENGTH;
+  }
+
+  private static boolean isRawCommittedVersion(byte[] rawKey) {
+    return isRawVersionRowKey(rawKey)
+        && rawKey[RAW_COMMITTED_OFFSET] == (byte) 1;
+  }
+
+  private static boolean sameRawLogicalRow(byte[] rawKey,
+      byte[] firstRowKey) {
+    if (!isRawVersionRowKey(rawKey) || !isRawVersionRowKey(firstRowKey)) {
+      return false;
+    }
+    for (int i = 0; i < RAW_ROW_KEY_PREFIX_LENGTH; i++) {
+      if (rawKey[i] != firstRowKey[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 直接从 VersionRowKey 的磁盘编码中解析 rowId。
+   *
+   * <p>该方法只服务于无本地写事务的 range count 快路径，依赖
+   * VersionRowKey 当前的固定布局：table header(13) + rowId(8) +
+   * committed(1) + version(8)。如果未来 key 编码变更，必须同步更新这些
+   * RAW_* offset 常量，或让快路径回退到对象化解析。</p>
+   */
+  private static long rawRowId(byte[] rawKey) {
+    return Key.flipSign(readLong(rawKey, RAW_ROW_ID_OFFSET));
+  }
+
+  private static long readLong(byte[] data, int offset) {
+    return ((long) (data[offset] & 0xff) << 56)
+        | ((long) (data[offset + 1] & 0xff) << 48)
+        | ((long) (data[offset + 2] & 0xff) << 40)
+        | ((long) (data[offset + 3] & 0xff) << 32)
+        | ((long) (data[offset + 4] & 0xff) << 24)
+        | ((long) (data[offset + 5] & 0xff) << 16)
+        | ((long) (data[offset + 6] & 0xff) << 8)
+        | (long) (data[offset + 7] & 0xff);
   }
 
   private static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
