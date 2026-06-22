@@ -3007,3 +3007,76 @@ benchmark：
   value 读取。
 - 第 5 项剩余的高价值工作已经不在 ADB 层小修小补：需要 segment/block-level count 元数据，
   或让 `vexra-ldb` 提供 raw/reusable cursor，才能真正压低 `range_scan/mixed` allocation。
+
+## 第四十五轮：本地 write batch 直写 delegate
+
+本轮继续第 4 项 commit / write batch 相关优化。JFR 复核显示 `commit / write batch`
+仍是 ADB 层可见分配来源之一；同时 `LdbStore.writeBatch(...)` 和 `RocksStore.writeBatch(...)`
+原先会先把每个 `put/delete/deleteRange` 包装成 `WriteEn` 放入 `AdbWriteBatch.entries`，
+再二次写入底层 native write batch。这个中间层对 Raft/远端复制有价值，因为它需要把写入
+序列化成协议消息；但对本地 LDB/Rocks commit 与 bulk insert 来说，只会额外产生对象和
+列表扩容。
+
+本轮改动：
+
+1. `AdbWriteBatch` 增加 direct delegate 模式：本地 store 可以把 `put/delete/deleteRange`
+   直接转发到底层 `DelegateWriteBatch`。
+2. `LdbStore.writeBatch(...)` 和 `RocksStore.writeBatch(...)` 改为 direct 模式，不再创建
+   `WriteEn` 中间对象，也不再执行 `AdbWriteBatch.writeTo(...)` 的二次转写。
+3. 默认 `new AdbWriteBatch(store)` 仍保留 entries 收集模式，`RaftStore` 继续使用该模式组装
+   `WriteEntry` 协议消息，避免改变远端复制语义。
+4. 直写模式下底层 `SQLException` 会包装为 `DirectWriteBatchException`，外层 store 负责还原
+   为 `SQLException`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:compileJava
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbWriteBatchTest --tests net.xdob.vexra.adb.ldb.LdbStoreReliabilityTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.appendsMultipleBulkBatchesInOneTransaction --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicatePrimaryKeyThroughBulkInsertPath --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `AdbWriteBatchTest.shouldWriteDirectlyToDelegateWithoutCollectingEntries` 覆盖 direct 模式会
+  直接调用 delegate 且不收集 `WriteEn`。
+- `AdbWriteBatchTest.shouldWrapDelegateSqlExceptionInDirectMode` 覆盖 direct 模式保留底层
+  `SQLException`。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_insert_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_bulk_insert_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=mixed -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_mixed_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 31578.95 | 25 | 61 | 69 | 3460 | `vexra-adb/build/adb-benchmark/jdbc_insert_direct_write_batch_20260622-160402.properties` |
+| `insert` | `jdbc_bulk` | 1 | 103448.28 | 8 | 17 | 21 | 2564 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_write_batch_20260622-160402.properties` |
+| `mixed` | `jdbc` | 8 | 2620.09 | 2212 | 5417 | 9479 | 590265 | `vexra-adb/build/adb-benchmark/jdbc_mixed_direct_write_batch_20260622-160402.properties` |
+
+结论：
+
+- `jdbc_bulk` insert 样本从上一轮 `93750 ops/s` 提升到 `103448 ops/s`，说明去掉本地
+  `WriteEn` 中间层对批量写入有实际收益。
+- 普通 JDBC batch insert 保持在 `3 万 ops/s` 级别，allocation 约 `3.5KB/op`，写入路径已经
+  明显好于最初基线。
+- mixed 本轮达到 `2620 ops/s`、p99 `9479us`、allocation `590KB/op`，比第四十四轮样本有改善；
+  但 allocation 仍远高于 H2，对应瓶颈仍主要在 range count / ldb cursor 的 key/value 边界。
+- 第 4 项的本地 write batch 中间对象已收掉一层；后续若继续优化写入，更高价值方向是
+  单事务多行 insert 的二级索引 key 构造复用、commit 阶段的 value/key 编码复用，以及更底层
+  h2db Insert 批量回调。

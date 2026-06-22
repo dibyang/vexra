@@ -244,10 +244,11 @@ public class RocksStore implements DbStore {
     try (WriteBatch batch = new WriteBatch();
          DelegateWriteBatch delegate = new DelegateRocksWriteBatch(batch,this, storeCF);
          WriteOptions options = new WriteOptions()) {
-      AdbWriteBatch adbWriteBatch = new AdbWriteBatch(this);
+      AdbWriteBatch adbWriteBatch = AdbWriteBatch.direct(this, delegate);
       consumer.accept(adbWriteBatch);
-      adbWriteBatch.writeTo(delegate);
       db.write(options, batch);
+    } catch (AdbWriteBatch.DirectWriteBatchException e) {
+      throw e.getCause();
     } catch (Exception e) {
       throw new RuntimeException(e);
     } finally {

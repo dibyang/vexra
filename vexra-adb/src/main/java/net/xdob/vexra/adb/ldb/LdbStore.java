@@ -255,11 +255,12 @@ public class LdbStore implements DbStore {
            DelegateLdbWriteBatch delegate = new DelegateLdbWriteBatch(batch, this, ldbCF)) {
 
         WriteOptions options = new WriteOptions();
-        AdbWriteBatch adbWriteBatch = new AdbWriteBatch(this);
+        AdbWriteBatch adbWriteBatch = AdbWriteBatch.direct(this, delegate);
 
         consumer.accept(adbWriteBatch);
-        adbWriteBatch.writeTo(delegate);
         currentDb.write(batch, options);
+      } catch (AdbWriteBatch.DirectWriteBatchException e) {
+        throw e.getCause();
       }
     });
   }

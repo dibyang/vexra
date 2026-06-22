@@ -3461,3 +3461,83 @@ Conclusion:
 - The remaining high-value part of item 5 is no longer a small ADB-side cleanup:
   ADB needs segment/block-level count metadata, or `vexra-ldb` needs a
   raw/reusable cursor, to materially reduce `range_scan/mixed` allocation.
+
+## Round 45: Direct Delegate Mode for Local Write Batch
+
+This round continues item 4, focusing on commit / write batch allocations. The
+JFR review still showed `commit / write batch` as one ADB-visible allocation
+source. `LdbStore.writeBatch(...)` and `RocksStore.writeBatch(...)` previously
+wrapped every `put/delete/deleteRange` call into a `WriteEn` entry in
+`AdbWriteBatch.entries`, then copied those entries into the native write batch.
+That intermediate representation is useful for Raft / remote replication,
+because it needs to serialize writes into protocol messages. For local LDB/Rocks
+commit and bulk insert, however, it only adds objects and list growth.
+
+Changes:
+
+1. `AdbWriteBatch` now supports a direct delegate mode that forwards
+   `put/delete/deleteRange` directly to the underlying `DelegateWriteBatch`.
+2. `LdbStore.writeBatch(...)` and `RocksStore.writeBatch(...)` now use direct
+   mode, avoiding `WriteEn` allocation and the second `writeTo(...)` pass.
+3. The default `new AdbWriteBatch(store)` mode still collects entries, so
+   `RaftStore` continues to build `WriteEntry` protocol messages without
+   semantic changes.
+4. Direct mode wraps delegate `SQLException` in `DirectWriteBatchException`;
+   the outer store unwraps it back to `SQLException`.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:compileJava
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbWriteBatchTest --tests net.xdob.vexra.adb.ldb.LdbStoreReliabilityTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.appendsMultipleBulkBatchesInOneTransaction --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicatePrimaryKeyThroughBulkInsertPath --rerun-tasks
+```
+
+Result: passed.
+
+New tests:
+
+- `AdbWriteBatchTest.shouldWriteDirectlyToDelegateWithoutCollectingEntries`
+  verifies that direct mode calls the delegate without collecting `WriteEn`
+  entries.
+- `AdbWriteBatchTest.shouldWrapDelegateSqlExceptionInDirectMode` verifies that
+  direct mode preserves the underlying `SQLException`.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_insert_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_bulk_insert_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=mixed -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_direct_write_batch_20260622-160402.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_mixed_direct_write_batch-20260622-160402/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 31578.95 | 25 | 61 | 69 | 3460 | `vexra-adb/build/adb-benchmark/jdbc_insert_direct_write_batch_20260622-160402.properties` |
+| `insert` | `jdbc_bulk` | 1 | 103448.28 | 8 | 17 | 21 | 2564 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_write_batch_20260622-160402.properties` |
+| `mixed` | `jdbc` | 8 | 2620.09 | 2212 | 5417 | 9479 | 590265 | `vexra-adb/build/adb-benchmark/jdbc_mixed_direct_write_batch_20260622-160402.properties` |
+
+Conclusion:
+
+- The `jdbc_bulk` insert sample improved from the previous `93750 ops/s` to
+  `103448 ops/s`, showing that removing the local `WriteEn` layer helps bulk
+  writes.
+- Regular JDBC batch insert remains in the `30k ops/s` range with roughly
+  `3.5KB/op` allocation.
+- The mixed sample reached `2620 ops/s`, p99 `9479us`, and `590KB/op`
+  allocation. This improves over the Round 44 sample, but allocation remains far
+  above H2 because range count / ldb cursor key-value boundaries still dominate.
+- Item 4 has now removed one local write-batch object layer. Higher-value future
+  write optimizations are secondary-index key construction reuse for multi-row
+  transactions, commit-stage key/value encoding reuse, and a lower-level h2db
+  Insert bulk callback.
