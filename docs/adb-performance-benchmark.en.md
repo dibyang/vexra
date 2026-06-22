@@ -3251,3 +3251,77 @@ Conclusion:
   construction and uniqueness checks in `BULK_ADD_ROW / ADD_ROW`. To materially
   reduce `range_scan/mixed` allocation, ADB still needs a `vexra-ldb` raw-view /
   reusable-entry API or ADB segment/block-level count metadata.
+
+## Round 42: Lazy Deduplication and Batched High-Water Update for Bulk Append
+
+This round continues item 4, write-entry optimization, focusing on the
+append-only primary-key path in `BULK_ADD_ROW`. Previously,
+`bulkInsertAppendRows(...)` always allocated a `HashSet<Long>` for duplicate
+checks in multi-row batches, even when benchmark and common auto-increment /
+append workloads naturally produce strictly increasing rowIds. Even after the
+whole batch was proven append-safe, each row still called `putEncodedAppend(...)`
+and updated the transaction-local append high-water separately.
+
+Changes:
+
+1. The first multi-row bulk insert pass now runs `prepareBulkRow(...)`, computes
+   `minRowId/maxRowId`, and detects whether rowIds are strictly increasing.
+2. Strictly increasing batches are treated as duplicate-free without allocating
+   `HashSet<Long>`. Only non-monotonic or duplicate batches fall back to
+   `assertNoDuplicateBulkRowIds(...)`.
+3. When `canSkipAppendUniqueChecks(...)` proves the whole batch append-safe,
+   each row only writes into the transaction-local write set. The batch advances
+   `appendHighWater` once with the maximum rowId after all rows are registered.
+4. Savepoint rollback still clears `appendHighWater`, so secondary-index failure
+   or later exceptions do not leave a stale hint behind.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicatePrimaryKeyThroughBulkInsertPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rollsBackEarlierBulkRowsWhenSameBatchContainsDuplicatePrimaryKey --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.acceptsNonMonotonicUniqueBulkPrimaryKeys --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.appendsMultipleBulkBatchesInOneTransaction --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `acceptsNonMonotonicUniqueBulkPrimaryKeys` covers non-strictly-increasing but
+  duplicate-free rowIds, making sure lazy deduplication does not reject ordinary
+  SQL multi-values inserts.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc_bulk` | 1 | 93750.00 | 8 | 21 | 21 | 2560 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_lazy_dedup_highwater_stage.properties` |
+| `insert` | `jdbc` | 1 | 27272.73 | 32 | 77 | 92 | 3505 | `vexra-adb/build/adb-benchmark/jdbc_insert_lazy_dedup_highwater_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2223.87 | 2583 | 9437 | 13069 | 710705 | `vexra-adb/build/adb-benchmark/jdbc_mixed_lazy_dedup_highwater_stage.properties` |
+
+Conclusion:
+
+- The `jdbc_bulk` write path benefits clearly: throughput reached
+  `93750 ops/s`, and allocation decreased from the Round 37 `2731 bytes/op` to
+  `2560 bytes/op`.
+- The ordinary JDBC multi-values + transaction-batch sample reached
+  `27272.73 ops/s` with p99 `92us`, confirming that this also supports the goal
+  of keeping `INSERT INTO ... VALUES (...), (...)` on the bulk API.
+- Mixed did not improve in this sample: `2223.87 ops/s` and `710KB/op` is a
+  fluctuation down. Mixed only has a small insert share, and allocation is still
+  dominated by range count / ldb cursor scanning.
+- Item 4 still has follow-up room: secondary-index bulk key construction,
+  single-row insert commit/write-batch grouping, and a deeper h2db Insert batch
+  callback are larger remaining write-entry opportunities.

@@ -2824,3 +2824,68 @@ benchmark：
 - 下一步如果继续做 ADB 内优化，应优先考虑写入入口 `BULK_ADD_ROW / ADD_ROW` 的 per-row
   key/index 构造与唯一性检查；如果要继续压 `range_scan/mixed` allocation，仍需要
   `vexra-ldb` raw-view / reusable-entry API 或 ADB segment/block-level count 元数据。
+
+## 第四十二轮：bulk append 懒去重与批量 high-water 更新
+
+本轮继续第 4 项写入入口优化，聚焦 `BULK_ADD_ROW` 的 append-only 主键批量路径。此前
+`bulkInsertAppendRows(...)` 在多行批次中总是创建 `HashSet<Long>` 做批内主键去重，即使
+benchmark 和常见自增/append 写入天然是严格递增 rowId；整批已确认可以跳过 committed
+唯一性扫描时，也仍然每行调用 `putEncodedAppend(...)` 更新事务内 append high-water。
+
+本轮改动：
+
+1. 多行 bulk insert 第一轮扫描 `prepareBulkRow(...)` 后同时计算 `minRowId/maxRowId`，
+   并判断 rowId 是否严格递增。
+2. 严格递增批次直接视为批内无重复，不再创建 `HashSet<Long>`；只有遇到乱序或重复 rowId
+   时才回退到 `assertNoDuplicateBulkRowIds(...)`。
+3. 当 `canSkipAppendUniqueChecks(...)` 已确认整批 append-safe 时，每行只写入事务本地
+   write set，不再逐行更新 high-water；批次成功后用最大 rowId 一次性推进
+   `appendHighWater`。
+4. savepoint rollback 仍会清理 `appendHighWater`，因此二级索引写入失败或后续异常不会留下
+   错误 hint。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicatePrimaryKeyThroughBulkInsertPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rollsBackEarlierBulkRowsWhenSameBatchContainsDuplicatePrimaryKey --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.acceptsNonMonotonicUniqueBulkPrimaryKeys --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.appendsMultipleBulkBatchesInOneTransaction --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `acceptsNonMonotonicUniqueBulkPrimaryKeys` 覆盖非严格递增但批内唯一的 rowId 仍可写入，
+  防止懒去重误伤普通 SQL 多 values 场景。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_lazy_dedup_highwater_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-lazy-dedup-highwater-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc_bulk` | 1 | 93750.00 | 8 | 21 | 21 | 2560 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_lazy_dedup_highwater_stage.properties` |
+| `insert` | `jdbc` | 1 | 27272.73 | 32 | 77 | 92 | 3505 | `vexra-adb/build/adb-benchmark/jdbc_insert_lazy_dedup_highwater_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2223.87 | 2583 | 9437 | 13069 | 710705 | `vexra-adb/build/adb-benchmark/jdbc_mixed_lazy_dedup_highwater_stage.properties` |
+
+结论：
+
+- `jdbc_bulk` 批量写入入口收益明确：吞吐样本达到 `93750 ops/s`，allocation 从第三十七轮
+  `2731 bytes/op` 进一步降到 `2560 bytes/op`。
+- 普通 JDBC 多 values + 事务批量样本达到 `27272.73 ops/s`、p99 `92us`，说明该优化也能服务
+  “普通 INSERT INTO ... VALUES (...), (...) 继续走 bulk API”的目标。
+- mixed 本轮没有改善，`2223.87 ops/s`、`710KB/op` 属于波动回落；原因是 mixed 只有少量
+  insert，且 allocation 仍主要由 range count / ldb cursor 扫描主导。
+- 第 4 项仍有后续空间：二级索引 bulk path 的 per-row index key 构造、普通单行 insert
+  的提交/写批合并、以及 h2db 更底层 Insert 批量回调仍是更大的写入入口优化点。

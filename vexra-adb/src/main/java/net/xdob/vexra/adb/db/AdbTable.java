@@ -728,30 +728,46 @@ public class AdbTable extends TableBase {
         map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
         count = 1;
       } else {
-        Set<Long> rowIds = new HashSet<>(hashCapacity(rows.size()));
         long minRowId = Long.MAX_VALUE;
         long maxRowId = Long.MIN_VALUE;
+        long previousRowId = Long.MIN_VALUE;
+        boolean hasPreviousRowId = false;
+        boolean strictlyIncreasingRowIds = true;
         for (Row row : rows) {
           prepareBulkRow(row);
           long rowId = row.getKey();
-          if (!rowIds.add(rowId)) {
-            throw duplicateKey(rowId, null);
+          if (hasPreviousRowId && rowId <= previousRowId) {
+            strictlyIncreasingRowIds = false;
           }
+          previousRowId = rowId;
+          hasPreviousRowId = true;
           minRowId = Math.min(minRowId, rowId);
           maxRowId = Math.max(maxRowId, rowId);
         }
+        if (!strictlyIncreasingRowIds) {
+          assertNoDuplicateBulkRowIds(rows);
+        }
         boolean skipBatchUniqueCheck = map.canSkipAppendUniqueChecks(tabId,
             minRowId, maxRowId);
-        for (Row row : rows) {
-          RowKey rowKey = RowKey.of(tabId, row.getKey());
-          RowValue old = null;
-          if (!skipBatchUniqueCheck && !map.canSkipAppendUniqueCheck(rowKey)) {
-            old = map.getVisible(rowKey);
-            if (isExistingRow(old)) {
-              throw duplicateKey(row.getKey(), old);
-            }
+        if (skipBatchUniqueCheck) {
+          for (Row row : rows) {
+            RowKey rowKey = RowKey.of(tabId, row.getKey());
+            map.putEncodedAppendAlreadyChecked(rowKey, rowValue(txnId, row),
+                null);
           }
-          map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+          map.recordAppendHighWater(tabId, maxRowId);
+        } else {
+          for (Row row : rows) {
+            RowKey rowKey = RowKey.of(tabId, row.getKey());
+            RowValue old = null;
+            if (!map.canSkipAppendUniqueCheck(rowKey)) {
+              old = map.getVisible(rowKey);
+              if (isExistingRow(old)) {
+                throw duplicateKey(row.getKey(), old);
+              }
+            }
+            map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+          }
         }
         count = rows.size();
       }
@@ -794,6 +810,22 @@ public class AdbTable extends TableBase {
    */
   private static int hashCapacity(int expectedSize) {
     return Math.max(16, (int) (expectedSize / 0.75F) + 1);
+  }
+
+  /**
+   * 在非严格递增批次中检查重复 rowId。
+   *
+   * <p>append-only 热路径通常按主键递增写入，第一轮扫描即可证明批内无重复，避免创建
+   * HashSet。只有遇到乱序或重复主键时才回退到集合去重，保持普通 SQL 多 values 的正确性。</p>
+   */
+  private void assertNoDuplicateBulkRowIds(List<Row> rows) {
+    Set<Long> rowIds = new HashSet<>(hashCapacity(rows.size()));
+    for (Row row : rows) {
+      long rowId = row.getKey();
+      if (!rowIds.add(rowId)) {
+        throw duplicateKey(rowId, null);
+      }
+    }
   }
 
   private void prepareBulkRow(Row row) {

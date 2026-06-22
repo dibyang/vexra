@@ -161,6 +161,23 @@ public class TxnMap2 {
   }
 
   /**
+   * 写入已经由调用方完成唯一性检查的 bulk append row。
+   *
+   * <p>该入口不逐行更新 append high-water，供整批 append-safe 的批量写入使用；
+   * 调用方需要在批次成功登记后调用 {@link #recordAppendHighWater(TabId, long)}
+   * 一次性推进本事务内上界。失败路径会通过 savepoint rollback 清理 high-water。</p>
+   *
+   * @param dataKey row key
+   * @param value 已编码 row value
+   * @param oldValue 同一事务快照下的旧可见值；append-safe 场景通常为 null
+   * @throws SQLException 写入事务本地状态失败时抛出
+   */
+  public void putEncodedAppendAlreadyChecked(DataKey dataKey, RowValue value,
+      RowValue oldValue) throws SQLException {
+    this.put(dataKey, value, oldValue);
+  }
+
+  /**
    * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
    *
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
@@ -228,10 +245,22 @@ public class TxnMap2 {
     if (dataKey == null || !dataKey.isRow()) {
       return;
     }
-    TabId tabId = dataKey.getTabID();
+    recordAppendHighWater(dataKey.getTabID(), dataKey.getRowId());
+  }
+
+  /**
+   * 一次性推进当前事务内指定表的 append rowId 上界。
+   *
+   * @param tabId 表 id 与 epoch
+   * @param rowId 已写入批次的最大 rowId
+   */
+  public void recordAppendHighWater(TabId tabId, long rowId) {
+    if (tabId == null) {
+      return;
+    }
     Long highWater = appendHighWater.get(tabId);
-    if (highWater == null || dataKey.getRowId() > highWater) {
-      appendHighWater.put(tabId, dataKey.getRowId());
+    if (highWater == null || rowId > highWater) {
+      appendHighWater.put(tabId, rowId);
     }
   }
 

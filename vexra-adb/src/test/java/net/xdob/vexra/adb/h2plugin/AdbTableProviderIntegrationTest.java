@@ -785,6 +785,31 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void acceptsNonMonotonicUniqueBulkPrimaryKeys() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-non-monotonic-unique").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+
+                AdbTable table = adbTable(connection, "TEST");
+                Assertions.assertEquals(3, table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(3L, "third"),
+                        row(1L, "first"),
+                        row(2L, "second"))));
+                Assertions.assertEquals(3L, countRows(statement));
+                connection.commit();
+                Assertions.assertEquals("first,second,third",
+                        csv(statement, "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void rejectsDuplicatePrimaryKeyAcrossBulkBatchesInOneTransaction() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-cross-batch-duplicate").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
