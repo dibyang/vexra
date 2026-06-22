@@ -2305,3 +2305,58 @@ benchmark：
 - 下一轮若继续第 3 项，应进入更核心的 ldb 读边界：减少 `SnapshotCursor.key/value`
   反复 byte[] 拷贝、`Slice.slice`、`InternalKey` 和 `BlockEntry` 分配；如果这些只能在
   vexra-ldb 内解决，则需要给 ldb 提出 cursor raw-view / reusable entry API 需求。
+
+## 第三十四轮：RowKey 点查扫描前缀直接编码
+
+第三十三轮去掉了点查可见性扫描里无效的 `prefixEnd`，但 `getVisibleCommittedRow(...)`
+和 detail 路径仍通过 `rowKey.toBytes()` 生成 scan prefix。`Key.toBytes()` 为了防御性
+复制会调用 `Arrays.copyOf(...)`，而 JFR 已经显示 `Arrays.copyOf <- [B` 是 mixed
+allocation 的高频入口之一。本轮继续推进第 3 项，收缩点查可见性读取的 row-key
+前缀对象路径：
+
+1. `RowKey` 新增 `versionScanPrefixBytes()`，直接按固定 row key 布局重新编码 scan
+   prefix，不暴露内部 `byte[]`。
+2. `RowKey.of(...)` 和 `RowKey` 构造解析不再使用 `ByteBuffer.wrap(...)`，改为手写
+   big-endian 编解码，减少 row key 构造/解析的小对象。
+3. `TxnManager.getVisibleCommittedRow(...)` 和
+   `TxnManager.getVisibleCommittedDetailed(...)` 对 `RowKey` 使用该专用前缀编码。
+4. `VersionKeyTest.rowVersionScanPrefixMatchesRowKeyEncodingAndDefensivelyCopies`
+   验证新编码与 `RowKey.toBytes()` 字节一致，并确认返回数组被调用方修改后不会污染
+   `RowKey`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.key.VersionKeyTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_rowkey_direct_prefix_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-rowkey-direct-prefix-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowkey_direct_prefix_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowkey-direct-prefix-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 1982.82 | 448 | 893 | 1317 | 9953 | `vexra-adb/build/adb-benchmark/point_lookup_rowkey_direct_prefix_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2022.93 | 2660 | 9617 | 13498 | 710831 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowkey_direct_prefix_stage.properties` |
+
+结论：
+
+- `point_lookup` 单跑相对第三十三轮明显改善：吞吐从 `1109.47 ops/s` 到
+  `1982.82 ops/s`，p99 从 `2948us` 到 `1317us`，分配从 `10069` 到
+  `9953 bytes/op`。该结果说明点查可见性前缀路径收缩有实际正向效果。
+- mixed 8 线程没有同步改善，吞吐从第三十三轮 `2286.59 ops/s` 回落到
+  `2022.93 ops/s`，分配升到 `710831 bytes/op`。综合 workload 仍主要被 range count、
+  写入 batch 和 ldb 读边界波动主导。
+- 下一步继续第 3 项时，ADB 层可消除的 `RowKey` / prefix 小对象已经接近尾声；
+  更大收益需要 ldb 层支持 cursor raw-view / reusable-entry，或者转向第 4 项的
+  write batch / group commit 聚合。

@@ -2663,3 +2663,65 @@ Conclusion:
   repeated `SnapshotCursor.key/value` byte[] copies, `Slice.slice`,
   `InternalKey`, and `BlockEntry` allocation. If these cannot be solved in ADB,
   vexra-ldb needs a cursor raw-view / reusable-entry API requirement.
+
+## Round 34: Direct RowKey Scan-Prefix Encoding for Point Lookup
+
+Round 33 removed the unused `prefixEnd` from point-lookup visibility scans, but
+`getVisibleCommittedRow(...)` and the detailed path still generated the scan
+prefix through `rowKey.toBytes()`. `Key.toBytes()` defensively copies through
+`Arrays.copyOf(...)`, and JFR already showed `Arrays.copyOf <- [B` as a frequent
+mixed allocation entry. This round continues item 3 by shrinking the row-key
+prefix object path in point-lookup visibility reads:
+
+1. `RowKey` adds `versionScanPrefixBytes()`, which directly re-encodes the fixed
+   row key layout for version scan prefix use without exposing the internal
+   `byte[]`.
+2. `RowKey.of(...)` and `RowKey` constructor parsing no longer use
+   `ByteBuffer.wrap(...)`; they use direct big-endian encode/decode helpers.
+3. `TxnManager.getVisibleCommittedRow(...)` and
+   `TxnManager.getVisibleCommittedDetailed(...)` use the dedicated prefix
+   encoder for `RowKey`.
+4. `VersionKeyTest.rowVersionScanPrefixMatchesRowKeyEncodingAndDefensivelyCopies`
+   verifies byte equality with `RowKey.toBytes()` and confirms callers cannot
+   mutate the `RowKey` by modifying the returned array.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.key.VersionKeyTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_rowkey_direct_prefix_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-rowkey-direct-prefix-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowkey_direct_prefix_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowkey-direct-prefix-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | `jdbc` | 1 | 1982.82 | 448 | 893 | 1317 | 9953 | `vexra-adb/build/adb-benchmark/point_lookup_rowkey_direct_prefix_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2022.93 | 2660 | 9617 | 13498 | 710831 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowkey_direct_prefix_stage.properties` |
+
+Conclusion:
+
+- The standalone `point_lookup` run improved clearly from Round 33:
+  throughput moved from `1109.47 ops/s` to `1982.82 ops/s`, p99 from `2948us`
+  to `1317us`, and allocation from `10069` to `9953 bytes/op`. This suggests
+  that shrinking the point-lookup visibility prefix path has real positive
+  effect.
+- Mixed 8-thread did not improve with it. Throughput fell from Round 33's
+  `2286.59 ops/s` to `2022.93 ops/s`, and allocation rose to
+  `710831 bytes/op`. The combined workload is still dominated by range count,
+  write batch, and ldb read-boundary variance.
+- For item 3, the remaining ADB-side `RowKey` / prefix small-object work is now
+  close to exhausted. Larger gains likely require ldb cursor raw-view /
+  reusable-entry support, or a shift to item 4 write batch / group commit
+  aggregation.

@@ -50,6 +50,17 @@ class VersionKeyTest {
     }
 
     @Test
+    void rowVersionScanPrefixMatchesRowKeyEncodingAndDefensivelyCopies() {
+        RowKey rowKey = RowKey.of(TabId.of(8, 13L), 987L);
+
+        byte[] prefix = rowKey.versionScanPrefixBytes();
+        byte[] original = rowKey.toBytes();
+        prefix[0] = (byte) (prefix[0] + 1);
+
+        assertArrayEquals(original, rowKey.versionScanPrefixBytes());
+    }
+
+    @Test
     void indexVersionKeyRoundTripsAndDefensivelyCopiesIndex() {
         TabId tabId = TabId.of(6, 11L);
         byte[] index = new byte[] {1, 2, 3};

@@ -961,7 +961,9 @@ public class TxnManager {
     long scanStarted = System.nanoTime();
     boolean sawNewerCommitted = false;
     try {
-      byte[] prefix = rowKey.toBytes();
+      byte[] prefix = rowKey instanceof RowKey
+          ? ((RowKey) rowKey).versionScanPrefixBytes()
+          : rowKey.toBytes();
 
       try (VersionScanSource scan =
                store.openVersionScanSource(ScanDirection.FORWARD)) {
@@ -1026,7 +1028,9 @@ public class TxnManager {
 
   private RowValue getVisibleCommittedRow(Transaction2 txn, DataKey rowKey)
       throws SQLException {
-    byte[] prefix = rowKey.toBytes();
+    byte[] prefix = rowKey instanceof RowKey
+        ? ((RowKey) rowKey).versionScanPrefixBytes()
+        : rowKey.toBytes();
     boolean sawNewerCommitted = false;
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
