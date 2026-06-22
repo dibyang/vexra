@@ -3116,3 +3116,68 @@ Conclusion:
 - The next highest-value work is to add a cursor raw-view / reusable-entry API in
   `vexra-ldb`, or add ADB segment/block-level count metadata so range count can
   avoid reading so many cursor entries.
+
+## Round 40: Reproducible JFR Benchmark Script
+
+Round 39 exposed a tooling problem in the JFR workflow. If the default PATH uses
+Java 8, `scripts/adb-benchmark-jfr.ps1` generates an old Java 8 `version 0.9`
+JFR file, and the `jdk.jfr.consumer` path used by
+`scripts/adb-jfr-hotspots.ps1` cannot read it. This does not affect ADB runtime
+performance, but it makes item 1, JFR-first allocation hotspot analysis, less
+reproducible.
+
+This round enhances `scripts/adb-benchmark-jfr.ps1`:
+
+1. When `-JavaHome` is not provided, the script now prefers a JDK 11+ capable of
+   generating a modern JFR: `JAVA_HOME`, `C:\Program Files\Java\latest`,
+   `jdk-21`, `jdk-17`, `jdk-11`, then other JDK directories under
+   `C:\Program Files\Java`.
+2. When `-JavaHome` is provided, the script still respects the caller's choice.
+   If the Java major version is below 11, it emits a warning that the generated
+   JFR may not be parseable by the hotspot script.
+3. The script now also accepts and forwards `-RangeSize`, `-TableEngine`, and
+   `-SqlDiagnostics`, making ADB/H2 comparisons, diagnostics-off runs, and
+   range-count width changes reproducible through the same JFR entry point.
+4. The script output includes `Java major`, so benchmark evidence records the
+   JFR generation environment directly.
+
+Smoke command:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload point_lookup -Rows 20 -WarmupOperations 1 -Operations 2 -Threads 1 -OutputDir vexra-adb/build/adb-benchmark/jfr/script-smoke -SqlDiagnostics false
+```
+
+Result: passed. The script automatically selected:
+
+```text
+Java: C:\Program Files\Java\jdk-11\bin\java.exe
+Java version: java version "11" 2018-09-25
+Java major: 11
+JFR: vexra-adb/build/adb-benchmark/jfr/script-smoke/adb-point_lookup-20260622-150304.jfr
+```
+
+Hotspot parsing command:
+
+```powershell
+$latest = Get-ChildItem -LiteralPath vexra-adb\build\adb-benchmark\jfr\script-smoke -Filter *.jfr | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile $latest.FullName -OutputDir vexra-adb\build\adb-benchmark\jfr\script-smoke\hotspots
+```
+
+Result: passed, producing:
+
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/summary.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/allocation-events.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/execution-samples.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/adb-focus.txt`
+
+Conclusion:
+
+- The JFR entry point for item 1 is now more reliable. Future full mixed
+  8-thread rechecks should generate a JDK 11+ parseable JFR by default.
+- This round does not change the ADB read/write path and should not be counted
+  as a throughput optimization. It reduces the observation cost for the next
+  iterations on `TxnMap2.getVisible`, commit/write-batch paths, and the outer
+  range-count entry.
+- Item 2, a dedicated ResultSet, remains deferred because the Round 39 full
+  mixed JFR did not prove that `AdbSimpleResultSet` / `java.lang.reflect.Proxy`
+  are allocation hotspots.

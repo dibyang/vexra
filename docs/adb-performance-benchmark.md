@@ -2710,3 +2710,58 @@ ADB focus：
   以及 `Arrays.copyOf` / `Slice.slice` / `InternalTableIterator.getNextElement`。
 - 下一步最有价值的是向 `vexra-ldb` 推进 cursor raw-view / reusable-entry API，或者在 ADB 层
   为 range count 引入 segment/block-level count 元数据，绕开大量 cursor entry 读取。
+
+## 第四十轮：JFR benchmark 脚本可复现性增强
+
+第三十九轮 JFR 复核暴露了一个排查工具问题：默认 PATH 上如果是 Java 8，
+`scripts/adb-benchmark-jfr.ps1` 会生成 Java 8 `version 0.9` 老格式 JFR，而当前
+`scripts/adb-jfr-hotspots.ps1` 的 `jdk.jfr.consumer` 路径无法读取该格式。该问题不影响
+ADB 运行时性能，但会影响后续第 1 项“先用 JFR 看 allocation hot spots”的可复现性。
+
+本轮增强 `scripts/adb-benchmark-jfr.ps1`：
+
+1. 未显式传入 `-JavaHome` 时，脚本会优先查找可生成现代 JFR 的 JDK 11+：
+   `JAVA_HOME`、`C:\Program Files\Java\latest`、`jdk-21`、`jdk-17`、`jdk-11`，
+   再扫描 `C:\Program Files\Java` 下的 JDK 目录。
+2. 显式传入 `-JavaHome` 时仍尊重调用方选择；如果 Java major 小于 11，则输出 warning，
+   提醒该 JFR 可能无法被热点解析脚本读取。
+3. 脚本新增并透传 `-RangeSize`、`-TableEngine`、`-SqlDiagnostics`，便于直接复现
+   ADB/H2 对比、关闭诊断开销和调整 range count 宽度。
+4. 输出中补充 `Java major`，让 benchmark 证据能直接说明 JFR 生成环境。
+
+smoke 验证命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload point_lookup -Rows 20 -WarmupOperations 1 -Operations 2 -Threads 1 -OutputDir vexra-adb/build/adb-benchmark/jfr/script-smoke -SqlDiagnostics false
+```
+
+结果：通过。脚本自动选择：
+
+```text
+Java: C:\Program Files\Java\jdk-11\bin\java.exe
+Java version: java version "11" 2018-09-25
+Java major: 11
+JFR: vexra-adb/build/adb-benchmark/jfr/script-smoke/adb-point_lookup-20260622-150304.jfr
+```
+
+热点解析验证命令：
+
+```powershell
+$latest = Get-ChildItem -LiteralPath vexra-adb\build\adb-benchmark\jfr\script-smoke -Filter *.jfr | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile $latest.FullName -OutputDir vexra-adb\build\adb-benchmark\jfr\script-smoke\hotspots
+```
+
+结果：通过，生成：
+
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/summary.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/allocation-events.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/execution-samples.txt`
+- `vexra-adb/build/adb-benchmark/jfr/script-smoke/hotspots/adb-focus.txt`
+
+结论：
+
+- 第 1 项的 JFR 入口已更稳，后续 mixed 8 线程热点复核默认会生成可解析的 JDK 11+ JFR。
+- 该轮没有改变 ADB 读写路径，因此不应计入吞吐优化收益；它降低的是后续继续优化
+  `TxnMap2.getVisible`、commit/write batch 和 range count 外层入口时的观测成本。
+- 第 2 项“专用 ResultSet”仍保持 defer：第三十九轮完整 mixed JFR 没有证明
+  `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 是 allocation 大头。
