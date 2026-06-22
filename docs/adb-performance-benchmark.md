@@ -1443,3 +1443,61 @@ primary find 复现命令：
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties"
 ```
+
+## 第二十轮：并发 benchmark 正式窗口拆分
+
+本轮修正 `jdbc` 并发 benchmark 的统计口径。旧实现中，主线程在 worker 启动后立即开始计时，
+worker 还需要打开 JDBC 连接、构造 `BenchmarkStatements`、执行 warmup，以及触发表打开阶段的
+row-count prewarm；这些成本会污染 mixed 的 throughput、allocation 和 SQL phase。
+
+新口径：
+
+1. worker 先完成连接打开、statement 构造和 warmup。
+2. 所有 worker ready 后，主线程调用 `AdbSqlDiagnosticsRegistry.resetAll()`。
+3. 主线程打开正式统计闸门，worker 才开始 counted operations 和 allocation 采样。
+4. 输出 `concurrency.measuredWindow=operationsOnly`，标识正式窗口不再包含连接/warmup/prewarm。
+
+测试覆盖：
+
+- `shouldRunConcurrentMixedBenchmarkAgainstLdbUrl` 验证输出
+  `concurrency.measuredWindow=operationsOnly`。
+- 同一测试断言正式窗口 diagnostics 不包含 `ADB_ROW_COUNT_PREWARM`。
+
+修正口径后的 mixed 8 线程结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2463.05 | 2370 | 8266 | 11042 | 732973 | `vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties` |
+
+正式窗口 phase 摘要：
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2100 | 2432 | 11000 |
+| `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` | 300 | 2876 | 11000 |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 600 | 2545 | 10000 |
+| `ADB_RANGE_COUNT_VISIBLE_COUNT` | 600 | 355 | 2960 |
+| `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2072 | 7 | 112 |
+
+结论：
+
+- mixed 吞吐口径从上一轮受连接/prewarm 污染的 `1051.16 ops/s` 修正到
+  `2463.05 ops/s`，更接近真实 counted operations。
+- 正式窗口不再包含 row-count prewarm phase，后续可以用 mixed 结果继续判断
+  point lookup、bulk add 和 range count 的真实入口成本。
+- 当前最大剩余热点仍是 table-engine/JDBC 入口层：`POINT_LOOKUP_FAST`、`BULK_ADD_ROW`
+  和 `RANGE_COUNT_FAST` 平均都在 2.4ms-2.9ms；内部 decode/count 阶段已经不是最大头。
+
+mixed 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-measured-window-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties"
+```

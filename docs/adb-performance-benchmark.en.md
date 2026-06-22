@@ -1659,3 +1659,70 @@ Primary-find reproduction command:
   "-PadbBenchmarkOperations=3000" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties"
 ```
+
+## Round 20: Concurrent Benchmark Measured-Window Split
+
+This round fixes the measured window of the concurrent `jdbc` benchmark. The
+old implementation started timing immediately after worker launch. Each worker
+still had to open a JDBC connection, build `BenchmarkStatements`, run warmup,
+and trigger table-open row-count prewarm, so those costs polluted mixed
+throughput, allocation, and SQL phase diagnostics.
+
+New measured-window semantics:
+
+1. Workers first open connections, build statements, and finish warmup.
+2. After all workers are ready, the main thread calls
+   `AdbSqlDiagnosticsRegistry.resetAll()`.
+3. The main thread opens the measured-operation gate; only then do workers
+   start counted operations and allocation sampling.
+4. The report writes `concurrency.measuredWindow=operationsOnly` to mark that
+   connection/warmup/prewarm is excluded.
+
+Test coverage:
+
+- `shouldRunConcurrentMixedBenchmarkAgainstLdbUrl` verifies
+  `concurrency.measuredWindow=operationsOnly`.
+- The same test asserts the measured-window diagnostics do not contain
+  `ADB_ROW_COUNT_PREWARM`.
+
+Mixed 8-thread result after the measured-window fix:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2463.05 | 2370 | 8266 | 11042 | 732973 | `vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties` |
+
+Measured-window phase summary:
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 2100 | 2432 | 11000 |
+| `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` | 300 | 2876 | 11000 |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 600 | 2545 | 10000 |
+| `ADB_RANGE_COUNT_VISIBLE_COUNT` | 600 | 355 | 2960 |
+| `ADB_POINT_LOOKUP_DECODE_CACHE_MISS` | 2072 | 7 | 112 |
+
+Conclusion:
+
+- The mixed throughput measurement improved from the previous
+  connection/prewarm-polluted `1051.16 ops/s` to `2463.05 ops/s`, which is a
+  cleaner counted-operation result.
+- The measured window no longer contains row-count prewarm phases, so future
+  mixed runs can be used to judge the real entry cost of point lookup, bulk
+  add, and range count.
+- The remaining major hotspots are still at the table-engine/JDBC entry layer:
+  `POINT_LOOKUP_FAST`, `BULK_ADD_ROW`, and `RANGE_COUNT_FAST` all average about
+  2.4ms-2.9ms, while inner decode/count phases are no longer the largest cost.
+
+Mixed reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-measured-window-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties"
+```

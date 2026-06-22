@@ -263,6 +263,8 @@ public final class AdbBenchmarkMain {
     final AtomicLong allocatedBytes = new AtomicLong();
     final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
     final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch ready = new CountDownLatch(threads);
+    final CountDownLatch measureStart = new CountDownLatch(1);
     final CountDownLatch done = new CountDownLatch(threads);
 
     for (int t = 0; t < threads; t++) {
@@ -279,11 +281,12 @@ public final class AdbBenchmarkMain {
           executeJdbcWorker(url, workload, rows, rangeSize, warmupOps,
               countedOps, latencyOffset, statementBatchSize,
               transactionBatchSize, latencies, failed, completed,
-              allocatedBytes,
+              allocatedBytes, ready, measureStart,
               threadIndex, warmupOperations);
         } catch (Throwable e) {
           firstFailure.compareAndSet(null, e);
           failed.addAndGet(countedOps);
+          ready.countDown();
         } finally {
           done.countDown();
         }
@@ -291,41 +294,46 @@ public final class AdbBenchmarkMain {
       worker.start();
     }
 
-    long started = System.nanoTime();
     start.countDown();
     try {
+      ready.await();
+      AdbSqlDiagnosticsRegistry.resetAll();
+      long started = System.nanoTime();
+      measureStart.countDown();
       done.await();
+      long durationMillis = Math.max(1L,
+          (System.nanoTime() - started) / 1_000_000L);
+      Throwable failure = firstFailure.get();
+      if (failure != null) {
+        if (failure instanceof Exception) {
+          throw (Exception) failure;
+        }
+        throw new RuntimeException(failure);
+      }
+      Arrays.sort(latencies);
+      double throughput = operations * 1000D / durationMillis;
+      Map<String, String> details = collectSqlDiagnostics();
+      addThreadDetails(details, threads, throughput);
+      details.put("concurrency.completedOperations",
+          String.valueOf(completed.get()));
+      details.put("concurrency.measuredWindow", "operationsOnly");
+      addAllocationDetails(details, allocatedBytes.get(), operations);
+      return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
+          operations, failed.get(), durationMillis, throughput,
+          percentile(latencies, 0.50D), percentile(latencies, 0.95D),
+          percentile(latencies, 0.99D), latencies[latencies.length - 1],
+          details);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       throw e;
     }
-    Throwable failure = firstFailure.get();
-    if (failure != null) {
-      if (failure instanceof Exception) {
-        throw (Exception) failure;
-      }
-      throw new RuntimeException(failure);
-    }
-    long durationMillis = Math.max(1L,
-        (System.nanoTime() - started) / 1_000_000L);
-    Arrays.sort(latencies);
-    double throughput = operations * 1000D / durationMillis;
-    Map<String, String> details = collectSqlDiagnostics();
-    addThreadDetails(details, threads, throughput);
-    details.put("concurrency.completedOperations",
-        String.valueOf(completed.get()));
-    addAllocationDetails(details, allocatedBytes.get(), operations);
-    return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
-        operations, failed.get(), durationMillis, throughput,
-        percentile(latencies, 0.50D), percentile(latencies, 0.95D),
-        percentile(latencies, 0.99D), latencies[latencies.length - 1],
-        details);
   }
 
   private static void executeJdbcWorker(String url, String workload, int rows,
       int rangeSize, int warmupOperations, int operations, int latencyOffset,
       int statementBatchSize, int transactionBatchSize, long[] latencies,
       AtomicLong failed, AtomicLong completed, AtomicLong allocatedBytes,
+      CountDownLatch ready, CountDownLatch measureStart,
       int threadIndex,
       int totalWarmupOperations)
       throws Exception {
@@ -344,6 +352,8 @@ public final class AdbBenchmarkMain {
         commitRemaining(connection, transactionBatchSize, warmupOperations);
 
         int pendingBatchOperations = 0;
+        ready.countDown();
+        measureStart.await();
         long allocationStart = currentThreadAllocatedBytes();
         try {
           for (int i = 0; i < operations; i++) {
