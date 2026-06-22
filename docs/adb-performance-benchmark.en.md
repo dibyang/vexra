@@ -2220,3 +2220,65 @@ Conclusion:
 - This completes part of item 5 by using the dedicated long ResultSet handler
   for the full-table count fast path. The fully dedicated non-proxy ResultSet
   class should still wait for JFR allocation evidence.
+
+## Round 28: Visible Row Raw Scan and Historical-Version Cache Guard
+
+Rounds 24 and 25 introduced committed row read-fill cache into the point lookup
+path. While continuing item 3, this round found a boundary that must be
+tightened first: when a reader startTs is older than a row's latest committed
+version, the store scan skips the new version and returns an older visible
+version. That older version must not be written into the global committed row
+cache, otherwise a later reader can be misled by stale cache.
+
+Changes:
+
+1. `TxnManager.getVisibleCommitted(...)` now uses an internal raw-key scan for
+   row keys, avoiding per-call `DefaultVersionResolver` / `VersionKey`
+   allocation in the default path.
+2. The raw scan tracks whether it saw a committed version newer than the
+   current transaction startTs. It only read-fills committed row cache when the
+   returned row is also the latest committed version.
+3. The detail diagnostic path keeps its existing phase breakdown, but follows
+   the same "do not cache historical versions" rule.
+4. `cacheCommittedVisible(...)` no longer lets an older commitTs overwrite a
+   newer cached value.
+5. Added `TxnManagerVisibleRowFastPathTest`, which writes a direct
+   commitTs=10 / commitTs=20 version chain and verifies that a startTs=15 read
+   does not pollute a startTs=25 read.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_visible_raw_scan_no_read_object_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-visible-raw-scan-no-read-object-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_raw_scan_no_read_object_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-raw-scan-no-read-object-stage/adb-benchmark
+```
+
+Results:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1813.78 | 498 | 948 | 1312 | 10704 | `vexra-adb/build/adb-benchmark/point_lookup_visible_raw_scan_no_read_object_stage.properties` |
+| `mixed` | 8 | 2228.83 | 2491 | 8839 | 12591 | 711434 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_raw_scan_no_read_object_stage.properties` |
+
+Conclusion:
+
+- This round is primarily a safety prerequisite for item 3, not a mixed
+  throughput headline. The single mixed result is below the Round 24 default
+  safe-cache baseline and needs more reruns / investigation.
+- `point_lookup` recovered to an acceptable range after removing the internal
+  read-result object, but it still did not beat the best historical sample.
+- The positive value is that committed read-fill cache can no longer be polluted
+  by historical snapshots. This gives a safer foundation for later latest
+  committed cache, trusted cache defaulting, and store generation work to reduce
+  store seek cost.

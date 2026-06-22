@@ -1920,3 +1920,53 @@ benchmark：
   整体分配仍由 JDBC proxy / statement / diagnostics 周边主导。
 - 这完成了第 5 项中“COUNT 快路径继续使用专用 long ResultSet handler”的一部分；真正的
   “去掉动态代理的专用 ResultSet 类”仍应等待 JFR allocation 证据后再做。
+
+## 第二十八轮：visible row raw scan 与历史版本 cache 保护
+
+第二十四、二十五轮把 committed row read-fill cache 引入点查路径，但继续推进第 3 项时发现一个
+必须先收紧的边界：当读事务 startTs 早于某个 row 的最新 committed 版本时，store scan 会跳过新版本并返回
+旧版本；这个旧版本不能写入全局 committed row cache，否则后续更新的读事务可能被旧缓存误导。
+
+本轮改动：
+
+1. `TxnManager.getVisibleCommitted(...)` 对 row key 使用内部 raw-key scan，避免默认路径每次创建
+   `DefaultVersionResolver` / `VersionKey` 对象。
+2. raw scan 会记录是否曾遇到晚于当前事务 startTs 的 committed 版本；只有没有遇到更新版本时，
+   才允许把读取到的 row 回填到 committed row cache。
+3. detail 诊断路径保持原有 phase 拆分，但同样遵守“历史版本不回填全局 cache”的规则。
+4. `cacheCommittedVisible(...)` 不再允许更旧 commitTs 覆盖已有更新 cache。
+5. 新增 `TxnManagerVisibleRowFastPathTest`，直接构造 commitTs=10 / commitTs=20 的版本链，验证
+   startTs=15 读到旧版本后，不会污染 startTs=25 的新读事务。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_visible_raw_scan_no_read_object_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-visible-raw-scan-no-read-object-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_raw_scan_no_read_object_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-raw-scan-no-read-object-stage/adb-benchmark
+```
+
+结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1813.78 | 498 | 948 | 1312 | 10704 | `vexra-adb/build/adb-benchmark/point_lookup_visible_raw_scan_no_read_object_stage.properties` |
+| `mixed` | 8 | 2228.83 | 2491 | 8839 | 12591 | 711434 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_raw_scan_no_read_object_stage.properties` |
+
+结论：
+
+- 本轮主要是第 3 项的安全前置优化，不把 mixed 结果作为吞吐提升 headline；mixed 单次结果低于
+  第二十四轮默认安全 cache 基线，需要后续继续排查和复跑。
+- `point_lookup` 在去掉内部返回对象后恢复到可接受区间，但仍未超过历史最好样本。
+- 正向价值是 committed read-fill cache 不再被历史快照污染，这为后续“latest committed cache / trusted cache
+  默认化 / store generation”继续降 store seek 成本提供了更稳的语义基础。

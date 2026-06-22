@@ -817,9 +817,11 @@ public class TxnManager {
 
 
   public RowValue getVisibleCommitted(Transaction2 txn, DataKey key) throws SQLException {
+    if (key != null && key.isRow()) {
+      return getVisibleCommittedRow(txn, key);
+    }
     VersionResolver resolver = new DefaultVersionResolver(store);
     RowValue visible = resolver.getLatestCommittedBefore(key, txn.getStartTs());
-    cacheCommittedVisible(key, visible);
     return visible;
   }
 
@@ -940,6 +942,7 @@ public class TxnManager {
   private RowValue getVisibleCommittedDetailed(Transaction2 txn,
       DataKey rowKey) throws SQLException {
     long scanStarted = System.nanoTime();
+    boolean sawNewerCommitted = false;
     try {
       byte[] prefix = rowKey.toBytes();
       byte[] end = KeyCodec.prefixEnd(prefix);
@@ -979,9 +982,12 @@ public class TxnManager {
               return null;
             }
             rowValue.rowKey = versionKey.getRowId();
-            cacheCommittedVisible(rowKey, rowValue);
+            if (!sawNewerCommitted) {
+              cacheCommittedVisible(rowKey, rowValue);
+            }
             return rowValue;
           }
+          sawNewerCommitted = true;
 
           long advanceStarted = System.nanoTime();
           scan.advance();
@@ -998,6 +1004,52 @@ public class TxnManager {
     } finally {
       recordSqlPhase("ADB_VISIBLE_COMMITTED_STORE_SCAN",
           System.nanoTime() - scanStarted);
+    }
+  }
+
+  private RowValue getVisibleCommittedRow(Transaction2 txn, DataKey rowKey)
+      throws SQLException {
+    byte[] prefix = rowKey.toBytes();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+    boolean sawNewerCommitted = false;
+    try (VersionScanSource scan =
+        store.openVersionScanSource(ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, end);
+
+      while (scan.isValid()) {
+        byte[] rawKey = scan.key();
+        if (rawKey == null || !TableScanCursor.startsWith(rawKey, prefix)) {
+          return null;
+        }
+        if (!isRawVersionRowKey(rawKey)) {
+          return null;
+        }
+        if (!isRawCommittedVersion(rawKey)) {
+          scan.advance();
+          continue;
+        }
+
+        RowValue rowValue = RowValue.decodeValue(scan.value());
+        if (rowValue != null && rowValue.commitTs <= txn.getStartTs()) {
+          if (rowValue.deleted) {
+            return null;
+          }
+          rowValue.rowKey = rowKey.getRowId();
+          if (!sawNewerCommitted) {
+            cacheCommittedVisible(rowKey, rowValue);
+          }
+          return rowValue;
+        }
+        sawNewerCommitted = true;
+
+        scan.advance();
+      }
+      return null;
+    } catch (Exception e) {
+      if (e instanceof SQLException) {
+        throw (SQLException) e;
+      }
+      throw new SQLException("Failed to get visible committed row", e);
     }
   }
 
@@ -1031,7 +1083,9 @@ public class TxnManager {
     RowValue cached = visible.rowKey == key.getRowId()
         ? copyWithRowKey(visible, visible.rowKey)
         : copyWithRowKey(visible, key.getRowId());
-    committedRowCache.put(key, cached);
+    committedRowCache.compute(key, (ignored, existing) ->
+        existing != null && existing.commitTs > cached.commitTs
+            ? existing : cached);
   }
 
 
