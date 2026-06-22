@@ -885,20 +885,33 @@ New properties:
 | `allocation.totalBytes` | Total allocated bytes in the measured window |
 | `allocation.bytesPerOperation` | Average allocated bytes per operation |
 
-Measured results:
+Initial measured results:
 
 | Mode | Workload | Throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
 | `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
 
-Conclusion: allocation metrics now make object cost directly visible. In this
-short run, prepared point lookup allocates about `10KB/op`, while mixed
-allocates about `275KB/op`. The mixed workload still has heavy object churn;
-future optimization should combine allocation metrics with workload-specific
-benchmarks to compare point lookup, range count, single-row write, and commit
-allocation before choosing further ResultSet specialization, H2 executor
-bypass, or transaction-object reuse.
+Then the same benchmark shape was used to split allocation by workload:
+
+| Mode | Workload | Throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Main operation | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 1004.35 | 882 | 1974 | 3037 | 13399 | `ADB_TABLE_BULK_ADD_ROW` | `vexra-adb/build/adb-benchmark/jdbc_insert_allocation_stage.properties` |
+| `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `ADB_TABLE_POINT_LOOKUP_FAST` | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
+| `jdbc` | `primary_find` | 431.97 | 1882 | 4476 | 5536 | 51285 | `ADB_TABLE_PRIMARY_FIND` / `ADB_TABLE_ROW_COUNT` | `vexra-adb/build/adb-benchmark/primary_find_allocation_stage.properties` |
+| `jdbc` | `table_count` | 1157.41 | 831 | 1517 | 1883 | 9193 | `ADB_TABLE_TABLE_COUNT_FAST` | `vexra-adb/build/adb-benchmark/table_count_allocation_stage.properties` |
+| `jdbc` | `range_scan` | 1209.68 | 687 | 1550 | 2181 | 1245527 | `ADB_TABLE_RANGE_COUNT_FAST` | `vexra-adb/build/adb-benchmark/range_count_allocation_stage.properties` |
+| `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | bulk add / point lookup / range count | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
+
+Conclusion: allocation metrics now make object cost directly visible. Prepared
+point lookup, table count, and single-row insert are all around `9KB-14KB/op`.
+`primary_find` is about `51KB/op`, while `range_scan` reaches about `1.25MB/op`.
+The mixed workload's `275KB/op` result lines up with its 20% range-count share.
+Therefore, if the next optimization targets allocation, the highest-value path
+is not more single-row write or prepared point-lookup work; it is reducing
+range-count per-row visibility allocation, or adding row-count segment /
+block-level counts. `primary_find` is still a good candidate for bypassing H2
+Statement / row-count outer boundaries.
 
 Point-lookup allocation reproduction command:
 
@@ -926,6 +939,17 @@ Mixed allocation reproduction command:
   "-PadbBenchmarkTransactionBatchSize=100" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties"
 ```
+
+To reproduce the workload allocation split with the same parameter shape,
+replace `-PadbBenchmarkWorkload` with `insert`, `range_scan`, `table_count`, or
+`primary_find`, and write to the corresponding output file:
+
+| workload | output |
+| --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/jdbc_insert_allocation_stage.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/range_count_allocation_stage.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/table_count_allocation_stage.properties` |
+| `primary_find` | `vexra-adb/build/adb-benchmark/primary_find_allocation_stage.properties` |
 
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 

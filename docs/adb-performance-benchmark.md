@@ -861,17 +861,30 @@ mixed 复现命令：
 | `allocation.totalBytes` | 正式统计窗口内分配总字节数 |
 | `allocation.bytesPerOperation` | 平均每个 operation 的分配字节数 |
 
-验证结果：
+首轮验证结果：
 
 | 模式 | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
 | `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
 
-结论：allocation 指标已经能直接暴露对象成本。该短跑中 prepared point lookup
-约 `10KB/op`，mixed 约 `275KB/op`，说明 mixed 的对象分配仍然很重；后续优化应把
-allocation 与 workload 拆分结合起来，对比点查、range count、单行写入和 commit 的分配贡献，
-再决定是否继续做 ResultSet 专用化、H2 执行器绕过或事务批量对象复用。
+随后按同一口径补充 workload allocation 分解：
+
+| 模式 | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 主要操作 | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `jdbc` | `insert` | 1004.35 | 882 | 1974 | 3037 | 13399 | `ADB_TABLE_BULK_ADD_ROW` | `vexra-adb/build/adb-benchmark/jdbc_insert_allocation_stage.properties` |
+| `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `ADB_TABLE_POINT_LOOKUP_FAST` | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
+| `jdbc` | `primary_find` | 431.97 | 1882 | 4476 | 5536 | 51285 | `ADB_TABLE_PRIMARY_FIND` / `ADB_TABLE_ROW_COUNT` | `vexra-adb/build/adb-benchmark/primary_find_allocation_stage.properties` |
+| `jdbc` | `table_count` | 1157.41 | 831 | 1517 | 1883 | 9193 | `ADB_TABLE_TABLE_COUNT_FAST` | `vexra-adb/build/adb-benchmark/table_count_allocation_stage.properties` |
+| `jdbc` | `range_scan` | 1209.68 | 687 | 1550 | 2181 | 1245527 | `ADB_TABLE_RANGE_COUNT_FAST` | `vexra-adb/build/adb-benchmark/range_count_allocation_stage.properties` |
+| `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | bulk add / point lookup / range count | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
+
+结论：allocation 指标已经能直接暴露对象成本。单独 prepared point lookup、table count
+和单行 insert 都在约 `9KB-14KB/op`，`primary_find` 约 `51KB/op`，而 `range_scan`
+达到约 `1.25MB/op`；mixed 约 `275KB/op` 与其 20% range count 占比相符。因此下一轮若以
+allocation 为目标，最有价值的方向不是继续抠单行写或 prepared 点查，而是优化 range count
+逐 row 可见性扫描的对象分配，或做 row-count segment / block-level count；`primary_find`
+则仍适合继续绕过 H2 Statement / row-count 外层。
 
 point lookup allocation 复现命令：
 
@@ -899,6 +912,16 @@ mixed allocation 复现命令：
   "-PadbBenchmarkTransactionBatchSize=100" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties"
 ```
+
+workload allocation 分解复现时保持同一参数口径，将 `-PadbBenchmarkWorkload`
+分别替换为 `insert`、`range_scan`、`table_count`、`primary_find`，并使用对应输出文件：
+
+| workload | output |
+| --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/jdbc_insert_allocation_stage.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/range_count_allocation_stage.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/table_count_allocation_stage.properties` |
+| `primary_find` | `vexra-adb/build/adb-benchmark/primary_find_allocation_stage.properties` |
 
 ## 第六轮普通 JDBC insert 微优化结果
 
