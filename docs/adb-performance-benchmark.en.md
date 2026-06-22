@@ -2428,3 +2428,76 @@ Conclusion:
   `ADB_COMMIT_WRITE`: `VersionKey.toBytes()`, `RowValue.encodeValue()`,
   `AdbWriteBatch` entry allocation, and lower-level ldb write batch / fsync,
   rather than only removing one Java copy object.
+
+## Round 31: Direct Commit Row-Key Encoding
+
+Round 30 removed the temporary `RowValue` copy from the local commit write
+batch, but each row write still constructed a `VersionRowKey` and then copied
+its bytes through `toBytes()`. For append / insert paths dominated by row-key
+writes, this is a stable per-row object cost. This round continues shrinking
+commit / write batch objects:
+
+1. `VersionRowKey.committedBytes(RowKey, long commitTs)` adds a direct encoder
+   that keeps exactly the same on-disk key format as
+   `VersionRowKey.of(...).toBytes()`.
+2. The encoder writes big-endian fields directly, avoiding `ByteBuffer.wrap(...)`
+   and the temporary `VersionRowKey` object.
+3. `TxnManager.commitLocalDirect(...)` uses the direct encoder for `RowKey`.
+   Index keys still use the existing `VersionKey.of(...).toBytes()` path to keep
+   the change narrow.
+4. `VersionKeyTest.committedRowBytesMatchVersionRowKeyEncoding` verifies byte
+   equality with the old object path and covers the decoded table, rowId, commit
+   marker, and `toDataKey()`.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.key.VersionKeyTest --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-direct-row-version-key-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-direct-row-version-key-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-direct-row-version-key-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 353.52 | 2903 | 4430 | 5505 | 36404 | 37 | `vexra-adb/build/adb-benchmark/jdbc_insert_direct_row_version_key_stage.properties` |
+| `mixed` | `jdbc` | 8 | 1984.13 | 2637 | 9528 | 15355 | 711148 | 55 | `vexra-adb/build/adb-benchmark/jdbc_mixed_direct_row_version_key_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 62500.00 | 15 | 18 | 24 | 2835 | - | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_row_version_key_stage.properties` |
+
+Conclusion:
+
+- This round removes more temporary objects from the row-key local commit write
+  path: each row no longer needs a `VersionRowKey` object and a `toBytes()`
+  defensive copy. This completes another part of item 1/4 around commit / write
+  batch key objects.
+- Plain `jdbc insert` allocation moved slightly from Round 30's `36698` to
+  `36404` bytes/op, but throughput regressed from `470.29 ops/s` to
+  `353.52 ops/s`. This should only be recorded as object-path shrinkage, not as
+  a throughput win.
+- Mixed 8-thread throughput and allocation both regressed in this short run.
+  The current benchmark window is dominated by point lookup, range count,
+  storage write, and runtime variance; further per-row small-object work has
+  low marginal value.
+- The next highest-value optimization is no longer hand-removing one key/value
+  object at a time. It should either:
+  1. capture a parseable JFR / async-profiler sample to confirm whether
+     ResultSet / JDBC proxy allocation is still dominant;
+  2. if yes, replace high-frequency `AdbSimpleResultSet` dynamic proxies with
+     dedicated result set classes;
+  3. if no, move to `AdbWriteBatch` / ldb write batch / fsync aggregation, or
+     make ordinary JDBC inserts easier to combine into batch commits.

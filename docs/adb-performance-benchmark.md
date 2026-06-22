@@ -2090,3 +2090,68 @@ benchmark：
 - 下一阶段如果继续优化写入，应继续拆更大的结构性成本：`ADB_COMMIT_WRITE` 内的
   `VersionKey.toBytes()`、`RowValue.encodeValue()`、`AdbWriteBatch` entry 分配、底层 ldb
   write batch / fsync，而不是只减少单个 Java 对象复制。
+
+## 第三十一轮：commit row key 直接编码
+
+第三十轮减少了本地 commit 写 batch 中的 `RowValue` 临时副本，但每个 row
+写入仍然会先构造 `VersionRowKey`，再通过 `toBytes()` 做一次防御性拷贝。对
+append / insert 这种 row-key 写入占主导的路径，这属于稳定存在的 per-row
+对象成本。本轮继续收缩 commit / write batch 相关对象：
+
+1. `VersionRowKey.committedBytes(RowKey, long commitTs)` 新增直接编码入口，
+   保持与 `VersionRowKey.of(...).toBytes()` 完全相同的磁盘 key 格式。
+2. 该入口手写 big-endian 编码，避免 `ByteBuffer.wrap(...)` 和临时
+   `VersionRowKey` 对象。
+3. `TxnManager.commitLocalDirect(...)` 对 `RowKey` 使用直接编码；index key
+   仍走原来的 `VersionKey.of(...).toBytes()`，避免扩大改动面。
+4. `VersionKeyTest.committedRowBytesMatchVersionRowKeyEncoding` 验证直接编码
+   与原对象路径字节完全一致，并覆盖反序列化后的表、rowId、commit 标记和
+   `toDataKey()`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.key.VersionKeyTest --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-direct-row-version-key-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-direct-row-version-key-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_row_version_key_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-direct-row-version-key-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 353.52 | 2903 | 4430 | 5505 | 36404 | 37 | `vexra-adb/build/adb-benchmark/jdbc_insert_direct_row_version_key_stage.properties` |
+| `mixed` | `jdbc` | 8 | 1984.13 | 2637 | 9528 | 15355 | 711148 | 55 | `vexra-adb/build/adb-benchmark/jdbc_mixed_direct_row_version_key_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 62500.00 | 15 | 18 | 24 | 2835 | - | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_direct_row_version_key_stage.properties` |
+
+结论：
+
+- 本轮继续减少了本地 commit 写 batch 中 row-key 路径的临时对象：每个 row
+  不再需要 `VersionRowKey` 对象和 `toBytes()` 防御性拷贝，完成了第 1/4
+  项里对 commit / write batch key 对象的收缩。
+- 普通 `jdbc insert` 的 `allocation.bytesPerOperation` 从第三十轮 `36698`
+  小幅降到 `36404`，但吞吐从 `470.29 ops/s` 回落到 `353.52 ops/s`，所以这
+  仍然只能记录为对象路径优化，不能记录为吞吐优化。
+- mixed 8 线程本轮吞吐和分配都明显变差，说明当前短窗口 benchmark 已经被
+  point lookup、range count、底层写入和运行时波动主导；继续做 per-row 小
+  对象微调的边际收益很低。
+- 下一阶段最有价值的优化不再是继续手工消除单个 key/value 对象，而是：
+  1. 用可解析的 JFR / async-profiler 样本确认 ResultSet / JDBC proxy 是否仍
+     是分配主因；
+  2. 若是，则把高频 `AdbSimpleResultSet` 动态代理替换为专用结果集类；
+  3. 若不是，则转向 `AdbWriteBatch` / ldb write batch / fsync 聚合，或让普通
+     JDBC insert 更容易合并成批量提交。

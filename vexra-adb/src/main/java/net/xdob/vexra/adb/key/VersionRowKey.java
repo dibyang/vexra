@@ -64,4 +64,45 @@ public final class VersionRowKey extends VersionKey {
     wrap.putLong(OFFSET_VERSION, flipSign(Long.MAX_VALUE - version));
     return new VersionRowKey(data);
   }
+
+  /**
+   * 直接编码已提交的 row version key。
+   *
+   * <p>本地 commit 热路径只需要把已有 {@link RowKey} 转成 committed version
+   * key 字节；构造完整 {@link VersionRowKey} 后再调用 {@code toBytes()} 会多分配一个
+   * key 对象和一次防御性拷贝。该方法保持与 {@link #of(TabId, long, boolean, long)}
+   * 完全相同的磁盘格式，只跳过临时对象。</p>
+   *
+   * @param rowKey 逻辑 row key
+   * @param commitTs 提交时间戳
+   * @return committed version key 字节
+   */
+  public static byte[] committedBytes(RowKey rowKey, long commitTs) {
+    byte[] data = new byte[KEY_SIZE];
+    putInt(data, OFFSET_TABLE_ID, rowKey.tableId);
+    putLong(data, OFFSET_EPOCH, rowKey.epoch);
+    data[OFFSET_TYPE] = KeyType.ROW.getCode();
+    putLong(data, OFFSET_ROW_ID, flipSign(rowKey.getRowId()));
+    data[OFFSET_COMMITED] = 1;
+    putLong(data, OFFSET_VERSION, flipSign(Long.MAX_VALUE - commitTs));
+    return data;
+  }
+
+  private static void putInt(byte[] data, int offset, int value) {
+    data[offset] = (byte) (value >>> 24);
+    data[offset + 1] = (byte) (value >>> 16);
+    data[offset + 2] = (byte) (value >>> 8);
+    data[offset + 3] = (byte) value;
+  }
+
+  private static void putLong(byte[] data, int offset, long value) {
+    data[offset] = (byte) (value >>> 56);
+    data[offset + 1] = (byte) (value >>> 48);
+    data[offset + 2] = (byte) (value >>> 40);
+    data[offset + 3] = (byte) (value >>> 32);
+    data[offset + 4] = (byte) (value >>> 24);
+    data[offset + 5] = (byte) (value >>> 16);
+    data[offset + 6] = (byte) (value >>> 8);
+    data[offset + 7] = (byte) value;
+  }
 }

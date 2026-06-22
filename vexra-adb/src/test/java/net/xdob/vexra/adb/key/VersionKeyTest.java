@@ -33,6 +33,23 @@ class VersionKeyTest {
     }
 
     @Test
+    void committedRowBytesMatchVersionRowKeyEncoding() {
+        TabId tabId = TabId.of(7, 12L);
+        RowKey rowKey = RowKey.of(tabId, 345L);
+
+        byte[] direct = VersionRowKey.committedBytes(rowKey, 678L);
+        byte[] viaObject = VersionRowKey.of(tabId, 345L, true, 678L).toBytes();
+        VersionKey decoded = VersionKey.fromBytes(direct);
+
+        assertArrayEquals(viaObject, direct);
+        assertTrue(decoded.isCommited());
+        assertEquals(tabId, decoded.getTabID());
+        assertEquals(345L, decoded.getRowId());
+        assertEquals(Long.MAX_VALUE - 678L, decoded.getCommitTs());
+        assertEquals(rowKey, decoded.toDataKey());
+    }
+
+    @Test
     void indexVersionKeyRoundTripsAndDefensivelyCopiesIndex() {
         TabId tabId = TabId.of(6, 11L);
         byte[] index = new byte[] {1, 2, 3};
