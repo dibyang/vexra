@@ -6,13 +6,26 @@ param(
     [int]$Threads = 8,
     [string]$Mode = "jdbc",
     [string]$OutputDir = "vexra-adb/build/adb-benchmark/jfr",
-    [string]$Url = ""
+    [string]$Url = "",
+    [string]$JavaHome = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+if (-not [string]::IsNullOrWhiteSpace($JavaHome)) {
+    $resolvedJavaHome = Resolve-Path -LiteralPath $JavaHome
+    $env:JAVA_HOME = $resolvedJavaHome.Path
+    $env:Path = (Join-Path $resolvedJavaHome.Path "bin") + [System.IO.Path]::PathSeparator + $env:Path
+}
+
+$java = Get-Command java -ErrorAction Stop
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$javaVersionLine = (& $java.Source -version 2>&1 | Select-Object -First 1).ToString()
+$ErrorActionPreference = $previousErrorActionPreference
 
 $resolvedOutput = Join-Path $root $OutputDir
 New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
@@ -28,7 +41,11 @@ if ([string]::IsNullOrWhiteSpace($Url)) {
 }
 
 $jfrPath = $jfrFile -replace "\\", "/"
-$jfrArgs = "-XX:+UnlockCommercialFeatures -XX:StartFlightRecording=filename=$jfrPath,settings=profile,dumponexit=true"
+if ($javaVersionLine -match '"1\.8\.') {
+    $jfrArgs = "-XX:+UnlockCommercialFeatures -XX:StartFlightRecording=filename=$jfrPath,settings=profile,dumponexit=true"
+} else {
+    $jfrArgs = "-XX:StartFlightRecording=filename=$jfrPath,settings=profile,dumponexit=true"
+}
 
 & .\gradlew.bat :vexra-adb:adbBenchmark `
     "-PadbBenchmarkMode=$Mode" `
@@ -43,3 +60,5 @@ $jfrArgs = "-XX:+UnlockCommercialFeatures -XX:StartFlightRecording=filename=$jfr
 
 Write-Host "JFR: $jfrFile"
 Write-Host "Report: $reportFile"
+Write-Host "Java: $($java.Source)"
+Write-Host "Java version: $javaVersionLine"

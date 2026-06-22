@@ -2501,3 +2501,105 @@ Conclusion:
      dedicated result set classes;
   3. if no, move to `AdbWriteBatch` / ldb write batch / fsync aggregation, or
      make ordinary JDBC inserts easier to combine into batch commits.
+
+## Round 32: Parseable Mixed 8-Thread JFR and Safe-Cache Verify-Key Optimization
+
+After Round 31, this round returned to item 1: capture full `mixed` 8-thread
+JFR evidence before deciding whether to implement dedicated ResultSet classes.
+The first step was making JFR profiling repeatable on this machine:
+
+1. `scripts/adb-benchmark-jfr.ps1` adds a `-JavaHome` option and chooses the JFR
+   startup flags by JDK version. JDK 8 keeps
+   `-XX:+UnlockCommercialFeatures`; JDK 11+ does not use that legacy flag.
+2. `scripts/adb-jfr-hotspots.ps1` now falls back to a Java 11+ parser when the
+   `jfr` CLI is not installed.
+3. `scripts/AdbJfrHotspots.java` uses `jdk.jfr.consumer` to aggregate JFR
+   allocation and execution samples into `summary.txt`,
+   `allocation-events.txt`, `execution-samples.txt`, and `adb-focus.txt`.
+4. `adb-focus.txt` also lists allocated classes under each focus pattern, so a
+   stack match such as `AdbPreparedStatementProxy` can be separated from the
+   actual allocated ldb objects like `Slice`, `InternalKey`, and `[B`.
+
+JFR capture command:
+
+```powershell
+C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -OutputDir 'vexra-adb/build/adb-benchmark/jfr'
+```
+
+JFR hotspot command:
+
+```powershell
+C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -JfrFile 'vexra-adb\build\adb-benchmark\jfr\adb-mixed-20260622-132245.jfr'
+```
+
+JFR result files:
+
+- JFR: `vexra-adb/build/adb-benchmark/jfr/adb-mixed-20260622-132245.jfr`
+- Benchmark: `vexra-adb/build/adb-benchmark/jfr/adb-mixed-20260622-132245.properties`
+- Hotspots: `vexra-adb/build/adb-benchmark/jfr/hotspots/adb-focus.txt`
+
+Key hotspots:
+
+| focus | allocation bytes | events | Notes |
+| --- | ---: | ---: | --- |
+| `commit` | 1173480 | 3411 | Mostly `[B`, ldb `Slice`, `InternalKey`, and `BlockEntry` |
+| `AdbPreparedStatementProxy` | 174912 | 4388 | Many stack matches, but allocated objects mostly come from the ldb read boundary |
+| `TxnMap2.getVisible` | 85336 | 2430 | Mostly ldb `Slice`, `InternalKey`, and `BlockEntry` |
+| `RowCodec` | 1624 | 16 | Not a dominant mixed allocation source in this sample |
+| `WriteBatch` | 1232 | 28 | Present, but smaller than ldb read-boundary samples |
+| `RowValue.decodeValue` | 112 | 2 | Not a dominant mixed allocation source in this sample |
+| `AdbSimpleResultSet` | 48 | 2 | Does not justify dedicated ResultSet as the immediate next priority |
+| `java.lang.reflect.Proxy` | 24 | 1 | Does not justify dedicated ResultSet as the immediate next priority |
+
+The most useful top allocation frames were:
+
+- `java.util.Arrays.copyOf <- [B`: `492536 bytes / 423 events`
+- `net.xdob.vexra.ldb.util.Slice.<init> <- [B`: `145936 bytes / 766 events`
+- `net.xdob.vexra.ldb.util.Slice.slice <- Slice`: `41376 bytes / 1293 events`
+- `InternalTableIterator.getNextElement <- InternalKey`: `17024 bytes / 532 events`
+- `BlockIterator.readEntry <- BlockEntry`: `8424 bytes / 351 events`
+
+Based on this evidence, this round did not implement a dedicated ResultSet.
+Instead, it applied one narrow optimization to the default safe committed-cache
+validation path:
+
+1. `TxnManager.cachedCommittedVersionExists(...)` now uses
+   `VersionRowKey.committedBytes(...)` for `RowKey`.
+2. Index keys keep the existing `VersionKey.of(...).toBytes()` path to keep the
+   change narrow.
+3. `TxnManagerVisibleRowFastPathTest` covers this path through a second read:
+   the first read fills the cache from store, and the second read hits the
+   default safe cache and verifies that the committed version still exists.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Plain mixed benchmark:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_jfr_guided_cache_verify_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-jfr-guided-cache-verify-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | `jdbc` | 8 | 1965.92 | 2776 | 9559 | 14346 | 662947 | 70 | `vexra-adb/build/adb-benchmark/jdbc_mixed_jfr_guided_cache_verify_stage.properties` |
+
+Conclusion:
+
+- Item 1, full mixed 8-thread JFR plus allocation hotspot extraction, is now
+  reproducible and parseable locally.
+- JFR did not prove `AdbSimpleResultSet` / `java.lang.reflect.Proxy` allocation
+  dominance, so item 2 should not be the next highest-priority implementation.
+- The evidence points more strongly at item 3 and item 4: `TxnMap2.getVisible`
+  / ldb `Slice`, `InternalKey`, and `BlockEntry` read-boundary allocation, plus
+  commit / write batch related `[B` allocation.
+- The safe-cache verify-key change is a small object-path optimization. The
+  plain mixed benchmark still regressed to `1965.92 ops/s`, so it is not
+  recorded as a throughput win.

@@ -1082,8 +1082,10 @@ public class TxnManager {
 
   private boolean cachedCommittedVersionExists(DataKey rowKey, long commitTs)
       throws SQLException {
-    VersionKey versionKey = VersionKey.of(rowKey, true, commitTs);
-    return store.get(versionKey.toBytes()) != null;
+    byte[] versionKey = rowKey instanceof RowKey
+        ? VersionRowKey.committedBytes((RowKey) rowKey, commitTs)
+        : VersionKey.of(rowKey, true, commitTs).toBytes();
+    return store.get(versionKey) != null;
   }
 
   /**

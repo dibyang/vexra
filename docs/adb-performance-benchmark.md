@@ -2155,3 +2155,99 @@ benchmark：
   2. 若是，则把高频 `AdbSimpleResultSet` 动态代理替换为专用结果集类；
   3. 若不是，则转向 `AdbWriteBatch` / ldb write batch / fsync 聚合，或让普通
      JDBC insert 更容易合并成批量提交。
+
+## 第三十二轮：mixed 8 线程 JFR 可解析热点与 safe-cache 验证 key 优化
+
+第三十一轮之后回到第 1 项要求：先拿完整 `mixed` 8 线程 JFR 证据，再决定是否
+实现专用 ResultSet。本轮先补齐本机可重复的 JFR 工具链：
+
+1. `scripts/adb-benchmark-jfr.ps1` 新增 `-JavaHome` 参数，并按 JDK 8 / JDK 11+
+   自动选择 JFR 启动参数。默认 JDK 8 仍使用
+   `-XX:+UnlockCommercialFeatures`；JDK 11+ 不再附加该旧参数。
+2. `scripts/adb-jfr-hotspots.ps1` 在没有 `jfr` CLI 时，自动使用 Java 11+
+   fallback 解析器。
+3. 新增 `scripts/AdbJfrHotspots.java`，基于 `jdk.jfr.consumer` 聚合 JFR
+   allocation / execution sample，输出 `summary.txt`、`allocation-events.txt`、
+   `execution-samples.txt` 和 `adb-focus.txt`。
+4. `adb-focus.txt` 额外输出 focus pattern 下的分配 class，避免只看到
+   `AdbPreparedStatementProxy` 栈命中，却不知道实际分配对象来自 ldb `Slice` /
+   `InternalKey` / `[B`。
+
+JFR 采集命令：
+
+```powershell
+C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -OutputDir 'vexra-adb/build/adb-benchmark/jfr'
+```
+
+JFR 解析命令：
+
+```powershell
+C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -JfrFile 'vexra-adb\build\adb-benchmark\jfr\adb-mixed-20260622-132245.jfr'
+```
+
+JFR 结果文件：
+
+- JFR：`vexra-adb/build/adb-benchmark/jfr/adb-mixed-20260622-132245.jfr`
+- benchmark：`vexra-adb/build/adb-benchmark/jfr/adb-mixed-20260622-132245.properties`
+- hotspots：`vexra-adb/build/adb-benchmark/jfr/hotspots/adb-focus.txt`
+
+关键热点：
+
+| focus | allocation bytes | events | 说明 |
+| --- | ---: | ---: | --- |
+| `commit` | 1173480 | 3411 | 主要是 `[B`、ldb `Slice`、`InternalKey`、`BlockEntry` |
+| `AdbPreparedStatementProxy` | 174912 | 4388 | 栈命中较多，但实际分配主要来自 ldb 读边界 |
+| `TxnMap2.getVisible` | 85336 | 2430 | 主要是 ldb `Slice`、`InternalKey`、`BlockEntry` |
+| `RowCodec` | 1624 | 16 | 不是本轮 mixed 分配大头 |
+| `WriteBatch` | 1232 | 28 | 有命中，但样本量小于 ldb 读边界 |
+| `RowValue.decodeValue` | 112 | 2 | 不是本轮 mixed 分配大头 |
+| `AdbSimpleResultSet` | 48 | 2 | 不支持立即做专用 ResultSet 的优先级判断 |
+| `java.lang.reflect.Proxy` | 24 | 1 | 不支持立即做专用 ResultSet 的优先级判断 |
+
+top allocation frame 里最值得关注的是：
+
+- `java.util.Arrays.copyOf <- [B`：`492536 bytes / 423 events`
+- `net.xdob.vexra.ldb.util.Slice.<init> <- [B`：`145936 bytes / 766 events`
+- `net.xdob.vexra.ldb.util.Slice.slice <- Slice`：`41376 bytes / 1293 events`
+- `InternalTableIterator.getNextElement <- InternalKey`：`17024 bytes / 532 events`
+- `BlockIterator.readEntry <- BlockEntry`：`8424 bytes / 351 events`
+
+基于该证据，本轮没有实现专用 ResultSet。相反，先把默认 safe committed cache
+验证路径里的 row-key committed version key 也切到直接编码：
+
+1. `TxnManager.cachedCommittedVersionExists(...)` 对 `RowKey` 使用
+   `VersionRowKey.committedBytes(...)`。
+2. index key 仍保留 `VersionKey.of(...).toBytes()`，避免扩大改动面。
+3. 该路径由 `TxnManagerVisibleRowFastPathTest` 的二次读取覆盖：第一次 store scan
+   回填 cache，第二次命中默认 safe cache 并验证 committed 版本仍存在。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+普通 mixed benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_jfr_guided_cache_verify_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-jfr-guided-cache-verify-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_COMMIT_WRITE` avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | `jdbc` | 8 | 1965.92 | 2776 | 9559 | 14346 | 662947 | 70 | `vexra-adb/build/adb-benchmark/jdbc_mixed_jfr_guided_cache_verify_stage.properties` |
+
+结论：
+
+- 第 1 项的“完整 mixed 8 线程 JFR + allocation hot spots”现在已可在本机复现并解析。
+- JFR 没有证明 `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 是分配大头，因此第 2
+  项专用 ResultSet 暂不应作为下一轮最高优先级。
+- 当前证据更支持继续推进第 3 项和第 4 项：`TxnMap2.getVisible` / ldb
+  `Slice`、`InternalKey`、`BlockEntry` 读边界，以及 commit / write batch 相关 `[B`
+  分配。
+- 本轮 safe-cache 验证 key 直接编码属于小幅对象路径收缩；普通 mixed 吞吐仍回落到
+  `1965.92 ops/s`，不能记录为吞吐优化。
