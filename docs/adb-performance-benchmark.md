@@ -3137,3 +3137,62 @@ benchmark：
 - 后续写入方向的更高价值点是二级索引 key 构造复用、commit 阶段 key/value 编码复用，以及争取 h2db 暴露
   更底层的 Insert 批量回调。range/mixed 的主要 allocation 问题仍要靠 ldb raw/reusable cursor 或
   segment/block-level count 元数据继续推进。
+
+## 第四十七轮：ADB 与原生 H2 文件表对比
+
+本轮按用户要求，用当前提交后的代码跑一轮 `adb_table` 与原生 h2db 文件表对比。两者都走同一个
+`AdbBenchmarkMain` JDBC benchmark，差异只在：
+
+- ADB：`jdbc:adb:ldb:*` + `ENGINE "adb_table"`；
+- H2：`jdbc:h2:*` + 原生 H2 表。
+
+测试参数：
+
+| 参数 | 值 |
+| --- | --- |
+| 日期 | 2026-06-22 |
+| 行数 | 5000 |
+| 预热操作数 | 300 |
+| 正式操作数 | 3000 |
+| range size | 32 |
+| insert | `transactionBatchSize=100`、`statementBatchSize=100`、单线程 |
+| point/table/range | 单线程 |
+| mixed | 8 线程、`transactionBatchSize=100` |
+| 二级索引 | 关闭 |
+
+验证方式：每个 workload 分别执行 ADB 与 H2 两次 benchmark。批量 PowerShell 外层命令在最后收尾输出前
+达到超时时间，但所有 Gradle 子任务均显示 `BUILD SUCCESSFUL`，并且结果 properties 文件已写出。
+
+结果：
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 27027.03 | 36144.58 | 0.75x | 73 | 53 | 3453 | 2636 |
+| `point_lookup` | 1504.51 | 369.37 | 4.07x | 1894 | 5773 | 9928 | 36126 |
+| `table_count` | 1304.35 | 328.55 | 3.97x | 2063 | 6969 | 9382 | 34950 |
+| `range_scan` | 1191.90 | 346.82 | 3.44x | 2377 | 6105 | 502877 | 37423 |
+| `mixed` | 2237.14 | 18181.82 | 0.12x | 11531 | 5167 | 580216 | 3556 |
+
+结果文件：
+
+| workload | ADB 结果文件 | H2 结果文件 |
+| --- | --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/adb_insert_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_insert_h2_compare_20260622-162759.properties` |
+| `point_lookup` | `vexra-adb/build/adb-benchmark/adb_point_lookup_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_point_lookup_h2_compare_20260622-162759.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/adb_table_count_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_table_count_h2_compare_20260622-162759.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/adb_range_scan_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_range_scan_h2_compare_20260622-162759.properties` |
+| `mixed` | `vexra-adb/build/adb-benchmark/adb_mixed_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_mixed_h2_compare_20260622-162759.properties` |
+
+结论：
+
+- ADB 对 `point_lookup`、`table_count`、`range_scan` 已经有明显专项优势，吞吐约为 H2 的
+  `3.44x` 到 `4.07x`，p99 也更低。
+- `insert` 这轮只有 H2 的 `0.75x`，说明普通 JDBC insert 路径还没有完全追上 H2 原生表；`jdbc_bulk`
+  入口虽然能达到更高吞吐，但它不是原生 H2 对等入口，不能用于本表直接对比。
+- `mixed` 是当前最差项，只有 H2 的 `0.12x`，主要因为 ADB mixed 同时触发 point lookup、range count
+  和写入路径，而当前 allocation 仍高达约 `580KB/op`。这和前面 JFR 结论一致：range/mixed 的主瓶颈仍在
+  ldb cursor key/value 边界、range count 外层扫描，以及写入路径的组合成本。
+- 下一阶段若目标是“整体接近或超过 H2”，最高价值不再是继续优化单点查询，而是优先处理 mixed：
+  1）range count 引入 segment/block-level count 或 ldb reusable cursor；
+  2）普通 JDBC insert 路径继续减少 key/value 编码和二级索引构造成本；
+  3）把 mixed 中的读写比例拆分成独立子基准，避免单个综合分数掩盖瓶颈来源。

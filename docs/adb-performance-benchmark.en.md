@@ -3610,3 +3610,71 @@ Conclusion:
   reuse, commit-stage key/value encoding reuse, and a lower-level h2db Insert
   bulk callback. The main `range/mixed` allocation issue still needs ldb
   raw/reusable cursor support or segment/block-level count metadata.
+
+## Round 47: ADB vs Native H2 File Tables
+
+This round compares the current ADB table engine with native h2db file tables,
+as requested. Both sides use the same `AdbBenchmarkMain` JDBC benchmark. The
+only difference is the table engine:
+
+- ADB: `jdbc:adb:ldb:*` plus `ENGINE "adb_table"`.
+- H2: `jdbc:h2:*` plus a native H2 table.
+
+Parameters:
+
+| Parameter | Value |
+| --- | --- |
+| Date | 2026-06-22 |
+| Rows | 5000 |
+| Warmup operations | 300 |
+| Measured operations | 3000 |
+| Range size | 32 |
+| Insert | `transactionBatchSize=100`, `statementBatchSize=100`, single thread |
+| point/table/range | single thread |
+| mixed | 8 threads, `transactionBatchSize=100` |
+| Secondary index | disabled |
+
+Validation: each workload was run once for ADB and once for H2. The outer
+PowerShell loop reached its timeout before printing the final stamp, but every
+Gradle benchmark sub-run reported `BUILD SUCCESSFUL`, and all result properties
+files were written.
+
+Results:
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 27027.03 | 36144.58 | 0.75x | 73 | 53 | 3453 | 2636 |
+| `point_lookup` | 1504.51 | 369.37 | 4.07x | 1894 | 5773 | 9928 | 36126 |
+| `table_count` | 1304.35 | 328.55 | 3.97x | 2063 | 6969 | 9382 | 34950 |
+| `range_scan` | 1191.90 | 346.82 | 3.44x | 2377 | 6105 | 502877 | 37423 |
+| `mixed` | 2237.14 | 18181.82 | 0.12x | 11531 | 5167 | 580216 | 3556 |
+
+Result files:
+
+| workload | ADB result file | H2 result file |
+| --- | --- | --- |
+| `insert` | `vexra-adb/build/adb-benchmark/adb_insert_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_insert_h2_compare_20260622-162759.properties` |
+| `point_lookup` | `vexra-adb/build/adb-benchmark/adb_point_lookup_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_point_lookup_h2_compare_20260622-162759.properties` |
+| `table_count` | `vexra-adb/build/adb-benchmark/adb_table_count_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_table_count_h2_compare_20260622-162759.properties` |
+| `range_scan` | `vexra-adb/build/adb-benchmark/adb_range_scan_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_range_scan_h2_compare_20260622-162759.properties` |
+| `mixed` | `vexra-adb/build/adb-benchmark/adb_mixed_h2_compare_20260622-162759.properties` | `vexra-adb/build/adb-benchmark/h2_mixed_h2_compare_20260622-162759.properties` |
+
+Conclusion:
+
+- ADB has clear workload-specific wins for `point_lookup`, `table_count`, and
+  `range_scan`, with throughput around `3.44x` to `4.07x` H2 and lower p99
+  latency.
+- Regular JDBC `insert` is still only `0.75x` H2 in this run. The `jdbc_bulk`
+  entry can reach higher throughput, but it is not an equivalent native-H2 entry
+  point and should not be used for this direct table.
+- `mixed` is currently the weakest result at only `0.12x` H2. ADB mixed combines
+  point lookup, range count, and write-path cost, while allocation still sits at
+  roughly `580KB/op`. This matches the earlier JFR conclusion: the main mixed
+  bottleneck remains the ldb cursor key/value boundary, range-count scanning,
+  and combined write-path overhead.
+- If the goal is to approach or beat H2 overall, the highest-value next step is
+  no longer point lookup. It is mixed-workload work: add segment/block-level
+  count metadata or ldb reusable cursors for range count, continue reducing
+  regular JDBC insert key/value and secondary-index construction cost, and split
+  the mixed workload into smaller sub-benchmarks so one aggregate score does not
+  hide the source bottleneck.
