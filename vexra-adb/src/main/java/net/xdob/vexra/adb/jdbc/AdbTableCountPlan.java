@@ -3,7 +3,6 @@ package net.xdob.vexra.adb.jdbc;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Collections;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.TxnMap2;
@@ -12,8 +11,6 @@ import org.h2.engine.SessionLocal;
 import org.h2.jdbc.JdbcConnection;
 import org.h2.schema.Schema;
 import org.h2.table.Table;
-import org.h2.value.Value;
-import org.h2.value.ValueBigint;
 
 /**
  * ADB 全表 COUNT 的 JDBC 快路径计划。
@@ -90,9 +87,7 @@ final class AdbTableCountPlan {
     try {
       TxnMap2 map = table.getTxnMap(session);
       long count = map.getRowCount(table.getId());
-      Value[] values = new Value[]{ValueBigint.get(count)};
-      return AdbSimpleResultSet.singleRow(Collections.singletonList("COUNT(*)"),
-          values);
+      return AdbSimpleResultSet.singleLong("COUNT(*)", count);
     } catch (SQLException e) {
       failure = e;
       throw e;

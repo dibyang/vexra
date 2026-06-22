@@ -1880,3 +1880,43 @@ trusted mixed 8 线程复跑命令：
 - 该阶段让 `trustCommitted` 从“纯压测开关”前进为“通过 runtime restore 可控失效的压测/局部优化开关”。
   下一步要继续把收益默认化，需要覆盖 region snapshot installer、直接 `DbStore.restore(...)` 调用和外部
   store 变更通知，或者引入 store generation。
+
+## 第二十七轮：全表 COUNT(*) singleLong 结果集
+
+prepared range count 在第十几轮已经改为 `AdbSimpleResultSet.singleLong(...)`，但普通
+`SELECT COUNT(*) FROM table` 仍然通过 `ValueBigint + Value[] + singleRow(...)` 构造结果集。
+本轮把 `AdbTableCountPlan` 也切换到 `singleLong("COUNT(*)", count)`：
+
+1. 去掉 `AdbTableCountPlan` 中每次 count 快路径都会创建的 `ValueBigint` 和单元素 `Value[]`。
+2. 保留 `COUNT(*)` 列名，继续支持 `findColumn("COUNT(*)")`、`getLong(1)` 和 `getLong("COUNT(*)")`。
+3. 不改变 row-count meta、事务本地 delta 和 SQL fallback 语义。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=table_count -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_single_long_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-single-long-stage/adb-benchmark
+```
+
+结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `table_count` | 1 | 2158.27 | 436 | 661 | 952 | 9149 | `vexra-adb/build/adb-benchmark/table_count_single_long_stage.properties` |
+| `table_count` | 8 | 3802.28 | 1842 | 3702 | 4967 | 9467 | `vexra-adb/build/adb-benchmark/jdbc_table_count_single_long_stage.properties` |
+
+结论：
+
+- 单线程 `table_count` 相比第十九轮 prewarm 基线 `1318.68 ops/s` 有明显提升，p99 从
+  `1844us` 降到 `952us`。
+- `allocation bytes/op` 与历史基线基本同量级，说明本轮主要减少的是 count 结果边界上的临时对象，
+  整体分配仍由 JDBC proxy / statement / diagnostics 周边主导。
+- 这完成了第 5 项中“COUNT 快路径继续使用专用 long ResultSet handler”的一部分；真正的
+  “去掉动态代理的专用 ResultSet 类”仍应等待 JFR allocation 证据后再做。

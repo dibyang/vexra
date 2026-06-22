@@ -2172,3 +2172,51 @@ Conclusion:
   the next step is covering region snapshot installer, direct
   `DbStore.restore(...)` callers, and external store-change notification, or
   introducing a store generation mechanism.
+
+## Round 27: Full-Table COUNT(*) singleLong ResultSet
+
+Prepared range count had already been moved to
+`AdbSimpleResultSet.singleLong(...)`, but plain `SELECT COUNT(*) FROM table`
+still built its fast-path result through `ValueBigint + Value[] +
+singleRow(...)`. This round changes `AdbTableCountPlan` to return
+`singleLong("COUNT(*)", count)` as well:
+
+1. Remove per-count `ValueBigint` and one-element `Value[]` allocation from the
+   table-count fast path.
+2. Keep the `COUNT(*)` column name and preserve `findColumn("COUNT(*)")`,
+   `getLong(1)`, and `getLong("COUNT(*)")` behavior.
+3. Do not change row-count metadata, transaction-local delta, or SQL fallback
+   semantics.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmark:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=table_count -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_single_long_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-single-long-stage/adb-benchmark
+```
+
+Result:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `table_count` | 1 | 2158.27 | 436 | 661 | 952 | 9149 | `vexra-adb/build/adb-benchmark/table_count_single_long_stage.properties` |
+| `table_count` | 8 | 3802.28 | 1842 | 3702 | 4967 | 9467 | `vexra-adb/build/adb-benchmark/jdbc_table_count_single_long_stage.properties` |
+
+Conclusion:
+
+- Single-thread `table_count` improved clearly versus the Round 19 prewarm
+  baseline of `1318.68 ops/s`; p99 dropped from `1844us` to `952us`.
+- `allocation bytes/op` stayed in the same range as the historical baseline,
+  which means this round mainly removes temporary objects at the count result
+  boundary, while total allocation is still dominated by JDBC proxy /
+  statement / diagnostics overhead.
+- This completes part of item 5 by using the dedicated long ResultSet handler
+  for the full-table count fast path. The fully dedicated non-proxy ResultSet
+  class should still wait for JFR allocation evidence.
