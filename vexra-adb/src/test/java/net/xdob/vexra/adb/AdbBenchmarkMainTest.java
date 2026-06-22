@@ -242,6 +242,29 @@ class AdbBenchmarkMainTest {
   }
 
   @Test
+  void shouldRunPrimaryFindBenchmarkAgainstLdbUrl() throws Exception {
+    Path output = tempDir.resolve("primary-find.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("primary-find").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "primary_find",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "5",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("primary_find", result.getWorkload());
+    assertEquals(5L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertTrue(containsPropertyValue(properties,
+        "ADB_TABLE_PRIMARY_FIND ADB_BENCH"));
+  }
+
+  @Test
   void shouldRunTableCountBenchmarkAgainstLdbUrl() throws Exception {
     String url = "jdbc:adb:ldb:" + tempDir.resolve("table-count").resolve(
         "adb-benchmark") + ";DB_CLOSE_DELAY=0";
@@ -288,5 +311,10 @@ class AdbBenchmarkMainTest {
       properties.load(input);
     }
     return properties;
+  }
+
+  private static boolean containsPropertyValue(Properties properties,
+      String expectedValue) {
+    return properties.values().contains(expectedValue);
   }
 }

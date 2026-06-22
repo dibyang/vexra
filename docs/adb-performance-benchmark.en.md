@@ -735,6 +735,69 @@ Mixed reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties"
 ```
 
+## Round 13 `PRIMARY_FIND` Object-Boundary Diagnostics and Decode Path
+
+This round splits the H2 primary-index point lookup object boundary into finer
+diagnostic phases and removes one temporary Row round-trip on cache misses. The
+old `AdbPrimaryIndex.decodePointRow` cache-miss path first called
+`RowCodec.decode` to build a full H2 `Row`, then copied that Row back into a
+`Value[]` for the decoded-row cache. The new path is:
+
+1. `RowCodec.decodeRowValues` decodes the payload directly into `Value[]`.
+2. The decoded-row cache stores the `Value[]`.
+3. The H2 `DefaultRow` is created from `Value[]` only at the cursor boundary.
+
+New detailed diagnostic phases:
+
+| phase | Meaning |
+| --- | --- |
+| `ADB_PRIMARY_FIND_ROW_DECODE` | Full payload-to-`Value[]` column decoding |
+| `ADB_PRIMARY_FIND_ROW_BUILD` | `Value[]` to H2 `DefaultRow` object boundary |
+
+This round also adds a `primary_find` benchmark workload. It uses ordinary
+`Statement` SQL, `SELECT NAME FROM ADB_BENCH WHERE ID = <id>`, to bypass the
+prepared point-lookup fast path and exercise H2 `AdbPrimaryIndex.find`
+directly.
+
+Measured result:
+
+| Mode | Workload | Diagnostics | Throughput ops/s | p50 us | p95 us | p99 us | max us | Result file |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `primary_find` | detailed on | 435.29 | 2174 | 3395 | 4350 | 8600 | `vexra-adb/build/adb-benchmark/primary_find_row_boundary_stage.properties` |
+
+Main phase summary:
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_TABLE_PRIMARY_FIND ADB_BENCH` | 3000 | 448 | 3000 |
+| `ADB_PRIMARY_FIND_VISIBLE_ROW` | 3000 | 6 | 108 |
+| `ADB_PRIMARY_FIND_ROW_BUILD` | 3000 | 0 | 88 |
+| `ADB_PRIMARY_FIND_ROW_DECODE` | 2700 | 5 | 85 |
+| `ADB_PRIMARY_FIND_ROW_CACHE_HIT` | 300 | 2 | 78 |
+| `ADB_PRIMARY_FIND_ROW_CACHE_MISS` | 2700 | 8 | 241 |
+
+Conclusion: primary-find visible-row resolution, payload decoding, and H2 Row
+construction are now visible as separate phases, and the cache-miss path no
+longer creates a temporary Row just to populate the decoded cache. Overall
+`primary_find` throughput is still far below the prepared point-lookup fast
+path, which suggests the remaining cost is more likely in H2 Statement
+parsing/execution, row-count calls, and the outer ResultSet boundary than in
+payload decoding alone.
+
+`primary_find` reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-row-boundary-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_row_boundary_stage.properties" `
+  "-PadbBenchmarkDetailedDiagnostics=true"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

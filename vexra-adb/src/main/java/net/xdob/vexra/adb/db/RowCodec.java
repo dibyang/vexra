@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 import static org.h2.value.Value.*;
 
@@ -329,6 +330,30 @@ public interface RowCodec {
     return values;
   }
 
+  /**
+   * 解码完整行 payload，但只返回列值数组。
+   *
+   * <p>主键查找和缓存路径可以先缓存列值数组，再在 H2 边界按需构造 {@link Row}，
+   * 避免 cache miss 时先创建临时 Row、随后又把 Row 拆回数组。</p>
+   *
+   * @param bytes 行 payload
+   * @return 行列值数组，调用方可以安全持有该数组
+   */
+  static Value[] decodeRowValues(byte[] bytes) {
+    if (bytes == null) {
+      throw new IllegalArgumentException("decode bytes is null ");
+    }
+    if (bytes.length == 0) {
+      throw new IllegalArgumentException("decode bytes is empty");
+    }
+    Value value = decode(bytes);
+    if (value instanceof ValueRow) {
+      Value[] values = ((ValueRow) value).getList();
+      return Arrays.copyOf(values, values.length);
+    }
+    return new Value[]{value};
+  }
+
   static boolean isSelectedColumn(int[] columnIndexes, int rowColumn) {
     for (int i = 0; i < columnIndexes.length; i++) {
       if (columnIndexes[i] == rowColumn) {
@@ -348,20 +373,8 @@ public interface RowCodec {
   }
 
   static Row decode(long rowId, byte[] bytes){
-    if (bytes == null) {
-      throw new IllegalArgumentException("decode bytes is null ");
-    }
-    if (bytes.length == 0) {
-      throw new IllegalArgumentException("decode bytes is empty");
-    }
-    Value value = decode(bytes);
-    if (value instanceof ValueRow) {
-      Value[] values = ((ValueRow) value).getList();
-      DefaultRow row = new DefaultRow(values);
-      row.setKey(rowId);
-      return row;
-    }
-    DefaultRow row = new DefaultRow(new Value[]{value});
+    Value[] values = decodeRowValues(bytes);
+    DefaultRow row = new DefaultRow(values);
     row.setKey(rowId);
     return row;
   }

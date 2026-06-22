@@ -457,44 +457,70 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
     if (!detailedSqlDiagnostics()) {
       CachedDecodedRow cached = decodedRowCache.get(rowKey);
       if (cached != null && cached.commitTs == rowValue.commitTs) {
-        return cached.toRow(rowId);
+        return rowFromValues(rowId, cached.values);
       }
-      Row row = RowCodec.decode(rowId, rowValue.payload);
-      cacheDecodedRow(rowKey, rowValue.commitTs, row);
-      return row;
+      Value[] values = RowCodec.decodeRowValues(rowValue.payload);
+      cacheDecodedValues(rowKey, rowValue.commitTs, values);
+      return rowFromValues(rowId, values);
     }
     long started = System.nanoTime();
     CachedDecodedRow cached = decodedRowCache.get(rowKey);
     if (cached != null && cached.commitTs == rowValue.commitTs) {
       try {
-        return cached.toRow(rowId);
+        return buildPointRow(rowId, cached.values);
       } finally {
         rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_CACHE_HIT",
             System.nanoTime() - started);
       }
     }
     try {
-      Row row = RowCodec.decode(rowId, rowValue.payload);
-      cacheDecodedRow(rowKey, rowValue.commitTs, row);
-      return row;
+      Value[] values = decodePointValues(rowValue);
+      cacheDecodedValues(rowKey, rowValue.commitTs, values);
+      return buildPointRow(rowId, values);
     } finally {
       rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_CACHE_MISS",
           System.nanoTime() - started);
     }
   }
 
+  private Value[] decodePointValues(RowValue rowValue) {
+    long started = System.nanoTime();
+    try {
+      return RowCodec.decodeRowValues(rowValue.payload);
+    } finally {
+      rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_DECODE",
+          System.nanoTime() - started);
+    }
+  }
+
+  private Row buildPointRow(long rowId, Value[] values) {
+    long started = System.nanoTime();
+    try {
+      return rowFromValues(rowId, values);
+    } finally {
+      rocksTable.recordSqlPhase("ADB_PRIMARY_FIND_ROW_BUILD",
+          System.nanoTime() - started);
+    }
+  }
+
+  private static Row rowFromValues(long rowId, Value[] values) {
+    DefaultRow row = new DefaultRow(Arrays.copyOf(values, values.length));
+    row.setKey(rowId);
+    return row;
+  }
+
   private static boolean detailedSqlDiagnostics() {
     return Boolean.getBoolean("vexra.adb.sql.diagnostic.detail");
   }
 
-  private void cacheDecodedRow(RowKey rowKey, long commitTs, Row row) {
+  private void cacheDecodedValues(RowKey rowKey, long commitTs, Value[] values) {
     if (DECODED_ROW_CACHE_LIMIT <= 0) {
       return;
     }
     if (decodedRowCache.size() >= DECODED_ROW_CACHE_LIMIT) {
       decodedRowCache.clear();
     }
-    decodedRowCache.put(rowKey, CachedDecodedRow.of(commitTs, row));
+    decodedRowCache.put(rowKey, CachedDecodedRow.of(commitTs, values));
   }
 
   private static final class CachedDecodedRow {
@@ -506,18 +532,9 @@ public class AdbPrimaryIndex extends AdbIndex<Long, SearchRow> {
       this.values = values;
     }
 
-    private static CachedDecodedRow of(long commitTs, Row row) {
-      Value[] values = new Value[row.getColumnCount()];
-      for (int i = 0; i < values.length; i++) {
-        values[i] = row.getValue(i);
-      }
-      return new CachedDecodedRow(commitTs, values);
-    }
-
-    private Row toRow(long rowId) {
-      DefaultRow row = new DefaultRow(Arrays.copyOf(values, values.length));
-      row.setKey(rowId);
-      return row;
+    private static CachedDecodedRow of(long commitTs, Value[] values) {
+      return new CachedDecodedRow(commitTs,
+          Arrays.copyOf(values, values.length));
     }
   }
 

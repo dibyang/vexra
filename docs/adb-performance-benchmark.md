@@ -726,6 +726,64 @@ mixed 复现命令：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_bulk_stage.properties"
 ```
 
+## 第十三轮 `PRIMARY_FIND` 对象边界诊断与解码路径结果
+
+本轮把 H2 primary index 路径下的点查对象边界拆得更细，并减少 cache miss 时的临时 Row
+拆装。旧路径在 `AdbPrimaryIndex.decodePointRow` cache miss 时先通过
+`RowCodec.decode` 构造完整 H2 `Row`，再为 decoded row cache 把 `Row` 拆回 `Value[]`。
+新路径改为：
+
+1. `RowCodec.decodeRowValues` 直接把 payload 解码为 `Value[]`。
+2. decoded row cache 保存 `Value[]`。
+3. 只有返回 H2 cursor 前才通过 `Value[] -> DefaultRow` 构造 Row。
+
+详细诊断新增阶段：
+
+| phase | 含义 |
+| --- | --- |
+| `ADB_PRIMARY_FIND_ROW_DECODE` | payload 到 `Value[]` 的完整列值解码 |
+| `ADB_PRIMARY_FIND_ROW_BUILD` | `Value[]` 到 H2 `DefaultRow` 的对象边界 |
+
+同时新增 benchmark workload `primary_find`，使用普通 `Statement`
+执行 `SELECT NAME FROM ADB_BENCH WHERE ID = <id>`，用于绕过 prepared point lookup
+快路径并稳定触发 H2 `AdbPrimaryIndex.find`。
+
+验证结果：
+
+| 模式 | workload | diagnostics | throughput ops/s | p50 us | p95 us | p99 us | max us | 结果文件 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `primary_find` | detailed on | 435.29 | 2174 | 3395 | 4350 | 8600 | `vexra-adb/build/adb-benchmark/primary_find_row_boundary_stage.properties` |
+
+主要阶段摘要：
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_TABLE_PRIMARY_FIND ADB_BENCH` | 3000 | 448 | 3000 |
+| `ADB_PRIMARY_FIND_VISIBLE_ROW` | 3000 | 6 | 108 |
+| `ADB_PRIMARY_FIND_ROW_BUILD` | 3000 | 0 | 88 |
+| `ADB_PRIMARY_FIND_ROW_DECODE` | 2700 | 5 | 85 |
+| `ADB_PRIMARY_FIND_ROW_CACHE_HIT` | 300 | 2 | 78 |
+| `ADB_PRIMARY_FIND_ROW_CACHE_MISS` | 2700 | 8 | 241 |
+
+结论：`PRIMARY_FIND` 内部可见性解析、payload 解码和 H2 Row 构造都已经拆分可见；
+本轮还移除了 cache miss 时“先构造 Row 再拆数组”的中间对象。当前 `primary_find`
+整体吞吐仍明显低于 prepared point lookup 快路径，说明剩余大头更可能在 H2 Statement
+解析/执行器、row-count 调用和 ResultSet 外层，而不是单独的 row payload decode。
+
+`primary_find` 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-row-boundary-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_row_boundary_stage.properties" `
+  "-PadbBenchmarkDetailedDiagnostics=true"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB
