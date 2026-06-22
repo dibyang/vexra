@@ -59,6 +59,34 @@ class AdbBenchmarkMainTest {
   }
 
   /**
+   * 验证 benchmark 可以用同一套 SQL workload 跑 h2db 默认表，作为 ADB 对比基线。
+   */
+  @Test
+  void shouldRunPointLookupBenchmarkAgainstH2TableEngine() throws Exception {
+    Path output = tempDir.resolve("h2-table-engine.properties");
+    String url = "jdbc:h2:file:" + tempDir.resolve("h2-baseline").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--tableEngine", "h2",
+        "--workload", "point_lookup",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "5",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("jdbc", result.getMode());
+    assertEquals("point_lookup", result.getWorkload());
+    assertEquals(5L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("h2", properties.getProperty("tableEngine"));
+    assertEquals("0", properties.getProperty("sqlDiagnostics.totalSqlCount"));
+  }
+
+  /**
    * 验证 JDBC benchmark 支持按批次提交事务，用于区分单条 auto-commit 和批量写入成本。
    */
   @Test

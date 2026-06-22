@@ -2540,3 +2540,68 @@ benchmark：
   1. ldb cursor raw-view / reusable-entry，减少 range count 和 point lookup 的 key/value 拷贝；
   2. 写入端 group commit / write batch 聚合，降低普通 JDBC insert 的提交成本；
   3. segment/block-level count 元数据，避免 range count 对大量 entry 做可见性扫描。
+
+## 第三十八轮：ADB 与 h2db 默认表引擎对比
+
+为了确认 ADB 当前相对 h2db 默认表引擎的收益，本轮给 `adbBenchmark` 增加
+`--tableEngine adb|h2` / `-PadbBenchmarkTableEngine=adb|h2` 开关：
+
+1. `tableEngine=adb` 保持原有 `ENGINE "adb_table"` 建表方式。
+2. `tableEngine=h2` 使用普通 `CREATE TABLE`，通过同一套 JDBC SQL 和 workload 跑 h2db
+   默认表引擎。
+3. 对比测试关闭 ADB SQL 诊断统计（`-PadbBenchmarkSqlDiagnostics=false`），避免观测开销影响
+   ADB 结果。
+4. 新增 `shouldRunPointLookupBenchmarkAgainstH2TableEngine`，验证 H2 baseline 路径可运行且不会产生
+   ADB SQL 诊断计数。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunPointLookupBenchmarkAgainstH2TableEngine --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunMixedBenchmarkAgainstLdbUrl --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark 口径：
+
+- 文件库，非 mem 模式。
+- `rows=5000`，`warmupOperations=300`，`operations=3000`。
+- `insert`、`point_lookup`、`table_count`、`range_scan` 单线程。
+- `mixed` 使用 8 线程，workload 比例仍为 10% insert、70% point lookup、20% range count。
+- `range_scan` 实际执行 `SELECT COUNT(*) ... BETWEEN ? AND ?`，本轮保持历史命名。
+
+结果：
+
+| workload | ADB throughput ops/s | H2 throughput ops/s | ADB/H2 吞吐倍数 | ADB p99 us | H2 p99 us | p99 改善倍数 | ADB bytes/op | H2 bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 759.88 | 421.47 | 1.80x | 3195 | 6395 | 2.00x | 34163 | 35374 |
+| `point_lookup` | 1717.23 | 264.62 | 6.49x | 1427 | 6654 | 4.66x | 9355 | 34232 |
+| `table_count` | 1870.32 | 354.90 | 5.27x | 1390 | 6406 | 4.61x | 8802 | 33182 |
+| `range_scan` | 1685.39 | 542.79 | 3.11x | 1660 | 3939 | 2.37x | 501836 | 35651 |
+| `mixed` | 2201.03 | 842.70 | 2.61x | 13009 | 15300 | 1.18x | 661824 | 34487 |
+
+结果文件：
+
+- `vexra-adb/build/adb-benchmark/compare_adb_insert.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_insert.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_point_lookup.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_point_lookup.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_table_count.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_table_count.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_range_scan.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_range_scan.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_mixed.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_mixed.properties`
+
+结论：
+
+- 在这套小数据文件库基准里，ADB 在所有被测 workload 上吞吐都高于 h2db 默认表引擎：
+  `insert` 约 `1.8x`，`point_lookup` 约 `6.49x`，`table_count` 约 `5.27x`，
+  `range_scan` 约 `3.11x`，8 线程 `mixed` 约 `2.61x`。
+- p99 延迟也全部优于 H2，其中 point lookup 和 table count 改善最明显，说明当前 ADB
+  prepared fast path、行数元数据和主键点查优化已经形成实际收益。
+- 但 `range_scan` 和 `mixed` 的 allocation 明显高于 H2：ADB 分别约 `502KB/op` 和
+  `662KB/op`，H2 约 `36KB/op` 和 `34KB/op`。这说明 ADB 当前快在专用路径和 LDB 读写策略，
+  但对象分配还不健康。
+- 下一步最有价值的优化仍是 ldb cursor raw-view / reusable-entry，以及 range count 的
+  segment/block-level count 元数据；否则 mixed 的吞吐虽优于 H2，但 GC/内存压力会限制生产可用性。

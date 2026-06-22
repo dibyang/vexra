@@ -67,6 +67,8 @@ public final class AdbBenchmarkMain {
   private static final String DEFAULT_STORE_DIR =
       "work/adb-benchmark/store";
   private static final String TABLE_NAME = "ADB_BENCH";
+  private static final String TABLE_ENGINE_ADB = "adb";
+  private static final String TABLE_ENGINE_H2 = "h2";
 
   private AdbBenchmarkMain() {
   }
@@ -121,6 +123,7 @@ public final class AdbBenchmarkMain {
         transactionBatchSize);
     boolean dropTable = bool(values, "dropTable", true);
     boolean sqlDiagnostics = bool(values, "sqlDiagnostics", true);
+    String tableEngine = tableEngine(values);
     Path output = Paths.get(value(values, "output",
         "build/adb-benchmark/adb-benchmark.properties"));
 
@@ -129,11 +132,11 @@ public final class AdbBenchmarkMain {
     if ("jdbc".equals(mode)) {
       result = benchmark.executeJdbc(url, workload, rows, warmupOperations,
           operations, rangeSize, dropTable, transactionBatchSize,
-          statementBatchSize, sqlDiagnostics, threads);
+          statementBatchSize, sqlDiagnostics, threads, tableEngine);
     } else if ("jdbc_bulk".equals(mode)) {
       result = benchmark.executeJdbcBulk(url, workload, rows,
           warmupOperations, operations, dropTable, transactionBatchSize,
-          statementBatchSize, sqlDiagnostics);
+          statementBatchSize, sqlDiagnostics, tableEngine);
     } else if ("txn".equals(mode)) {
       result = benchmark.executeTxn(storeDir, workload, rows,
           warmupOperations, operations, transactionBatchSize);
@@ -164,19 +167,21 @@ public final class AdbBenchmarkMain {
   public AdbBenchmarkResult executeJdbc(String url, String workload, int rows,
       int warmupOperations, int operations, int rangeSize,
       boolean dropTable, int transactionBatchSize, int statementBatchSize,
-      boolean sqlDiagnostics, int threads)
+      boolean sqlDiagnostics, int threads, String tableEngine)
       throws Exception {
     requireSupportedWorkload(workload);
     loadJdbcDriver(url);
+    String resolvedTableEngine = normalizeTableEngine(tableEngine);
     if (threads > 1) {
       return executeJdbcConcurrent(url, workload, rows, warmupOperations,
           operations, rangeSize, dropTable, transactionBatchSize,
-          statementBatchSize, sqlDiagnostics, threads);
+          statementBatchSize, sqlDiagnostics, threads, resolvedTableEngine);
     }
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(transactionBatchSize <= 1);
-      prepareSchema(connection, rows, dropTable, sqlDiagnostics);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics,
+          resolvedTableEngine);
       commitRemaining(connection, transactionBatchSize, 1);
       try (BenchmarkStatements statements = new BenchmarkStatements(
           connection)) {
@@ -230,6 +235,7 @@ public final class AdbBenchmarkMain {
         Arrays.sort(latencies);
         double throughput = operations * 1000D / durationMillis;
         Map<String, String> details = collectSqlDiagnostics();
+        details.put("tableEngine", resolvedTableEngine);
         addThreadDetails(details, 1, throughput);
         addAllocationDetails(details, allocationStart,
             currentThreadAllocatedBytes(), operations);
@@ -245,11 +251,12 @@ public final class AdbBenchmarkMain {
   private AdbBenchmarkResult executeJdbcConcurrent(String url, String workload,
       int rows, int warmupOperations, int operations, int rangeSize,
       boolean dropTable, int transactionBatchSize, int statementBatchSize,
-      boolean sqlDiagnostics, int threads) throws Exception {
+      boolean sqlDiagnostics, int threads, String tableEngine)
+      throws Exception {
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(transactionBatchSize <= 1);
-      prepareSchema(connection, rows, dropTable, sqlDiagnostics);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics, tableEngine);
       commitRemaining(connection, transactionBatchSize, 1);
     }
     AdbSqlDiagnosticsRegistry.resetAll();
@@ -313,6 +320,7 @@ public final class AdbBenchmarkMain {
       Arrays.sort(latencies);
       double throughput = operations * 1000D / durationMillis;
       Map<String, String> details = collectSqlDiagnostics();
+      details.put("tableEngine", tableEngine);
       addThreadDetails(details, threads, throughput);
       details.put("concurrency.completedOperations",
           String.valueOf(completed.get()));
@@ -449,16 +457,23 @@ public final class AdbBenchmarkMain {
   public AdbBenchmarkResult executeJdbcBulk(String url, String workload,
       int rows, int warmupOperations, int operations, boolean dropTable,
       int transactionBatchSize, int statementBatchSize,
-      boolean sqlDiagnostics) throws Exception {
+      boolean sqlDiagnostics, String tableEngine) throws Exception {
     if (!"insert".equals(workload)) {
       throw new IllegalArgumentException(
           "jdbc_bulk mode only supports insert workload: " + workload);
+    }
+    String resolvedTableEngine = normalizeTableEngine(tableEngine);
+    if (!TABLE_ENGINE_ADB.equals(resolvedTableEngine)) {
+      throw new IllegalArgumentException(
+          "jdbc_bulk mode only supports ADB table engine: "
+              + resolvedTableEngine);
     }
     loadJdbcDriver(url);
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
       connection.setAutoCommit(false);
-      prepareSchema(connection, rows, dropTable, sqlDiagnostics);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics,
+          resolvedTableEngine);
       connection.commit();
       AdbTable table = adbBenchmarkTable(connection);
 
@@ -476,6 +491,7 @@ public final class AdbBenchmarkMain {
       Arrays.sort(latencies);
       double throughput = operations * 1000D / durationMillis;
       Map<String, String> details = collectSqlDiagnostics();
+      details.put("tableEngine", resolvedTableEngine);
       addAllocationDetails(details, allocationStart,
           currentThreadAllocatedBytes(), operations);
       return new AdbBenchmarkResult("jdbc_bulk", workload, url,
@@ -669,16 +685,23 @@ public final class AdbBenchmarkMain {
   }
 
   private static void prepareSchema(Connection connection, int rows,
-      boolean dropTable, boolean sqlDiagnostics) throws Exception {
+      boolean dropTable, boolean sqlDiagnostics, String tableEngine)
+      throws Exception {
+    String resolvedTableEngine = normalizeTableEngine(tableEngine);
     try (Statement statement = connection.createStatement()) {
       if (dropTable) {
         statement.execute("DROP TABLE IF EXISTS " + TABLE_NAME);
       }
-      String diagnosticsParam = sqlDiagnostics ? ""
-          : " WITH \"adb.sql.diagnostics=false\"";
-      statement.execute("CREATE TABLE IF NOT EXISTS " + TABLE_NAME
-          + "(ID BIGINT PRIMARY KEY, NAME VARCHAR) ENGINE \"adb_table\""
-          + diagnosticsParam);
+      if (TABLE_ENGINE_ADB.equals(resolvedTableEngine)) {
+        String diagnosticsParam = sqlDiagnostics ? ""
+            : " WITH \"adb.sql.diagnostics=false\"";
+        statement.execute("CREATE TABLE IF NOT EXISTS " + TABLE_NAME
+            + "(ID BIGINT PRIMARY KEY, NAME VARCHAR) ENGINE \"adb_table\""
+            + diagnosticsParam);
+      } else {
+        statement.execute("CREATE TABLE IF NOT EXISTS " + TABLE_NAME
+            + "(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+      }
     }
     try (PreparedStatement statement = connection.prepareStatement(
         "MERGE INTO " + TABLE_NAME + "(ID, NAME) KEY(ID) VALUES (?, ?)")) {
@@ -1064,6 +1087,21 @@ public final class AdbBenchmarkMain {
       int transactionBatchSize) {
     return "insert".equals(workload) && transactionBatchSize > 1
         ? transactionBatchSize : 1;
+  }
+
+  private static String tableEngine(Map<String, String> values) {
+    return normalizeTableEngine(value(values, "tableEngine",
+        TABLE_ENGINE_ADB));
+  }
+
+  private static String normalizeTableEngine(String tableEngine) {
+    String value = tableEngine == null ? TABLE_ENGINE_ADB
+        : tableEngine.trim().toLowerCase();
+    if (TABLE_ENGINE_ADB.equals(value) || TABLE_ENGINE_H2.equals(value)) {
+      return value;
+    }
+    throw new IllegalArgumentException("Unsupported tableEngine: "
+        + tableEngine);
   }
 
   private static int statementBatchSize(Map<String, String> values,

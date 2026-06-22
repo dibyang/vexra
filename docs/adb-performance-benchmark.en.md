@@ -2927,3 +2927,77 @@ Conclusion:
      insert commit cost;
   3. segment/block-level count metadata to avoid visibility scans over many
      entries during range count.
+
+## Round 38: ADB vs h2db Default Table Engine
+
+To measure the current gain over the h2db default table engine, this round adds a
+benchmark switch: `--tableEngine adb|h2` /
+`-PadbBenchmarkTableEngine=adb|h2`.
+
+1. `tableEngine=adb` keeps the existing `ENGINE "adb_table"` schema.
+2. `tableEngine=h2` uses ordinary `CREATE TABLE`, so the same JDBC SQL and
+   workload run against the h2db default table engine.
+3. The comparison disables ADB SQL diagnostics
+   (`-PadbBenchmarkSqlDiagnostics=false`) to avoid observer overhead in the ADB
+   result.
+4. `shouldRunPointLookupBenchmarkAgainstH2TableEngine` verifies that the H2
+   baseline path runs and does not produce ADB SQL diagnostic counts.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunPointLookupBenchmarkAgainstH2TableEngine --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunMixedBenchmarkAgainstLdbUrl --rerun-tasks
+```
+
+Result: passed.
+
+Benchmark profile:
+
+- File-backed databases, no mem mode.
+- `rows=5000`, `warmupOperations=300`, `operations=3000`.
+- `insert`, `point_lookup`, `table_count`, and `range_scan` use one thread.
+- `mixed` uses eight threads with the existing mix: 10% insert, 70% point lookup,
+  and 20% range count.
+- `range_scan` still executes `SELECT COUNT(*) ... BETWEEN ? AND ?`; this round
+  keeps the historical workload name.
+
+Results:
+
+| workload | ADB throughput ops/s | H2 throughput ops/s | ADB/H2 throughput | ADB p99 us | H2 p99 us | p99 improvement | ADB bytes/op | H2 bytes/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `insert` | 759.88 | 421.47 | 1.80x | 3195 | 6395 | 2.00x | 34163 | 35374 |
+| `point_lookup` | 1717.23 | 264.62 | 6.49x | 1427 | 6654 | 4.66x | 9355 | 34232 |
+| `table_count` | 1870.32 | 354.90 | 5.27x | 1390 | 6406 | 4.61x | 8802 | 33182 |
+| `range_scan` | 1685.39 | 542.79 | 3.11x | 1660 | 3939 | 2.37x | 501836 | 35651 |
+| `mixed` | 2201.03 | 842.70 | 2.61x | 13009 | 15300 | 1.18x | 661824 | 34487 |
+
+Result files:
+
+- `vexra-adb/build/adb-benchmark/compare_adb_insert.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_insert.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_point_lookup.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_point_lookup.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_table_count.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_table_count.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_range_scan.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_range_scan.properties`
+- `vexra-adb/build/adb-benchmark/compare_adb_mixed.properties`
+- `vexra-adb/build/adb-benchmark/compare_h2_mixed.properties`
+
+Conclusion:
+
+- In this small file-backed benchmark, ADB has higher throughput than the h2db
+  default table engine across all measured workloads: about `1.8x` for insert,
+  `6.49x` for point lookup, `5.27x` for table count, `3.11x` for range scan,
+  and `2.61x` for 8-thread mixed.
+- p99 latency is also better for all measured workloads. Point lookup and table
+  count improve the most, which confirms that the prepared fast paths, row-count
+  metadata, and primary-key lookup work are paying off.
+- However, `range_scan` and `mixed` allocation is much higher than H2:
+  about `502KB/op` and `662KB/op` for ADB versus about `36KB/op` and `34KB/op`
+  for H2. ADB is faster here because of specialized paths and LDB behavior, but
+  its object allocation profile is still not healthy.
+- The next most valuable optimization remains ldb cursor raw-view /
+  reusable-entry plus segment/block-level range count metadata. Without those,
+  mixed throughput can beat H2, but GC and memory pressure will limit production
+  readiness.
