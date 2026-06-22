@@ -30,6 +30,8 @@ public class TxnManager {
   private static final int RAW_ROW_ID_OFFSET = 13;
   private static final int RAW_COMMITTED_OFFSET = 21;
   private static final int RAW_VERSION_OFFSET = 22;
+  private static final byte[] INDEX_VALUE_PAYLOAD =
+      RowCodec.encode(ValueNull.INSTANCE);
 
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
@@ -690,7 +692,7 @@ public class TxnManager {
 //      batch.deleteRange(indexPrefixBytes, prefixEnd);
       for (IndexKey indexKey : indexKeys) {
         RowValue indexValue = new RowValue();
-        indexValue.payload = RowCodec.encode(ValueNull.INSTANCE);
+        indexValue.payload = INDEX_VALUE_PAYLOAD;
         VersionKey versionKey = VersionKey.of(indexKey, true, commitTs);
         indexValue.commitTs = commitTs;
         batch.put(versionKey.toBytes(), RowValue.encodeValue(indexValue));

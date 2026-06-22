@@ -16,6 +16,8 @@ import java.util.Map;
 
 public class TxnMap2 {
   static final Logger LOG = LoggerFactory.getLogger(TxnMap2.class);
+  private static final byte[] INDEX_VALUE_PAYLOAD =
+      RowCodec.encode(ValueNull.INSTANCE);
   private  final TxnManager txnManager;
   private final Transaction2 transaction;
   private final List<AutoCloseable> resources = new ArrayList<>();
@@ -390,7 +392,9 @@ public class TxnMap2 {
    *
    * <p>与 {@link #addIndexBatch(IndexPrefix, Collection)} 不同，该方法不直接写
    * committed version，而是写入事务本地 write set，使普通用户事务的 commit、rollback
-   * 和 savepoint 语义与 row 写入保持一致。</p>
+   * 和 savepoint 语义与 row 写入保持一致。调用方已经在 bulk insert 阶段完成主键、
+   * 唯一索引和批内冲突校验；二级索引 key 又包含 rowId，因此这里不再逐个执行
+   * {@code getVisible(indexKey)}，避免每个索引项都打开一次版本扫描。</p>
    *
    * @param indexKeys 需要随当前事务提交的索引 key
    * @throws SQLException 可见性检查或事务写入失败时抛出
@@ -401,8 +405,8 @@ public class TxnMap2 {
       indexValue.txnId = transaction.getTxnId();
       indexValue.commitTs = 0;
       indexValue.deleted = false;
-      indexValue.payload = RowCodec.encode(ValueNull.INSTANCE);
-      put(indexKey, indexValue, getVisible(indexKey));
+      indexValue.payload = INDEX_VALUE_PAYLOAD;
+      put(indexKey, indexValue, null);
     }
   }
 

@@ -3080,3 +3080,60 @@ benchmark：
 - 第 4 项的本地 write batch 中间对象已收掉一层；后续若继续优化写入，更高价值方向是
   单事务多行 insert 的二级索引 key 构造复用、commit 阶段的 value/key 编码复用，以及更底层
   h2db Insert 批量回调。
+
+## 第四十六轮：bulk 二级索引写入路径
+
+本轮继续第 4 项写入路径优化，聚焦二级索引 bulk insert。此前 `TxnMap2.putIndexKeys(...)`
+会为每个二级索引 key 重新编码 `ValueNull.INSTANCE`，并调用 `getVisible(indexKey)` 打开一次
+版本扫描。该方法目前只由 bulk insert 二级索引路径调用，而调用方在写入前已经完成主键、唯一索引和
+批内冲突校验；普通非唯一二级索引 key 又包含 rowId，因此写入事务本地 write set 时不需要再次读取
+旧可见值。
+
+本轮改动：
+
+1. `TxnMap2.putIndexKeys(...)` 复用静态空索引 payload，并以 `null` oldValue 写入事务本地
+   write set，跳过每个二级索引项的可见性扫描。
+2. `TxnManager.addIndexBatch(...)` 复用同一个空索引 payload，减少 commit/批量写入阶段的重复编码。
+3. `AdbBenchmarkMain` 增加 `--secondaryIndex true|false`，用于稳定跟踪带二级索引的写入成本。
+4. 语义边界不变：bulk insert 的主键、唯一索引、批内冲突和 rollback/savepoint 语义仍由原路径和
+   集成测试覆盖；Raft/远端复制写入语义不变。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunInsertBenchmarkWithSecondaryIndex --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicateSecondaryUniqueKeyThroughBulkInsertPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rollsBackBulkInsertedSecondaryIndexEntries --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `AdbBenchmarkMainTest.shouldRunInsertBenchmarkWithSecondaryIndex` 覆盖 benchmark 可以创建二级索引并输出
+  `secondaryIndex=true`。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkSecondaryIndex=true -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_secondary_index_fast_20260622-162106.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_insert_secondary_index_fast-20260622-162106/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkSecondaryIndex=true -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_secondary_index_fast_20260622-162106.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_bulk_insert_secondary_index_fast-20260622-162106/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | mode | secondary index | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | true | 1 | 18867.92 | 45 | 110 | 137 | 5502 | `vexra-adb/build/adb-benchmark/jdbc_insert_secondary_index_fast_20260622-162106.properties` |
+| `insert` | `jdbc_bulk` | true | 1 | 20979.02 | 29 | 187 | 302 | 4407 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_secondary_index_fast_20260622-162106.properties` |
+
+结论：
+
+- 本轮建立了带二级索引写入的可重复 benchmark 基线；它和无二级索引的写入样本不是同一成本模型，不能直接
+  用吞吐做同比。
+- 在带二级索引的样本中，`jdbc_bulk` 相比普通 JDBC batch allocation 更低，说明跳过索引可见性扫描和复用
+  空索引 payload 后，bulk 入口仍保留了对象分配优势。
+- 后续写入方向的更高价值点是二级索引 key 构造复用、commit 阶段 key/value 编码复用，以及争取 h2db 暴露
+  更底层的 Insert 批量回调。range/mixed 的主要 allocation 问题仍要靠 ldb raw/reusable cursor 或
+  segment/block-level count 元数据继续推进。

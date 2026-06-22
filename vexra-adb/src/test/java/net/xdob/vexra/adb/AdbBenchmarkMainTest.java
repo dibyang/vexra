@@ -111,6 +111,35 @@ class AdbBenchmarkMainTest {
   }
 
   /**
+   * 验证 benchmark 可以打开二级索引写入场景，便于跟踪 bulk insert 的索引路径成本。
+   */
+  @Test
+  void shouldRunInsertBenchmarkWithSecondaryIndex() throws Exception {
+    Path output = tempDir.resolve("secondary-index.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("secondary-index").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "insert",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "8",
+        "--transactionBatchSize", "4",
+        "--statementBatchSize", "4",
+        "--secondaryIndex", "true",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("jdbc", result.getMode());
+    assertEquals("insert", result.getWorkload());
+    assertEquals(8L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("true", properties.getProperty("secondaryIndex"));
+  }
+
+  /**
    * 验证 JDBC benchmark 可以用多个 ldb 连接并发执行，并输出线程诊断。
    */
   @Test

@@ -3541,3 +3541,72 @@ Conclusion:
   write optimizations are secondary-index key construction reuse for multi-row
   transactions, commit-stage key/value encoding reuse, and a lower-level h2db
   Insert bulk callback.
+
+## Round 46: Bulk Secondary-Index Write Path
+
+This round continues item 4, focusing on secondary-index bulk insert. Previously
+`TxnMap2.putIndexKeys(...)` re-encoded `ValueNull.INSTANCE` for every secondary
+index key and called `getVisible(indexKey)`, opening one version scan per index
+entry. The method is currently used by the bulk-insert secondary-index path; the
+caller has already validated primary-key conflicts, unique-index conflicts, and
+in-batch conflicts before writing. A regular non-unique secondary-index key also
+contains the rowId, so the local transactional write-set insert does not need to
+read the old visible value again.
+
+Changes:
+
+1. `TxnMap2.putIndexKeys(...)` now reuses a static empty index payload and writes
+   to the local transaction write set with a `null` oldValue, avoiding one
+   visibility scan per secondary-index entry.
+2. `TxnManager.addIndexBatch(...)` reuses the same empty index payload to reduce
+   repeated encoding during commit / batch writes.
+3. `AdbBenchmarkMain` now supports `--secondaryIndex true|false` to track indexed
+   write costs reproducibly.
+4. The semantic boundary is unchanged: bulk-insert primary-key, unique-index,
+   in-batch conflict, rollback, and savepoint behavior remains covered by the
+   existing path and integration tests; Raft / remote replication semantics are
+   unchanged.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunInsertBenchmarkWithSecondaryIndex --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.bulkInsertsRowsAndSecondaryIndexEntries --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rejectsDuplicateSecondaryUniqueKeyThroughBulkInsertPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rollsBackBulkInsertedSecondaryIndexEntries --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `AdbBenchmarkMainTest.shouldRunInsertBenchmarkWithSecondaryIndex` verifies
+  that the benchmark can create a secondary index and write `secondaryIndex=true`
+  to the result file.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkSecondaryIndex=true -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_secondary_index_fast_20260622-162106.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_insert_secondary_index_fast-20260622-162106/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkWorkload=insert -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkTableEngine=adb -PadbBenchmarkSecondaryIndex=true -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_secondary_index_fast_20260622-162106.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc_bulk_insert_secondary_index_fast-20260622-162106/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | mode | secondary index | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | true | 1 | 18867.92 | 45 | 110 | 137 | 5502 | `vexra-adb/build/adb-benchmark/jdbc_insert_secondary_index_fast_20260622-162106.properties` |
+| `insert` | `jdbc_bulk` | true | 1 | 20979.02 | 29 | 187 | 302 | 4407 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_secondary_index_fast_20260622-162106.properties` |
+
+Conclusion:
+
+- This round establishes a repeatable indexed-write benchmark baseline. It has a
+  different cost model from the no-secondary-index insert samples, so the
+  throughput values should not be compared directly.
+- In the indexed-write samples, `jdbc_bulk` allocates less than regular JDBC
+  batch, confirming that the bulk entry still has an allocation advantage after
+  skipping index visibility scans and reusing the empty index payload.
+- The next higher-value write optimizations are secondary-index key construction
+  reuse, commit-stage key/value encoding reuse, and a lower-level h2db Insert
+  bulk callback. The main `range/mixed` allocation issue still needs ldb
+  raw/reusable cursor support or segment/block-level count metadata.
