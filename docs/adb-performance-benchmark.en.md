@@ -864,6 +864,69 @@ Mixed reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_resultset_stage.properties"
 ```
 
+## Round 15 Benchmark Allocation Metrics
+
+This round adds JVM thread allocation-byte metrics to the benchmark measured
+window, so object cost is visible without inferring it only from latency.
+The implementation uses `com.sun.management.ThreadMXBean`:
+
+- Single-thread `jdbc`, `jdbc_bulk`, `txn`, and `store` modes record the current
+  thread's measured-window allocation.
+- Multi-thread `jdbc` mode records allocation inside each worker's measured
+  window and reports the aggregate.
+- If the current JVM does not support thread allocation tracking, the report
+  records `allocation.supported=false` and the benchmark still runs normally.
+
+New properties:
+
+| Field | Meaning |
+| --- | --- |
+| `allocation.supported` | Whether the current JVM supports thread allocation-byte tracking |
+| `allocation.totalBytes` | Total allocated bytes in the measured window |
+| `allocation.bytesPerOperation` | Average allocated bytes per operation |
+
+Measured results:
+
+| Mode | Workload | Throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
+| `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
+
+Conclusion: allocation metrics now make object cost directly visible. In this
+short run, prepared point lookup allocates about `10KB/op`, while mixed
+allocates about `275KB/op`. The mixed workload still has heavy object churn;
+future optimization should combine allocation metrics with workload-specific
+benchmarks to compare point lookup, range count, single-row write, and commit
+allocation before choosing further ResultSet specialization, H2 executor
+bypass, or transaction-object reuse.
+
+Point-lookup allocation reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-allocation-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties"
+```
+
+Mixed allocation reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-allocation-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties"
+```
+
 ## Round 6 Ordinary JDBC Insert Micro-Optimization
 
 This round does not claim that ordinary SQL already reaches the ADB bulk path.

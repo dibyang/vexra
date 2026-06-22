@@ -844,6 +844,62 @@ mixed 复现命令：
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_range_resultset_stage.properties"
 ```
 
+## 第十五轮 benchmark allocation 指标结果
+
+本轮在 benchmark 正式统计窗口中增加 JVM 线程分配字节指标，用于避免只靠延迟推测对象成本。
+实现使用 `com.sun.management.ThreadMXBean`：
+
+- 单线程 `jdbc`、`jdbc_bulk`、`txn` 和 `store` 模式记录当前线程正式窗口分配。
+- 多线程 `jdbc` 模式在每个 worker 内记录正式窗口分配并汇总。
+- 当前 JVM 不支持线程分配统计时输出 `allocation.supported=false`，不影响 benchmark 运行。
+
+新增 properties：
+
+| 字段 | 含义 |
+| --- | --- |
+| `allocation.supported` | 当前 JVM 是否支持线程分配字节统计 |
+| `allocation.totalBytes` | 正式统计窗口内分配总字节数 |
+| `allocation.bytesPerOperation` | 平均每个 operation 的分配字节数 |
+
+验证结果：
+
+| 模式 | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 2155.17 | 364 | 989 | 1439 | 10037 | `vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties` |
+| `jdbc` | `mixed` | 934.87 | 1031 | 1769 | 3479 | 275308 | `vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties` |
+
+结论：allocation 指标已经能直接暴露对象成本。该短跑中 prepared point lookup
+约 `10KB/op`，mixed 约 `275KB/op`，说明 mixed 的对象分配仍然很重；后续优化应把
+allocation 与 workload 拆分结合起来，对比点查、range count、单行写入和 commit 的分配贡献，
+再决定是否继续做 ResultSet 专用化、H2 执行器绕过或事务批量对象复用。
+
+point lookup allocation 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-allocation-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_allocation_stage.properties"
+```
+
+mixed allocation 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/mixed-allocation-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkTransactionBatchSize=100" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_allocation_stage.properties"
+```
+
 ## 第六轮普通 JDBC insert 微优化结果
 
 本轮在 h2db 2.3.0 仍未提供 `Insert -> Table` 批量回调的前提下，只优化 ADB

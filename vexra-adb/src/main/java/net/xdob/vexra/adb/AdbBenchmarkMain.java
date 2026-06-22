@@ -30,6 +30,7 @@ import org.h2.value.ValueVarchar;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -194,6 +195,7 @@ public final class AdbBenchmarkMain {
         long[] latencies = new long[operations];
         long failed = 0;
         int pendingBatchOperations = 0;
+        long allocationStart = currentThreadAllocatedBytes();
         long started = System.nanoTime();
         if ("insert".equals(workload) && statementBatchSize > 1) {
           failed = executeInsertBatches(connection, statements, rows,
@@ -229,6 +231,8 @@ public final class AdbBenchmarkMain {
         double throughput = operations * 1000D / durationMillis;
         Map<String, String> details = collectSqlDiagnostics();
         addThreadDetails(details, 1, throughput);
+        addAllocationDetails(details, allocationStart,
+            currentThreadAllocatedBytes(), operations);
         return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
             operations, failed, durationMillis, throughput,
             percentile(latencies, 0.50D), percentile(latencies, 0.95D),
@@ -256,6 +260,7 @@ public final class AdbBenchmarkMain {
     final long[] latencies = new long[operations];
     final AtomicLong failed = new AtomicLong();
     final AtomicLong completed = new AtomicLong();
+    final AtomicLong allocatedBytes = new AtomicLong();
     final AtomicReference<Throwable> firstFailure = new AtomicReference<>();
     final CountDownLatch start = new CountDownLatch(1);
     final CountDownLatch done = new CountDownLatch(threads);
@@ -274,6 +279,7 @@ public final class AdbBenchmarkMain {
           executeJdbcWorker(url, workload, rows, rangeSize, warmupOps,
               countedOps, latencyOffset, statementBatchSize,
               transactionBatchSize, latencies, failed, completed,
+              allocatedBytes,
               threadIndex, warmupOperations);
         } catch (Throwable e) {
           firstFailure.compareAndSet(null, e);
@@ -308,6 +314,7 @@ public final class AdbBenchmarkMain {
     addThreadDetails(details, threads, throughput);
     details.put("concurrency.completedOperations",
         String.valueOf(completed.get()));
+    addAllocationDetails(details, allocatedBytes.get(), operations);
     return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
         operations, failed.get(), durationMillis, throughput,
         percentile(latencies, 0.50D), percentile(latencies, 0.95D),
@@ -318,7 +325,8 @@ public final class AdbBenchmarkMain {
   private static void executeJdbcWorker(String url, String workload, int rows,
       int rangeSize, int warmupOperations, int operations, int latencyOffset,
       int statementBatchSize, int transactionBatchSize, long[] latencies,
-      AtomicLong failed, AtomicLong completed, int threadIndex,
+      AtomicLong failed, AtomicLong completed, AtomicLong allocatedBytes,
+      int threadIndex,
       int totalWarmupOperations)
       throws Exception {
     try (Connection connection = DriverManager.getConnection(url,
@@ -336,31 +344,37 @@ public final class AdbBenchmarkMain {
         commitRemaining(connection, transactionBatchSize, warmupOperations);
 
         int pendingBatchOperations = 0;
-        for (int i = 0; i < operations; i++) {
-          long opStarted = System.nanoTime();
-          try {
-            int index = latencyOffset + i;
-            executeOperation(statements, workload, rows, rangeSize, index,
-                true, statementBatchSize);
-            pendingBatchOperations++;
-            commitIfNeeded(connection, transactionBatchSize,
-                pendingBatchOperations);
-            if (transactionBatchSize > 1
-                && pendingBatchOperations >= transactionBatchSize) {
+        long allocationStart = currentThreadAllocatedBytes();
+        try {
+          for (int i = 0; i < operations; i++) {
+            long opStarted = System.nanoTime();
+            try {
+              int index = latencyOffset + i;
+              executeOperation(statements, workload, rows, rangeSize, index,
+                  true, statementBatchSize);
+              pendingBatchOperations++;
+              commitIfNeeded(connection, transactionBatchSize,
+                  pendingBatchOperations);
+              if (transactionBatchSize > 1
+                  && pendingBatchOperations >= transactionBatchSize) {
+                pendingBatchOperations = 0;
+              }
+              completed.incrementAndGet();
+            } catch (Exception e) {
+              failed.incrementAndGet();
+              rollbackIfNeeded(connection, transactionBatchSize);
               pendingBatchOperations = 0;
+            } finally {
+              latencies[latencyOffset + i] =
+                  nanosToMicros(System.nanoTime() - opStarted);
             }
-            completed.incrementAndGet();
-          } catch (Exception e) {
-            failed.incrementAndGet();
-            rollbackIfNeeded(connection, transactionBatchSize);
-            pendingBatchOperations = 0;
-          } finally {
-            latencies[latencyOffset + i] =
-                nanosToMicros(System.nanoTime() - opStarted);
           }
+          commitRemaining(connection, transactionBatchSize,
+              pendingBatchOperations);
+        } finally {
+          addAllocationBytes(allocatedBytes, allocationStart,
+              currentThreadAllocatedBytes());
         }
-        commitRemaining(connection, transactionBatchSize,
-            pendingBatchOperations);
       }
     }
   }
@@ -388,6 +402,7 @@ public final class AdbBenchmarkMain {
       }
       long[] latencies = new long[operations];
       long failed = 0;
+      long allocationStart = currentThreadAllocatedBytes();
       long started = System.nanoTime();
       for (int i = 0; i < operations; i++) {
         long opStarted = System.nanoTime();
@@ -403,10 +418,14 @@ public final class AdbBenchmarkMain {
           (System.nanoTime() - started) / 1_000_000L);
       Arrays.sort(latencies);
       double throughput = operations * 1000D / durationMillis;
+      Map<String, String> details = new LinkedHashMap<>();
+      addAllocationDetails(details, allocationStart,
+          currentThreadAllocatedBytes(), operations);
       return new AdbBenchmarkResult("store", workload, storeDir,
           warmupOperations, operations, failed, durationMillis, throughput,
           percentile(latencies, 0.50D), percentile(latencies, 0.95D),
-          percentile(latencies, 0.99D), latencies[latencies.length - 1]);
+          percentile(latencies, 0.99D), latencies[latencies.length - 1],
+          details);
     }
   }
 
@@ -438,6 +457,7 @@ public final class AdbBenchmarkMain {
       AdbSqlDiagnosticsRegistry.resetAll();
 
       long[] latencies = new long[operations];
+      long allocationStart = currentThreadAllocatedBytes();
       long started = System.nanoTime();
       long failed = executeJdbcBulkBatches(connection, table, rows, operations,
           statementBatchSize, transactionBatchSize, true, latencies);
@@ -445,11 +465,14 @@ public final class AdbBenchmarkMain {
           (System.nanoTime() - started) / 1_000_000L);
       Arrays.sort(latencies);
       double throughput = operations * 1000D / durationMillis;
+      Map<String, String> details = collectSqlDiagnostics();
+      addAllocationDetails(details, allocationStart,
+          currentThreadAllocatedBytes(), operations);
       return new AdbBenchmarkResult("jdbc_bulk", workload, url,
           warmupOperations, operations, failed, durationMillis, throughput,
           percentile(latencies, 0.50D), percentile(latencies, 0.95D),
           percentile(latencies, 0.99D), latencies[latencies.length - 1],
-          collectSqlDiagnostics());
+          details);
     }
   }
 
@@ -562,6 +585,7 @@ public final class AdbBenchmarkMain {
           transactionBatchSize, false, null);
 
       long[] latencies = new long[operations];
+      long allocationStart = currentThreadAllocatedBytes();
       long started = System.nanoTime();
       long failed = executeTxnInserts(txnManager, tableId, rows, operations,
           transactionBatchSize, true, latencies);
@@ -569,10 +593,14 @@ public final class AdbBenchmarkMain {
           (System.nanoTime() - started) / 1_000_000L);
       Arrays.sort(latencies);
       double throughput = operations * 1000D / durationMillis;
+      Map<String, String> details = new LinkedHashMap<>();
+      addAllocationDetails(details, allocationStart,
+          currentThreadAllocatedBytes(), operations);
       return new AdbBenchmarkResult("txn", workload, storeDir,
           warmupOperations, operations, failed, durationMillis, throughput,
           percentile(latencies, 0.50D), percentile(latencies, 0.95D),
-          percentile(latencies, 0.99D), latencies[latencies.length - 1]);
+          percentile(latencies, 0.99D), latencies[latencies.length - 1],
+          details);
     }
   }
 
@@ -908,6 +936,60 @@ public final class AdbBenchmarkMain {
     details.put("concurrency.threads", String.valueOf(threads));
     details.put("concurrency.perThreadThroughputPerSecond",
         String.valueOf(throughput / Math.max(1, threads)));
+  }
+
+  private static long currentThreadAllocatedBytes() {
+    java.lang.management.ThreadMXBean bean =
+        ManagementFactory.getThreadMXBean();
+    if (!(bean instanceof com.sun.management.ThreadMXBean)) {
+      return -1L;
+    }
+    com.sun.management.ThreadMXBean allocationBean =
+        (com.sun.management.ThreadMXBean) bean;
+    if (!allocationBean.isThreadAllocatedMemorySupported()) {
+      return -1L;
+    }
+    if (!allocationBean.isThreadAllocatedMemoryEnabled()) {
+      try {
+        allocationBean.setThreadAllocatedMemoryEnabled(true);
+      } catch (SecurityException e) {
+        return -1L;
+      }
+    }
+    if (!allocationBean.isThreadAllocatedMemoryEnabled()) {
+      return -1L;
+    }
+    return allocationBean.getThreadAllocatedBytes(
+        Thread.currentThread().getId());
+  }
+
+  private static void addAllocationBytes(AtomicLong allocatedBytes,
+      long allocationStart, long allocationEnd) {
+    if (allocationStart >= 0L && allocationEnd >= allocationStart) {
+      allocatedBytes.addAndGet(allocationEnd - allocationStart);
+    }
+  }
+
+  private static void addAllocationDetails(Map<String, String> details,
+      long allocationStart, long allocationEnd, long operations) {
+    if (allocationStart >= 0L && allocationEnd >= allocationStart) {
+      addAllocationDetails(details, allocationEnd - allocationStart,
+          operations);
+      return;
+    }
+    details.put("allocation.supported", "false");
+  }
+
+  private static void addAllocationDetails(Map<String, String> details,
+      long totalBytes, long operations) {
+    if (totalBytes < 0L) {
+      details.put("allocation.supported", "false");
+      return;
+    }
+    details.put("allocation.supported", "true");
+    details.put("allocation.totalBytes", String.valueOf(totalBytes));
+    details.put("allocation.bytesPerOperation",
+        String.valueOf(totalBytes / Math.max(1L, operations)));
   }
 
   private static long percentile(long[] sortedValues, double percentile) {

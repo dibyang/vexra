@@ -342,7 +342,11 @@ The output properties include at least `mode`, `workload`, `url`, `operations`,
 `p50LatencyMicros`, `p95LatencyMicros`, `p99LatencyMicros`,
 `maxLatencyMicros`, `passed`, `concurrency.threads`, and
 `concurrency.perThreadThroughputPerSecond`. When `threads > 1`, the report also
-includes `concurrency.completedOperations`. When SQL diagnostics are enabled,
+includes `concurrency.completedOperations`. If the current JVM supports
+thread-allocation tracking, the report also includes
+`allocation.supported=true`, `allocation.totalBytes`, and
+`allocation.bytesPerOperation`; otherwise it records
+`allocation.supported=false`. When SQL diagnostics are enabled,
 the report also includes `sqlDiagnostics.operationStats.*` and
 `sqlDiagnostics.phaseStats.*` for table-engine entry points and key stages such
 as commit, row-count, and index lookup. Prepared primary-key lookups also record

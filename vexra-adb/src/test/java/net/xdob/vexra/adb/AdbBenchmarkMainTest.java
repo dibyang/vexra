@@ -54,6 +54,7 @@ class AdbBenchmarkMainTest {
         "sqlDiagnostics.totalSqlCount")) > 0L);
     assertTrue(Integer.parseInt(properties.getProperty(
         "sqlDiagnostics.operationStats.count")) > 0);
+    assertAllocationDetails(properties);
     assertFalse(url.startsWith("jdbc:adb:mem:"));
   }
 
@@ -115,6 +116,7 @@ class AdbBenchmarkMainTest {
         "concurrency.completedOperations"));
     assertTrue(Integer.parseInt(properties.getProperty(
         "sqlDiagnostics.phaseStats.count")) > 0);
+    assertAllocationDetails(properties);
   }
 
   /**
@@ -144,6 +146,7 @@ class AdbBenchmarkMainTest {
     assertEquals("store", properties.getProperty("mode"));
     assertEquals(storeDir.toString(), properties.getProperty("url"));
     assertEquals(null, properties.getProperty("sqlDiagnostics.totalSqlCount"));
+    assertAllocationDetails(properties);
   }
 
   /**
@@ -201,6 +204,7 @@ class AdbBenchmarkMainTest {
     assertEquals("jdbc_bulk", properties.getProperty("mode"));
     assertTrue(Long.parseLong(properties.getProperty(
         "sqlDiagnostics.totalSqlCount")) > 0L);
+    assertAllocationDetails(properties);
   }
 
   @Test
@@ -316,5 +320,16 @@ class AdbBenchmarkMainTest {
   private static boolean containsPropertyValue(Properties properties,
       String expectedValue) {
     return properties.values().contains(expectedValue);
+  }
+
+  private static void assertAllocationDetails(Properties properties) {
+    String supported = properties.getProperty("allocation.supported");
+    assertTrue("true".equals(supported) || "false".equals(supported));
+    if ("true".equals(supported)) {
+      assertTrue(Long.parseLong(properties.getProperty(
+          "allocation.totalBytes")) >= 0L);
+      assertTrue(Long.parseLong(properties.getProperty(
+          "allocation.bytesPerOperation")) >= 0L);
+    }
   }
 }

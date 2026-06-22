@@ -336,7 +336,10 @@ runtime 包也包含 `bin/adb-benchmark.bat` / `bin/adb-benchmark`，参数与 m
 `durationMillis`、`throughputPerSecond`、`p50LatencyMicros`、`p95LatencyMicros`、
 `p99LatencyMicros`、`maxLatencyMicros`、`passed`、`concurrency.threads` 和
 `concurrency.perThreadThroughputPerSecond`。当 `threads > 1` 时，还会包含
-`concurrency.completedOperations`。启用 SQL 诊断时，还会输出
+`concurrency.completedOperations`。如果当前 JVM 支持线程分配统计，还会输出
+`allocation.supported=true`、`allocation.totalBytes` 和
+`allocation.bytesPerOperation`；不支持时输出 `allocation.supported=false`。
+启用 SQL 诊断时，还会输出
 `sqlDiagnostics.operationStats.*` 和 `sqlDiagnostics.phaseStats.*`，分别用于观察
 table-engine 入口和 commit / row-count / 索引查找等关键阶段耗时。prepared 主键点查还会记录
 `ADB_POINT_LOOKUP_DECODE_CACHE_HIT/MISS`，用于观察列值解码缓存命中情况；缓存上限可通过
