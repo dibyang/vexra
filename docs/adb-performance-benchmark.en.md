@@ -3001,3 +3001,118 @@ Conclusion:
   reusable-entry plus segment/block-level range count metadata. Without those,
   mixed throughput can beat H2, but GC and memory pressure will limit production
   readiness.
+
+## Round 39: Range-Count Raw-Key Reuse and Mixed JFR Recheck
+
+Round 38 showed that ADB throughput is now higher than the h2db default table
+engine across the measured workloads, but `range_scan` and `mixed` allocation
+remain high. This round continues items 3 and 5 by removing one repeated ADB-side
+key read in the no-local-write range-count raw path:
+
+1. `TxnManager.countVisibleRowsWithoutLocalWrites(...)` no longer calls
+   `scan.key()` from the `while` condition. Each loop reads the current raw key
+   once and then checks the table prefix.
+2. `resolveVisibleCountableInCurrentRawLogicalRow(...)` reuses the first raw key
+   already read by the outer loop, so entering visible-row resolution does not
+   read the same cursor position again.
+3. This does not change MVCC visibility, committed checks, `startTs` comparison,
+   delete/payload checks, or scan advance semantics. It only removes a repeated
+   key-boundary call at the same cursor position.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_raw_key_reuse_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-raw-key-reuse-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_raw_key_reuse_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-raw-key-reuse-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 815.22 | 1190 | 1941 | 2931 | 502091 | `vexra-adb/build/adb-benchmark/range_count_raw_key_reuse_stage.properties` |
+| `mixed` | 8 | 2475.25 | 2331 | 7826 | 10501 | 662152 | `vexra-adb/build/adb-benchmark/jdbc_mixed_raw_key_reuse_stage.properties` |
+
+JFR recheck:
+
+The first run used the Java 8 executable on the default PATH. That produced an
+old JFR `version 0.9` file that `jdk.jfr.consumer` cannot read. The full mixed
+8-thread JFR was then rerun with `C:\Program Files\Java\jdk-11` and analyzed
+with `scripts/adb-jfr-hotspots.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -OutputDir vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile D:\work\java2\vexra\vexra-adb\build\adb-benchmark\jfr\raw-key-reuse-jdk11\adb-mixed-20260622-144900.jfr -OutputDir vexra-adb\build\adb-benchmark\jfr\raw-key-reuse-jdk11\hotspots
+```
+
+JFR files and reports:
+
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/adb-mixed-20260622-144900.jfr`
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/hotspots/allocation-events.txt`
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/hotspots/adb-focus.txt`
+
+JFR allocation top classes:
+
+| class | bytes | events |
+| --- | ---: | ---: |
+| `[B` | 3175936 | 1583 |
+| `net.xdob.vexra.ldb.util.Slice` | 56352 | 1761 |
+| `[Ljava.lang.String;` | 42576 | 3 |
+| `net.xdob.vexra.ldb.impl.InternalKey` | 17280 | 540 |
+| `net.xdob.vexra.ldb.table.BlockEntry` | 8592 | 358 |
+| `com.google.common.collect.ImmutableEntry` | 8376 | 349 |
+
+JFR top allocation frames:
+
+| frame | bytes | events |
+| --- | ---: | ---: |
+| `java.nio.HeapByteBuffer.<init> <- [B` | 2097184 | 2 |
+| `java.util.Arrays.copyOf <- [B` | 889368 | 472 |
+| `net.xdob.vexra.ldb.util.Slice.<init> <- [B` | 113368 | 780 |
+| `net.xdob.vexra.ldb.util.Slice.slice <- net.xdob.vexra.ldb.util.Slice` | 42400 | 1325 |
+| `net.xdob.vexra.ldb.util.InternalTableIterator.getNextElement <- InternalKey` | 17216 | 538 |
+| `net.xdob.vexra.ldb.table.BlockIterator.readEntry <- BlockEntry` | 8592 | 358 |
+| `com.google.common.collect.Maps.immutableEntry <- ImmutableEntry` | 8376 | 349 |
+
+ADB focus:
+
+| focus | bytes | events |
+| --- | ---: | ---: |
+| `commit` | 1181640 | 3467 |
+| `AdbPreparedStatementProxy` | 322144 | 4475 |
+| `AdbSimpleResultSet` | 138480 | 6 |
+| `java.lang.reflect.Proxy` | 138480 | 6 |
+| `TxnMap2.getVisible` | 90528 | 2460 |
+| `WriteBatch` | 1456 | 32 |
+| `RowCodec` | 696 | 7 |
+| `RowValue.decodeValue` | 48 | 1 |
+
+Conclusion:
+
+- Raw-key reuse produced a good mixed sample (`2475.25 ops/s`, p99 `10501us`),
+  but `range_scan` allocation remains around `502KB/op` and `mixed` remains
+  around `662KB/op`. This does not prove the repeated key read was the dominant
+  allocation source.
+- The current JFR proves that `AdbSimpleResultSet` / `java.lang.reflect.Proxy`
+  are not the allocation hotspot: each appears at only `138480 bytes / 6 events`.
+  Therefore item 2, a dedicated ResultSet, should stay deferred for now.
+- Allocation is concentrated in ldb-layer objects and byte arrays: `[B`,
+  `Slice`, `InternalKey`, `BlockEntry`, `ImmutableEntry`, plus
+  `Arrays.copyOf`, `Slice.slice`, and `InternalTableIterator.getNextElement`.
+- The next highest-value work is to add a cursor raw-view / reusable-entry API in
+  `vexra-ldb`, or add ADB segment/block-level count metadata so range count can
+  avoid reading so many cursor entries.

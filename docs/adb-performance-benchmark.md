@@ -2605,3 +2605,108 @@ benchmark 口径：
   但对象分配还不健康。
 - 下一步最有价值的优化仍是 ldb cursor raw-view / reusable-entry，以及 range count 的
   segment/block-level count 元数据；否则 mixed 的吞吐虽优于 H2，但 GC/内存压力会限制生产可用性。
+
+## 第三十九轮：range count raw-key 复用与 mixed JFR 复核
+
+第三十八轮对比显示 ADB 吞吐已经全面高于 h2db 默认表引擎，但 `range_scan` 与 `mixed`
+allocation 明显偏高。本轮继续第 3 / 第 5 项，在无本地写事务的 range count raw path 上先收掉
+一处 ADB 层重复 key 读取：
+
+1. `TxnManager.countVisibleRowsWithoutLocalWrites(...)` 的外层循环不再在 `while` 条件中调用
+   `scan.key()`，改为每次循环只读取一次当前 raw key 后判断 table prefix。
+2. `resolveVisibleCountableInCurrentRawLogicalRow(...)` 复用外层已经读取的 first raw key，
+   避免同一个 cursor 位置在进入 visible 判定后再读一次 key。
+3. 该改动不改变 MVCC 可见性、committed 判断、`startTs` 比较、delete/payload 判断和 scan
+   advance 语义；只减少同一位置上的重复 key 边界调用。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_raw_key_reuse_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-raw-key-reuse-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_raw_key_reuse_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-raw-key-reuse-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 815.22 | 1190 | 1941 | 2931 | 502091 | `vexra-adb/build/adb-benchmark/range_count_raw_key_reuse_stage.properties` |
+| `mixed` | 8 | 2475.25 | 2331 | 7826 | 10501 | 662152 | `vexra-adb/build/adb-benchmark/jdbc_mixed_raw_key_reuse_stage.properties` |
+
+JFR 复核：
+
+第一次用默认 PATH 的 Java 8 生成 JFR，`jdk.jfr.consumer` 无法读取 Java 8 `version 0.9`
+格式。随后使用 `C:\Program Files\Java\jdk-11` 重新跑完整 mixed 8 线程 JFR，并通过
+`scripts/adb-jfr-hotspots.ps1` 导出热点：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -JavaHome 'C:\Program Files\Java\jdk-11' -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -OutputDir vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile D:\work\java2\vexra\vexra-adb\build\adb-benchmark\jfr\raw-key-reuse-jdk11\adb-mixed-20260622-144900.jfr -OutputDir vexra-adb\build\adb-benchmark\jfr\raw-key-reuse-jdk11\hotspots
+```
+
+JFR 文件和热点：
+
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/adb-mixed-20260622-144900.jfr`
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/hotspots/allocation-events.txt`
+- `vexra-adb/build/adb-benchmark/jfr/raw-key-reuse-jdk11/hotspots/adb-focus.txt`
+
+JFR allocation top classes：
+
+| class | bytes | events |
+| --- | ---: | ---: |
+| `[B` | 3175936 | 1583 |
+| `net.xdob.vexra.ldb.util.Slice` | 56352 | 1761 |
+| `[Ljava.lang.String;` | 42576 | 3 |
+| `net.xdob.vexra.ldb.impl.InternalKey` | 17280 | 540 |
+| `net.xdob.vexra.ldb.table.BlockEntry` | 8592 | 358 |
+| `com.google.common.collect.ImmutableEntry` | 8376 | 349 |
+
+JFR top allocation frames：
+
+| frame | bytes | events |
+| --- | ---: | ---: |
+| `java.nio.HeapByteBuffer.<init> <- [B` | 2097184 | 2 |
+| `java.util.Arrays.copyOf <- [B` | 889368 | 472 |
+| `net.xdob.vexra.ldb.util.Slice.<init> <- [B` | 113368 | 780 |
+| `net.xdob.vexra.ldb.util.Slice.slice <- net.xdob.vexra.ldb.util.Slice` | 42400 | 1325 |
+| `net.xdob.vexra.ldb.util.InternalTableIterator.getNextElement <- InternalKey` | 17216 | 538 |
+| `net.xdob.vexra.ldb.table.BlockIterator.readEntry <- BlockEntry` | 8592 | 358 |
+| `com.google.common.collect.Maps.immutableEntry <- ImmutableEntry` | 8376 | 349 |
+
+ADB focus：
+
+| focus | bytes | events |
+| --- | ---: | ---: |
+| `commit` | 1181640 | 3467 |
+| `AdbPreparedStatementProxy` | 322144 | 4475 |
+| `AdbSimpleResultSet` | 138480 | 6 |
+| `java.lang.reflect.Proxy` | 138480 | 6 |
+| `TxnMap2.getVisible` | 90528 | 2460 |
+| `WriteBatch` | 1456 | 32 |
+| `RowCodec` | 696 | 7 |
+| `RowValue.decodeValue` | 48 | 1 |
+
+结论：
+
+- raw-key 复用对吞吐有波动收益，`mixed` 本轮达到 `2475.25 ops/s`、p99 `10501us`；
+  但 `range_scan` allocation 仍约 `502KB/op`，`mixed` 仍约 `662KB/op`，没有证明它是主要分配点。
+- 当前 JFR 证明 `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 不是 allocation 大头：
+  两者各只有 `138480 bytes / 6 events`。因此第 2 项“专用 ResultSet”暂不应该作为下一优先级。
+- allocation 大头集中在 ldb 层：`[B`、`Slice`、`InternalKey`、`BlockEntry`、`ImmutableEntry`，
+  以及 `Arrays.copyOf` / `Slice.slice` / `InternalTableIterator.getNextElement`。
+- 下一步最有价值的是向 `vexra-ldb` 推进 cursor raw-view / reusable-entry API，或者在 ADB 层
+  为 range count 引入 segment/block-level count 元数据，绕开大量 cursor entry 读取。

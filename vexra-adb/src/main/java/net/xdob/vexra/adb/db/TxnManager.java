@@ -799,9 +799,11 @@ public class TxnManager {
         scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
             tableScanEndKey(prefixKey, max));
 
-        while (scan.isValid() && TableScanCursor.startsWith(scan.key(),
-            tablePrefix)) {
+        while (scan.isValid()) {
           byte[] rawKey = scan.key();
+          if (!TableScanCursor.startsWith(rawKey, tablePrefix)) {
+            break;
+          }
           if (!isRawVersionRowKey(rawKey)) {
             break;
           }
@@ -1411,8 +1413,8 @@ public class TxnManager {
 
   private static boolean resolveVisibleCountableInCurrentRawLogicalRow(
       VersionScanSource scan, byte[] firstRowKey, long startTs) {
+    byte[] rawKey = firstRowKey;
     while (scan.isValid()) {
-      byte[] rawKey = scan.key();
       if (!sameRawLogicalRow(rawKey, firstRowKey)) {
         return false;
       }
@@ -1428,6 +1430,7 @@ public class TxnManager {
       }
 
       scan.advance();
+      rawKey = scan.isValid() ? scan.key() : null;
     }
     return false;
   }
