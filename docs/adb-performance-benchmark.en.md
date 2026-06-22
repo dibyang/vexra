@@ -1587,3 +1587,75 @@ Primary-find cost diagnostic reproduction command:
   "-PadbBenchmarkDetailedDiagnostics=true" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_cost_diagnostic.properties"
 ```
+
+## Round 19: Row-Count Cache Prewarm on Open
+
+This round deepens the row-count cache. After an `AdbTable` is constructed, it
+now calls `TxnManager.prewarmRowCountCache(TabId)` by default, moving the
+row-count base/delta meta scan to database open or table-object recovery time.
+The prewarm only fills the in-process cache and does not modify persistent
+data. It can be disabled with `-Dvexra.adb.rowCount.prewarm=false` when startup
+latency matters more than the first business request.
+
+New diagnostic phases:
+
+- `ADB_ROW_COUNT_PREWARM`: one row-count cache prewarm during table open.
+- `ADB_ROW_COUNT_PREWARM_HIT`: prewarm found an existing cache entry.
+
+Verification coverage:
+
+- `rowCountCachePrewarmsAfterReopen`: after reopen, the first `COUNT(*)` hits
+  `ADB_ROW_COUNT_CACHE_HIT` and no longer records `ADB_ROW_COUNT_CACHE_MISS`.
+- `rowCountCachePrewarmCanBeDisabled`: disabling
+  `vexra.adb.rowCount.prewarm` restores lazy loading, so the first `COUNT(*)`
+  still records one cache miss.
+- `concurrentTableCountLoadsBaseRowCountOnce` now verifies that concurrent
+  count queries share the prewarmed cache.
+
+Reproducible results:
+
+| workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Key diagnostics | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `table_count` | 1318.68 | 731 | 1297 | 1844 | 9094 | 3000 `ADB_ROW_COUNT_CACHE_HIT` records in the measured window, no miss/base scan | `vexra-adb/build/adb-benchmark/table_count_prewarm_stage.properties` |
+| `primary_find` | 474.61 | 1989 | 3126 | 4087 | 51052 | 6000 `ADB_ROW_COUNT_CACHE_HIT` records in the measured window, no miss/base scan | `vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties` |
+| `mixed` 8 threads | 1051.16 | 2482 | 8499 | 11684 | 684348 | one prewarm/base scan is recorded after worker connection open; the concurrent benchmark still includes connection/prewarm overhead | `vexra-adb/build/adb-benchmark/jdbc_mixed_prewarm_stage.properties` |
+
+Conclusion:
+
+- Single-thread `table_count` improved from the Round 15 allocation baseline
+  `1157.41 ops/s` to `1318.68 ops/s`; `primary_find` improved from
+  `431.97 ops/s` to `474.61 ops/s`.
+- This keeps H2 optimizer cost semantics unchanged, making it safer than the
+  rejected fixed-row-count estimate. The measured window confirms row-count
+  reads become cache hits instead of cold miss/base scans.
+- The current concurrent mixed benchmark starts timing after worker launch and
+  includes each worker's connection and warmup. Therefore this mixed result is
+  treated only as a side-effect observation, not as throughput-improvement
+  evidence. A future benchmark change should separate `connection/open/prewarm`
+  from the measured operation window.
+
+Table-count reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-prewarm-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=table_count" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_prewarm_stage.properties"
+```
+
+Primary-find reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-prewarm-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties"
+```

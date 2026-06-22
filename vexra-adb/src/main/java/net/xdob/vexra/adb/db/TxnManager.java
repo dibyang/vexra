@@ -350,6 +350,36 @@ public class TxnManager {
     return baseRowCount + rowCountDelta;
   }
 
+  /**
+   * 预热指定表的 row-count 基线缓存。
+   *
+   * <p>该方法用于数据库打开或表对象恢复阶段，把 row-count base/delta 元数据扫描从首个业务
+   * COUNT 或 optimizer cost 读取前移。它只填充进程内缓存，不修改持久化数据；调用方可以安全地在
+   * 表构造后执行。</p>
+   *
+   * @param tId 表 id 和 epoch
+   * @throws SQLException 底层 meta 扫描失败时抛出
+   */
+  public void prewarmRowCountCache(TabId tId) throws SQLException {
+    if (tId == null) {
+      return;
+    }
+    long started = System.nanoTime();
+    Object loadLock = rowCountLoadLocks.computeIfAbsent(tId,
+        ignored -> new Object());
+    synchronized (loadLock) {
+      if (rowCountCache.containsKey(tId)) {
+        recordSqlPhase("ADB_ROW_COUNT_PREWARM_HIT",
+            System.nanoTime() - started);
+        return;
+      }
+      long loaded = getBaseRowCount(RowCountKey.of(tId));
+      rowCountCache.put(tId, new AtomicLong(loaded));
+      recordSqlPhase("ADB_ROW_COUNT_PREWARM",
+          System.nanoTime() - started);
+    }
+  }
+
   private long getCachedBaseRowCount(TabId tId) throws SQLException {
     long started = System.nanoTime();
     AtomicLong cached = rowCountCache.get(tId);

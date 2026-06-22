@@ -528,11 +528,12 @@ class AdbTableProviderIntegrationTest {
             AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
                     .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
                     .snapshot();
-            Assertions.assertEquals(1L, phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_MISS"),
+            Assertions.assertTrue(phaseCount(snapshot, "ADB_ROW_COUNT_PREWARM") >= 1L,
+                    snapshot.getPhaseStats().toString());
+            Assertions.assertEquals(0L, phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_MISS"),
                     snapshot.getPhaseStats().toString());
             Assertions.assertTrue(
-                    phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_HIT")
-                            + phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_WAIT_HIT") >= 7L,
+                    phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_HIT") >= 8L,
                     snapshot.getPhaseStats().toString());
         } finally {
             executor.shutdownNow();
@@ -591,6 +592,80 @@ class AdbTableProviderIntegrationTest {
             } else {
                 System.setProperty("vexra.adb.rowCount.compactDeltaThreshold",
                         previousThreshold);
+            }
+        }
+    }
+
+    @Test
+    void rowCountCachePrewarmsAfterReopen() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        String databasePath = tempDir.resolve("adb-row-count-prewarm").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES "
+                        + "(1, 'a'), (2, 'b'), (3, 'c')");
+            }
+
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.resetAll();
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(3L, countRows(statement));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(phaseCount(snapshot, "ADB_ROW_COUNT_PREWARM") >= 1L,
+                    snapshot.getPhaseStats().toString());
+            Assertions.assertTrue(phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_HIT") >= 1L,
+                    snapshot.getPhaseStats().toString());
+            Assertions.assertEquals(0L, phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_MISS"),
+                    snapshot.getPhaseStats().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void rowCountCachePrewarmCanBeDisabled() throws Exception {
+        String previous = System.getProperty("vexra.adb.rowCount.prewarm");
+        System.setProperty("vexra.adb.rowCount.prewarm", "false");
+        AdbSqlDiagnosticsRegistry.clear();
+        String databasePath = tempDir.resolve("adb-row-count-prewarm-disabled").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+            }
+
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.resetAll();
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(1L, countRows(statement));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertEquals(0L, phaseCount(snapshot, "ADB_ROW_COUNT_PREWARM"),
+                    snapshot.getPhaseStats().toString());
+            Assertions.assertEquals(1L, phaseCount(snapshot, "ADB_ROW_COUNT_CACHE_MISS"),
+                    snapshot.getPhaseStats().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+            if (previous == null) {
+                System.clearProperty("vexra.adb.rowCount.prewarm");
+            } else {
+                System.setProperty("vexra.adb.rowCount.prewarm", previous);
             }
         }
     }

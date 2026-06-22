@@ -11,6 +11,7 @@ import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.h2plugin.AdbTransactionRegistry;
 import net.xdob.vexra.adb.key.IndexBuildState;
 import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.TabId;
 import org.h2.api.DatabaseEventListener;
 import org.h2.api.ErrorCode;
 import org.h2.command.ddl.CreateTableData;
@@ -163,6 +164,7 @@ public class AdbTable extends TableBase {
         IndexColumn.wrap(getColumns()), IndexType.createScan(true));
 
     indexes.add(primaryIndex);
+    prewarmRowCountCache();
   }
 
   public DbStore getRocksStore() {
@@ -181,6 +183,22 @@ public class AdbTable extends TableBase {
 
   public TxnMap2 getTxnMap(SessionLocal sessionLocal){
    return AdbTransactionRegistry.getOrCreate(sessionLocal, txnManager);
+  }
+
+  private void prewarmRowCountCache() {
+    if (!rowCountPrewarmEnabled()) {
+      return;
+    }
+    try {
+      txnManager.prewarmRowCountCache(TabId.of(getId(), 0L));
+    } catch (SQLException e) {
+      LOG.warn("prewarm row-count cache failed, table={}", getName(), e);
+    }
+  }
+
+  private static boolean rowCountPrewarmEnabled() {
+    return Boolean.parseBoolean(System.getProperty(
+        "vexra.adb.rowCount.prewarm", "true"));
   }
 
   /**

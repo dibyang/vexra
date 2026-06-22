@@ -1379,3 +1379,67 @@ primary find cost 诊断复现命令：
   "-PadbBenchmarkDetailedDiagnostics=true" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_cost_diagnostic.properties"
 ```
+
+## 第十九轮：row-count cache 打开预热
+
+本轮推进 row-count 缓存深化：`AdbTable` 构造完成后默认调用
+`TxnManager.prewarmRowCountCache(TabId)`，把 row-count base/delta meta 扫描提前到
+数据库打开或表对象恢复阶段。该行为只填充进程内缓存，不修改持久化数据；如果启动阶段更关注
+打开耗时，可以通过 `-Dvexra.adb.rowCount.prewarm=false` 关闭。
+
+新增诊断 phase：
+
+- `ADB_ROW_COUNT_PREWARM`：表打开阶段完成一次 row-count 缓存预热。
+- `ADB_ROW_COUNT_PREWARM_HIT`：预热发现缓存已存在。
+
+验证覆盖：
+
+- `rowCountCachePrewarmsAfterReopen`：reopen 后第一次 `COUNT(*)` 命中
+  `ADB_ROW_COUNT_CACHE_HIT`，不再出现 `ADB_ROW_COUNT_CACHE_MISS`。
+- `rowCountCachePrewarmCanBeDisabled`：关闭 `vexra.adb.rowCount.prewarm` 后回到懒加载，
+  第一次 `COUNT(*)` 仍记录一次 cache miss。
+- `concurrentTableCountLoadsBaseRowCountOnce` 已调整为验证并发 count 共享预热缓存。
+
+可复现结果：
+
+| workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 关键诊断 | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `table_count` | 1318.68 | 731 | 1297 | 1844 | 9094 | 正式窗口 3000 次 `ADB_ROW_COUNT_CACHE_HIT`，无 miss/base scan | `vexra-adb/build/adb-benchmark/table_count_prewarm_stage.properties` |
+| `primary_find` | 474.61 | 1989 | 3126 | 4087 | 51052 | 正式窗口 6000 次 `ADB_ROW_COUNT_CACHE_HIT`，无 miss/base scan | `vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties` |
+| `mixed` 8 线程 | 1051.16 | 2482 | 8499 | 11684 | 684348 | worker 连接后记录 1 次 prewarm/base scan，benchmark 并发口径仍包含连接/预热成本 | `vexra-adb/build/adb-benchmark/jdbc_mixed_prewarm_stage.properties` |
+
+结论：
+
+- 单线程 `table_count` 从第十五轮 allocation 基线的 `1157.41 ops/s` 提升到
+  `1318.68 ops/s`；`primary_find` 从 `431.97 ops/s` 提升到 `474.61 ops/s`。
+- 这次没有改变 H2 optimizer 的 cost 语义，因此比“固定估算行数”方案更稳；正式窗口也确认
+  row-count 读取从 cold miss/base scan 变成 cache hit。
+- 当前 mixed benchmark 的并发计时从 worker 启动后开始，包含每个 worker 的连接和 warmup；
+  因此 mixed 这轮只作为副作用观察，不作为吞吐提升证据。后续 benchmark 应拆出
+  `connection/open/prewarm` 与正式操作窗口，避免 allocation 和 throughput 被连接阶段污染。
+
+table count 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-prewarm-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=table_count" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_prewarm_stage.properties"
+```
+
+primary find 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/primary-find-prewarm-stage/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=primary_find" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/primary_find_prewarm_stage.properties"
+```
