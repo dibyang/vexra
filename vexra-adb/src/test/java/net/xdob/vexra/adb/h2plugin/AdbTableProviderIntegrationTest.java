@@ -492,6 +492,43 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedFallbackReplaysLatestDeferredParameters() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-fallback-deferred-params").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.execute("CREATE INDEX IDX_TEST_NAME ON TEST(NAME)");
+                Assertions.assertEquals(3, statement.executeUpdate(
+                        "INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'b')"));
+
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST WHERE NAME BETWEEN ? AND ?")) {
+                    count.setString(1, "a");
+                    count.setString(2, "b");
+                    Assertions.assertEquals(3L, singleLong(count));
+
+                    count.setString(1, "b");
+                    count.setString(2, "b");
+                    Assertions.assertEquals(2L, singleLong(count));
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void tableCountUsesAdbDriverFastPathAndSeesLocalDelta() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

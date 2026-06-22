@@ -48,6 +48,8 @@ final class AdbPreparedStatementProxy {
     private final AdbTableCountPlan tableCountPlan;
     private final Object[] parameters;
     private final boolean[] parameterSet;
+    private final SetterCall[] deferredSetters;
+    private boolean delegateMayHaveParameters;
     private int lastUpdateCount = -1;
 
     private Handler(Connection connection, PreparedStatement delegate,
@@ -67,6 +69,7 @@ final class AdbPreparedStatementProxy {
       parameterCount = Math.max(parameterCount, parameterCount(tableCountPlan));
       this.parameters = new Object[parameterCount + 1];
       this.parameterSet = new boolean[parameterCount + 1];
+      this.deferredSetters = new SetterCall[parameterCount + 1];
     }
 
     @Override
@@ -81,11 +84,14 @@ final class AdbPreparedStatementProxy {
         parameterSet[parameter] = true;
         parameters[parameter] = "setNull".equals(name) ? null
             : args.length > 1 ? args[1] : null;
-        return invokeDelegate(method, args);
+        deferredSetters[parameter] = new SetterCall(method, args);
+        return null;
       }
       if ("clearParameters".equals(name)) {
         java.util.Arrays.fill(parameters, null);
         java.util.Arrays.fill(parameterSet, false);
+        java.util.Arrays.fill(deferredSetters, null);
+        delegateMayHaveParameters = false;
         return invokeDelegate(method, args);
       }
       if ("executeQuery".equals(name) && noSqlArgument(args)
@@ -148,7 +154,32 @@ final class AdbPreparedStatementProxy {
         Class<?> type = (Class<?>) args[0];
         return type.isInstance(proxy) || delegate.isWrapperFor(type);
       }
+      if (isExecution(name, args)) {
+        replayDeferredSetters();
+      }
       return invokeDelegate(method, args);
+    }
+
+    private void replayDeferredSetters() throws Throwable {
+      boolean hasDeferredSetter = false;
+      for (SetterCall setter : deferredSetters) {
+        if (setter != null) {
+          hasDeferredSetter = true;
+          break;
+        }
+      }
+      if (!hasDeferredSetter) {
+        return;
+      }
+      if (delegateMayHaveParameters) {
+        delegate.clearParameters();
+      }
+      for (SetterCall setter : deferredSetters) {
+        if (setter != null) {
+          setter.invoke(delegate);
+        }
+      }
+      delegateMayHaveParameters = true;
     }
 
     private Object invokeDelegate(Method method, Object[] args) throws Throwable {
@@ -184,9 +215,35 @@ final class AdbPreparedStatementProxy {
       return args == null || args.length == 0;
     }
 
+    private static boolean isExecution(String name, Object[] args) {
+      return noSqlArgument(args) && ("execute".equals(name)
+          || "executeQuery".equals(name)
+          || "executeUpdate".equals(name)
+          || "executeLargeUpdate".equals(name));
+    }
+
     private static boolean isSetter(String name, Object[] args) {
       return name != null && name.startsWith("set") && args != null
           && args.length >= 1 && args[0] instanceof Integer;
+    }
+  }
+
+  private static final class SetterCall {
+
+    private final Method method;
+    private final Object[] args;
+
+    private SetterCall(Method method, Object[] args) {
+      this.method = method;
+      this.args = args == null ? null : args.clone();
+    }
+
+    private void invoke(PreparedStatement delegate) throws Throwable {
+      try {
+        method.invoke(delegate, args);
+      } catch (java.lang.reflect.InvocationTargetException e) {
+        throw e.getCause();
+      }
     }
   }
 }

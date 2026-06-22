@@ -3643,3 +3643,73 @@ benchmark：
   `2994.01 ops/s` 相比略高，说明写入入口小对象清理和 range count 本地写过滤合并后有正向信号。
 - `insert` 单项为 `697.51 ops/s`，略高于后续 ADB/H2 复测样本 `680.74 ops/s`，
   但该单项受文件库 flush 影响较大，仍需更长窗口判断趋势。
+
+## 第五十六轮：PreparedStatement setter 延迟回放
+
+本轮继续目标第 3、4、5 项的公共外层入口优化。诊断样本显示：
+
+- `ADB_TABLE_POINT_LOOKUP_FAST` 平均约 `2270us`；
+- `ADB_TABLE_BULK_ADD_ROW` 平均约 `2420us`；
+- `ADB_TABLE_RANGE_COUNT_FAST` 平均约 `2260us`；
+- 但 `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` 内部平均只有约 `140us`。
+
+这说明 `mixed` 当前不只受内部 raw count 影响，`PreparedStatement` fast path 外层调用边界也很重。
+此前 `AdbPreparedStatementProxy` 每次 `setLong/setString` 都会同时记录参数并通过反射调用
+H2 delegate setter；fast path 命中时 delegate 实际不会执行。
+
+本轮改动：
+
+1. `AdbPreparedStatementProxy` 对参数 setter 进行延迟回放：fast path 只记录参数和最后一次
+   setter 调用，不立即反射调用 delegate。
+2. 当 fast path 不命中、需要回退到 H2 delegate 执行时，再按当前参数状态回放 setter。
+3. `clearParameters()` 同时清理本地参数状态和 delegate 参数，避免 fallback 看到旧参数。
+4. setter 记录按参数位覆盖，避免同一个 PreparedStatement 高频执行时累积历史 setter。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFallbackReplaysLatestDeferredParameters --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedNonPrimaryRangeCountFallsBackToH2Path --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `AdbTableProviderIntegrationTest.preparedFallbackReplaysLatestDeferredParameters`
+  覆盖非主键 range count 回退 H2 时，延迟 setter 会回放最新参数，且重复执行同一个
+  PreparedStatement 不会使用旧参数。
+
+诊断 benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_after_single_bulk_diag_20260622-181804.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_after_single_bulk_diag-20260622-181804/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+无诊断 benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_deferred_setters_20260622-182110.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_deferred_setters-20260622-182110/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_deferred_setters_20260622-182110.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_deferred_setters-20260622-182110/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | --- |
+| `point_lookup` | 1321.00 | 1836 | 10175 | `vexra-adb/build/adb-benchmark/adb_point_lookup_deferred_setters_20260622-182110.properties` |
+| `mixed` | 3205.13 | 7437 | 388947 | `vexra-adb/build/adb-benchmark/adb_mixed_deferred_setters_20260622-182110.properties` |
+
+结论：
+
+- `mixed` 从第五十五轮 `3024.19 ops/s` 提升到 `3205.13 ops/s`，约 `+6.0%`；
+  p99 从 `8140us` 降到 `7437us`。
+- `point_lookup` 比第五十二轮 `1228.00 ops/s` 提升约 `+7.6%`，但低于后续 ADB/H2
+  复测样本 `1642.94 ops/s`，该单项仍需多轮样本看趋势。
+- allocation 没有下降，符合预期：本轮主要减少 fast path 成功时的 delegate setter
+  反射调用，而不是消除大对象分配。
+- 下一步应继续围绕 fast path 外层边界推进：要么进一步减少 PreparedStatement proxy
+  invocation 成本，要么处理 `AdbSimpleResultSet`/count ResultSet 的调用成本；但从 JFR
+  allocation 角度看，ResultSet 仍不是主要分配大头。

@@ -4219,3 +4219,85 @@ Conclusion:
   later ADB/H2 retest sample at `680.74 ops/s`. This workload is still strongly
   affected by file-store flush behavior, so it needs a longer window before it
   can be treated as a stable trend.
+
+## Round 56: Deferred PreparedStatement Setter Replay
+
+This round continues the shared outer-entry optimization for objective items 3,
+4, and 5. The diagnostic sample showed:
+
+- `ADB_TABLE_POINT_LOOKUP_FAST` averaged about `2270us`;
+- `ADB_TABLE_BULK_ADD_ROW` averaged about `2420us`;
+- `ADB_TABLE_RANGE_COUNT_FAST` averaged about `2260us`;
+- but the inner `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` phase averaged only about
+  `140us`.
+
+This means `mixed` is not only limited by the raw count internals. The
+`PreparedStatement` fast-path boundary is also expensive. Previously,
+`AdbPreparedStatementProxy` recorded every `setLong/setString` parameter and
+also invoked the H2 delegate setter reflectively. When the fast path succeeds,
+the delegate never uses those parameters.
+
+Changes:
+
+1. `AdbPreparedStatementProxy` now defers parameter setter replay. On fast-path
+   execution it only records the parameter value and the latest setter call.
+2. When a fast path misses and execution falls back to the H2 delegate, the
+   proxy replays the current setter state before invoking the delegate.
+3. `clearParameters()` clears both local parameter state and delegate
+   parameters, preventing fallback from seeing stale values.
+4. Setter records are stored by parameter position and overwritten by later
+   setters, so high-frequency execution of one PreparedStatement does not keep
+   accumulating historical setters.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFallbackReplaysLatestDeferredParameters --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedNonPrimaryRangeCountFallsBackToH2Path --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `AdbTableProviderIntegrationTest.preparedFallbackReplaysLatestDeferredParameters`
+  covers H2 fallback for non-primary-key range count. Deferred setters replay
+  the latest parameters, and repeated execution of the same PreparedStatement
+  does not reuse stale values.
+
+Diagnostic benchmark:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_after_single_bulk_diag_20260622-181804.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_after_single_bulk_diag-20260622-181804/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Non-diagnostic benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_deferred_setters_20260622-182110.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_deferred_setters-20260622-182110/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_deferred_setters_20260622-182110.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_deferred_setters-20260622-182110/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | --- |
+| `point_lookup` | 1321.00 | 1836 | 10175 | `vexra-adb/build/adb-benchmark/adb_point_lookup_deferred_setters_20260622-182110.properties` |
+| `mixed` | 3205.13 | 7437 | 388947 | `vexra-adb/build/adb-benchmark/adb_mixed_deferred_setters_20260622-182110.properties` |
+
+Conclusion:
+
+- `mixed` improved from Round 55's `3024.19 ops/s` to `3205.13 ops/s`, about
+  `+6.0%`, with p99 falling from `8140us` to `7437us`.
+- `point_lookup` is about `+7.6%` over Round 52's `1228.00 ops/s`, but still
+  below the later ADB/H2 retest sample at `1642.94 ops/s`. This standalone
+  workload still needs multiple samples before reading it as a stable trend.
+- Allocation did not fall, as expected. This round removes delegate setter
+  reflection calls on successful fast paths rather than eliminating large
+  allocations.
+- The next target should stay around the fast-path outer boundary: either
+  further reduce PreparedStatement proxy invocation cost, or address
+  `AdbSimpleResultSet` / count ResultSet call overhead. From the JFR allocation
+  perspective, ResultSet is still not a major allocation source.
