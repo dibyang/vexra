@@ -3196,3 +3196,63 @@ benchmark：
   1）range count 引入 segment/block-level count 或 ldb reusable cursor；
   2）普通 JDBC insert 路径继续减少 key/value 编码和二级索引构造成本；
   3）把 mixed 中的读写比例拆分成独立子基准，避免单个综合分数掩盖瓶颈来源。
+
+## 第四十八轮：range seek rowId 编码修复
+
+本轮继续第 5 项 range count 外层入口优化。复核 `COUNT(*) WHERE ID BETWEEN ? AND ?` 快路径时发现：
+`VersionRowKey` / `RowKey` 落盘时会对 rowId 做 `flipSign(rowId)`，用来保持 signed long 的字典序；
+但 `TxnManager.buildRowSeekKey(...)` 构造 range scan lower/upper bound 时直接写入原始 rowId。
+
+这个不一致不会改变最终 COUNT 正确性，因为外层循环还会用 rowId 范围过滤；但对正数主键范围会导致 seek bound
+落在真实 row key 之前，部分场景退化成从表前部开始扫描，再跳过不在范围内的行。该问题正好解释了
+range/mixed 中 ldb cursor key/value 分配过高的现象。
+
+本轮改动：
+
+1. `TxnManager.buildRowSeekKey(...)` 改为写入 `Key.flipSign(rowId)`，与 `VersionRowKey` / `RowKey`
+   编码保持一致。
+2. 同时把 seek key 构造改为固定长度 byte 数组写入，去掉 `DynamicByteBuffer` 临时对象。
+3. 新增单测直接比较 range lower bound 与实际 `VersionRowKey` 字节序，防止后续误改回 raw rowId。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `TxnManagerVisibleRowFastPathTest.shouldEncodeRangeSeekKeyWithVersionRowKeyOrder` 覆盖 range seek key
+  与 `VersionRowKey` 的 rowId 字典序一致。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_range_scan_row_seek_flip_repeat_20260622-164405.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-range-scan-row-seek-flip-repeat-20260622-164405/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_row_seek_flip_20260622-164236.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-row-seek-flip-20260622-164236/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | 修复前 ops/s | 修复后 ops/s | 修复前 p99 us | 修复后 p99 us | 修复前 alloc bytes/op | 修复后 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1191.90 | 1958.22 | 2377 | 1327 | 502877 | 95759 | `vexra-adb/build/adb-benchmark/adb_range_scan_row_seek_flip_repeat_20260622-164405.properties` |
+| `mixed` | 2237.14 | 2697.84 | 11531 | 8676 | 580216 | 372208 | `vexra-adb/build/adb-benchmark/adb_mixed_row_seek_flip_20260622-164236.properties` |
+
+结论：
+
+- `range_scan` allocation 从约 `502KB/op` 降到约 `96KB/op`，吞吐从 `1191.90 ops/s` 提升到
+  `1958.22 ops/s`，p99 从 `2377us` 降到 `1327us`。
+- `mixed` allocation 从约 `580KB/op` 降到约 `372KB/op`，吞吐从 `2237.14 ops/s` 提升到
+  `2697.84 ops/s`，p99 从 `11531us` 降到 `8676us`。
+- 这说明 range count 外层 seek bound 是本轮最有价值修复之一；但 `mixed` 距 H2 仍有明显差距，
+  后续还需要继续压低 ldb cursor 边界分配，或引入 segment/block-level count 元数据。

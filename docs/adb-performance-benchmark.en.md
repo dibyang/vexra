@@ -3678,3 +3678,74 @@ Conclusion:
   regular JDBC insert key/value and secondary-index construction cost, and split
   the mixed workload into smaller sub-benchmarks so one aggregate score does not
   hide the source bottleneck.
+
+## Round 48: Range Seek rowId Encoding Fix
+
+This round continues item 5, the range-count outer-entry optimization. While
+reviewing the `COUNT(*) WHERE ID BETWEEN ? AND ?` fast path, we found that
+`VersionRowKey` / `RowKey` encode rowId with `flipSign(rowId)` to preserve
+signed-long lexicographic order, but `TxnManager.buildRowSeekKey(...)` wrote the
+raw rowId when building range-scan lower / upper bounds.
+
+That mismatch did not change COUNT correctness because the outer loop still
+filtered by rowId range. It did, however, make positive primary-key ranges seek
+before the real row keys, so some scans degenerated into starting near the
+beginning of the table and skipping rows until the lower bound. This matches the
+previously high ldb cursor key/value allocation in range and mixed workloads.
+
+Changes:
+
+1. `TxnManager.buildRowSeekKey(...)` now writes `Key.flipSign(rowId)`, matching
+   `VersionRowKey` / `RowKey` encoding.
+2. The method now builds the seek key with a fixed-size byte array, removing the
+   temporary `DynamicByteBuffer`.
+3. A new unit test compares the range lower bound with real `VersionRowKey`
+   bytes to prevent future regressions to raw rowId encoding.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `TxnManagerVisibleRowFastPathTest.shouldEncodeRangeSeekKeyWithVersionRowKeyOrder`
+  verifies that the range seek key has the same rowId lexicographic order as
+  `VersionRowKey`.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_range_scan_row_seek_flip_repeat_20260622-164405.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-range-scan-row-seek-flip-repeat-20260622-164405/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_row_seek_flip_20260622-164236.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb-mixed-row-seek-flip-20260622-164236/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | Before ops/s | After ops/s | Before p99 us | After p99 us | Before alloc bytes/op | After alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1191.90 | 1958.22 | 2377 | 1327 | 502877 | 95759 | `vexra-adb/build/adb-benchmark/adb_range_scan_row_seek_flip_repeat_20260622-164405.properties` |
+| `mixed` | 2237.14 | 2697.84 | 11531 | 8676 | 580216 | 372208 | `vexra-adb/build/adb-benchmark/adb_mixed_row_seek_flip_20260622-164236.properties` |
+
+Conclusion:
+
+- `range_scan` allocation dropped from roughly `502KB/op` to `96KB/op`.
+  Throughput improved from `1191.90 ops/s` to `1958.22 ops/s`, and p99 dropped
+  from `2377us` to `1327us`.
+- `mixed` allocation dropped from roughly `580KB/op` to `372KB/op`. Throughput
+  improved from `2237.14 ops/s` to `2697.84 ops/s`, and p99 dropped from
+  `11531us` to `8676us`.
+- This confirms that the range-count outer seek bound was one of the most
+  valuable fixes in this area. Mixed is still far from H2, so the next steps are
+  further reducing ldb cursor boundary allocation or adding segment/block-level
+  count metadata.

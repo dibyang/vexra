@@ -13,6 +13,7 @@ import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * TxnManager 可见行快路径测试。
@@ -132,6 +133,30 @@ class TxnManagerVisibleRowFastPathTest {
     }
   }
 
+  /**
+   * 验证 range scan lower bound 使用与 VersionRowKey 一致的 rowId 编码。
+   *
+   * <p>row version key 会对 rowId 做符号位翻转以保持 signed long 字典序。
+   * 如果 range seek key 直接写原始 rowId，正数主键范围会落在真实 row key 之前，
+   * 导致 {@code COUNT(*) WHERE ID BETWEEN ? AND ?} 从表前部开始扫描。</p>
+   */
+  @Test
+  void shouldEncodeRangeSeekKeyWithVersionRowKeyOrder() {
+    TabId tabId = TabId.of(1, 0L);
+    RowPrefix prefix = RowPrefix.of(tabId);
+    byte[] lower = TxnManager.buildRowSeekKey(prefix, 90L);
+    byte[] before = VersionKey.of(RowKey.of(tabId, 89L), true, 10L)
+        .toBytes();
+    byte[] first = VersionKey.of(RowKey.of(tabId, 90L), true, 10L)
+        .toBytes();
+    byte[] after = VersionKey.of(RowKey.of(tabId, 91L), true, 10L)
+        .toBytes();
+
+    assertTrue(compareUnsigned(before, lower) < 0);
+    assertTrue(compareUnsigned(lower, first) <= 0);
+    assertTrue(compareUnsigned(lower, after) < 0);
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
@@ -163,5 +188,16 @@ class TxnManagerVisibleRowFastPathTest {
     row.deleted = true;
     row.payload = new byte[0];
     return row;
+  }
+
+  private static int compareUnsigned(byte[] left, byte[] right) {
+    int length = Math.min(left.length, right.length);
+    for (int i = 0; i < length; i++) {
+      int diff = (left[i] & 0xff) - (right[i] & 0xff);
+      if (diff != 0) {
+        return diff;
+      }
+    }
+    return left.length - right.length;
   }
 }

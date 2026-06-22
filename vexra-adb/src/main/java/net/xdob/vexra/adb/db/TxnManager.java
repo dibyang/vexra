@@ -1612,11 +1612,24 @@ public class TxnManager {
         | (long) (data[offset + 7] & 0xff);
   }
 
-  private static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
-    DynamicByteBuffer b = DynamicByteBuffer.c();
-    b.put(prefixKey.toBytes());
-    b.putLong(rowId);
-    return b.toArray();
+  static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
+    byte[] prefix = prefixKey.toBytes();
+    byte[] data = Arrays.copyOf(prefix, prefix.length + Long.BYTES);
+    // VersionRowKey / RowKey 对 rowId 做符号位翻转以保持 signed long 的字典序。
+    // range seek bound 必须使用相同编码，否则正数主键范围会从表前部开始扫描。
+    putLong(data, prefix.length, Key.flipSign(rowId));
+    return data;
+  }
+
+  private static void putLong(byte[] data, int offset, long value) {
+    data[offset] = (byte) (value >>> 56);
+    data[offset + 1] = (byte) (value >>> 48);
+    data[offset + 2] = (byte) (value >>> 40);
+    data[offset + 3] = (byte) (value >>> 32);
+    data[offset + 4] = (byte) (value >>> 24);
+    data[offset + 5] = (byte) (value >>> 16);
+    data[offset + 6] = (byte) (value >>> 8);
+    data[offset + 7] = (byte) value;
   }
 
 
