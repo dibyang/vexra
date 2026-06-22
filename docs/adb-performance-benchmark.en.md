@@ -2053,3 +2053,58 @@ Conclusion:
   running a controlled trusted-cache benchmark. If work shifts to item 5, the
   same read-fill / dedicated-ResultSet thinking can be applied to the range
   count outer entry.
+
+## Round 25: Controlled Trusted Committed Cache Comparison
+
+Round 24 introduced read-fill cache hits, but the default
+`TRUST_COMMITTED_ROW_CACHE=false` mode still validates the underlying committed
+version on every cache hit to protect restore scenarios. This round only
+measures the upper bound of skipping that validation; it does not change the
+default safety policy.
+
+Detail mixed 8-thread trusted reproduction command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_detail_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-visible-cache-detail-stage/adb-benchmark
+```
+
+Default-diagnostics-off trusted mixed 8-thread reproduction command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_default_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-visible-cache-default-stage/adb-benchmark
+```
+
+Result comparison:
+
+| workload | mode | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | default safe cache | 2497.92 | 2379 | 8240 | 10566 | 663277 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_default_stage.properties` |
+| `mixed` | trusted cache | 2700.27 | 2185 | 7807 | 9920 | 663214 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_default_stage.properties` |
+| `mixed` detail | default safe cache | 2568.49 | 2327 | 7969 | 10319 | 711405 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_detail_stage.properties` |
+| `mixed` detail | trusted cache | 2645.50 | 2268 | 7573 | 10503 | 663144 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_detail_stage.properties` |
+
+Trusted detail key phases:
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_VISIBLE_COMMITTED_CACHE_MISS` | 2139 | 0 | 46 |
+| `ADB_VISIBLE_STORE_SEEK` | 2139 | 237 | 6936 |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2139 | 256 | 6957 |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` | 220 | 1 | 22 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 | 184 | 6965 |
+
+Conclusion:
+
+- `-Dvexra.adb.rowCache.trustCommitted=true` has a clear upside: default mixed
+  improved from `2497.92 ops/s` to `2700.27 ops/s`, and p99 improved from
+  `10566us` to `9920us`.
+- Detail phases show trusted cache hits average about `1us`, while Round 24
+  default safe cache hits averaged about `102us`; the difference is mainly the
+  underlying committed-version validation.
+- This mode should not be the default: if restore / checkpoint rollback happens
+  in the same process, skipping validation may return stale in-memory cache
+  entries. The default remains validation-on.
+- To safely make this benefit default, `DbStore.restore(...)` / backup-restore
+  runtime and `TxnManager` need cache invalidation or a store generation
+  mechanism. Until then, this remains a pure-local benchmark switch for runs
+  without restore interference.

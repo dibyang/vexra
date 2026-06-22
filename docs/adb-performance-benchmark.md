@@ -1779,3 +1779,51 @@ point lookup 单项复跑：
   cache 校验成本和多轮复跑再判断。
 - 下一步若继续第 3 项，最值得评估的是降低 cache hit 校验成本或提供受控的 trust 模式压测；
   若转向第 5 项，则可把类似“读后回填/专用 ResultSet”的思路用于 range count 外层入口。
+
+## 第二十五轮：trusted committed cache 受控对照
+
+第二十四轮读后回填让 committed cache 出现命中，但默认 `TRUST_COMMITTED_ROW_CACHE=false`
+仍会在每次 cache hit 时通过底层 committed version 校验保护 restore 场景。为了量化“校验成本上限”，
+本轮仅做受控压测，不改变默认安全策略。
+
+detail mixed 8 线程 trusted 复现命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_detail_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-visible-cache-detail-stage/adb-benchmark
+```
+
+默认诊断关闭的 trusted mixed 8 线程复现命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dvexra.adb.rowCache.trustCommitted=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_default_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-trusted-visible-cache-default-stage/adb-benchmark
+```
+
+结果对比：
+
+| workload | mode | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | default safe cache | 2497.92 | 2379 | 8240 | 10566 | 663277 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_default_stage.properties` |
+| `mixed` | trusted cache | 2700.27 | 2185 | 7807 | 9920 | 663214 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_default_stage.properties` |
+| `mixed` detail | default safe cache | 2568.49 | 2327 | 7969 | 10319 | 711405 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_detail_stage.properties` |
+| `mixed` detail | trusted cache | 2645.50 | 2268 | 7573 | 10503 | 663144 | `vexra-adb/build/adb-benchmark/jdbc_mixed_trusted_visible_cache_detail_stage.properties` |
+
+trusted detail 关键 phase：
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_VISIBLE_COMMITTED_CACHE_MISS` | 2139 | 0 | 46 |
+| `ADB_VISIBLE_STORE_SEEK` | 2139 | 237 | 6936 |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2139 | 256 | 6957 |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` | 220 | 1 | 22 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 | 184 | 6965 |
+
+结论：
+
+- `-Dvexra.adb.rowCache.trustCommitted=true` 的收益明显：默认 mixed 从 `2497.92 ops/s`
+  到 `2700.27 ops/s`，p99 从 `10566us` 到 `9920us`。
+- detail phase 显示 trusted cache hit 平均约 `1us`，而第二十四轮默认安全 cache hit 平均约
+  `102us`，差异主要来自底层 committed version 校验。
+- 该模式不适合作为默认值：在同一进程内执行 restore / checkpoint 回滚等操作时，跳过校验可能返回旧的
+  in-memory cache。默认策略继续保留安全校验。
+- 下一步若要把这部分收益安全默认化，需要在 `DbStore.restore(...)` / backup-restore runtime
+  与 `TxnManager` 之间建立 cache invalidation / generation 机制；否则只能作为纯本地、无 restore 干扰的压测开关。
