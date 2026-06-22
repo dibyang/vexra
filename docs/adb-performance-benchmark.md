@@ -1501,3 +1501,50 @@ mixed 复现命令：
   "-PadbBenchmarkThreads=8" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties"
 ```
+
+## 第二十一轮：JFR benchmark 诊断入口与 direct cache 负实验
+
+本轮尝试用 rowId 直接映射缓存替换 prepared point lookup 中的
+`ConcurrentHashMap<Long, ...>` decoded-column cache，以减少 `Long` 装箱和 CHM 访问成本。
+实测结果不够稳定，未保留该代码：
+
+| 实验 | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结论 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| direct cache | `point_lookup` | 2074.69 | 387 | 709 | 1316 | 10015 | 低于上一轮单值快路径历史结果，未保留 |
+| direct cache | `mixed` 8 线程 | 2479.34 | 2304 | 7852 | 11423 | 732992 | 与第 20 轮 `2463.05 ops/s` 接近，p99 更差，未保留 |
+
+为了继续定位 `POINT_LOOKUP_FAST`、`BULK_ADD_ROW`、`RANGE_COUNT_FAST`
+的外层对象和调用边界，本轮新增 JFR 诊断入口：
+
+1. `:vexra-adb:adbBenchmark` 支持 `-PadbBenchmarkJvmArgs=...`，可向 benchmark
+   JVM 透传 `-XX:StartFlightRecording` 等参数。
+2. 新增 `scripts/adb-benchmark-jfr.ps1`，默认生成 `.jfr` 和 `.properties`
+   到 `vexra-adb/build/adb-benchmark/jfr`。
+3. 当前本地 JDK 8 需要 `-XX:+UnlockCommercialFeatures`，脚本已默认附加。
+
+smoke test：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 `
+  -Workload point_lookup `
+  -Rows 20 `
+  -WarmupOperations 2 `
+  -Operations 5 `
+  -Threads 1 `
+  -OutputDir vexra-adb/build/adb-benchmark/jfr-smoke
+```
+
+smoke test 结果：
+
+| 文件 | 结果 |
+| --- | --- |
+| `vexra-adb/build/adb-benchmark/jfr-smoke/adb-point_lookup-20260622-110910.jfr` | 已生成，216528 bytes |
+| `vexra-adb/build/adb-benchmark/jfr-smoke/adb-point_lookup-20260622-110910.properties` | `passed=true`，`point_lookup` 5 operations |
+
+后续分析建议：
+
+- 用 JDK Mission Control 打开 `.jfr`，优先查看 allocation hot spots 和方法采样。
+- 对比 `point_lookup` 与 `mixed` 的 `java.lang.reflect.Proxy`、`AdbSimpleResultSet`
+  handler、`TxnMap2.getVisible`、`RowValue.decodeValue`、`PreparedStatement` proxy 调用栈。
+- 若 JFR 证明 Proxy/handler 分配是大头，再考虑实现专用 `ResultSet` 类；否则继续压
+  `TxnMap2.getVisible` 和 table-engine/JDBC 外层入口。

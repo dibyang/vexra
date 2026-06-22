@@ -1726,3 +1726,57 @@ Mixed reproduction command:
   "-PadbBenchmarkThreads=8" `
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_measured_window_stage.properties"
 ```
+
+## Round 21: JFR Benchmark Entry and Rejected Direct-Cache Experiment
+
+This round tried replacing the prepared point lookup
+`ConcurrentHashMap<Long, ...>` decoded-column cache with a direct rowId-mapped
+cache to reduce `Long` boxing and CHM access cost. The result was not stable
+enough, so the code was not retained:
+
+| Experiment | workload | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Conclusion |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| direct cache | `point_lookup` | 2074.69 | 387 | 709 | 1316 | 10015 | Below the historical single-value fast-path result; rejected |
+| direct cache | `mixed` 8 threads | 2479.34 | 2304 | 7852 | 11423 | 732992 | Close to Round 20 `2463.05 ops/s`, with worse p99; rejected |
+
+To continue diagnosing the outer object and call boundaries of
+`POINT_LOOKUP_FAST`, `BULK_ADD_ROW`, and `RANGE_COUNT_FAST`, this round adds a
+JFR profiling entry:
+
+1. `:vexra-adb:adbBenchmark` now supports `-PadbBenchmarkJvmArgs=...`, allowing
+   `-XX:StartFlightRecording` and similar JVM arguments to be passed to the
+   benchmark JVM.
+2. `scripts/adb-benchmark-jfr.ps1` writes both `.jfr` and `.properties` files
+   under `vexra-adb/build/adb-benchmark/jfr` by default.
+3. The local JDK 8 requires `-XX:+UnlockCommercialFeatures`; the script adds it
+   by default.
+
+Smoke test:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 `
+  -Workload point_lookup `
+  -Rows 20 `
+  -WarmupOperations 2 `
+  -Operations 5 `
+  -Threads 1 `
+  -OutputDir vexra-adb/build/adb-benchmark/jfr-smoke
+```
+
+Smoke test result:
+
+| File | Result |
+| --- | --- |
+| `vexra-adb/build/adb-benchmark/jfr-smoke/adb-point_lookup-20260622-110910.jfr` | generated, 216528 bytes |
+| `vexra-adb/build/adb-benchmark/jfr-smoke/adb-point_lookup-20260622-110910.properties` | `passed=true`, `point_lookup` 5 operations |
+
+Next analysis guidance:
+
+- Open the `.jfr` file with JDK Mission Control and inspect allocation hot
+  spots and sampled methods first.
+- Compare `point_lookup` and `mixed` stacks for `java.lang.reflect.Proxy`,
+  `AdbSimpleResultSet` handlers, `TxnMap2.getVisible`,
+  `RowValue.decodeValue`, and `PreparedStatement` proxy calls.
+- If JFR proves Proxy/handler allocation is dominant, implement a dedicated
+  `ResultSet` class next; otherwise continue reducing `TxnMap2.getVisible` and
+  table-engine/JDBC entry overhead.
