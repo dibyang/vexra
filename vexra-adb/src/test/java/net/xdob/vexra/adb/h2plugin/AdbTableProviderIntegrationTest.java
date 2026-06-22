@@ -965,6 +965,64 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedPointLookupRecordsVisibleRowDiagnosticBreakdown() throws Exception {
+        System.setProperty("vexra.adb.sql.diagnostic.detail", "true");
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-visible-row-breakdown").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'committed')");
+            }
+            DbStoreEngine.close(databasePath);
+
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement();
+                 PreparedStatement select = connection.prepareStatement(
+                         "SELECT NAME FROM TEST WHERE ID = ?")) {
+                AdbSqlDiagnosticsRegistry.resetAll();
+                Assertions.assertEquals("committed", preparedName(select, 1L));
+
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (2, 'local')");
+                Assertions.assertEquals("local", preparedName(select, 2L));
+                connection.rollback();
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_LOCAL_WRITE_CHECK"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_LOCAL_WRITE_MISS"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_LOCAL_WRITE_HIT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_ROUTE_POINT_READ"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_COMMITTED_CACHE_MISS"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_COMMITTED_STORE_SCAN"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_STORE_SEEK"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_VERSION_KEY_DECODE"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_ROW_VALUE_DECODE"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_READ_SET_RECORD"), snapshot.getPhaseStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+            System.clearProperty("vexra.adb.sql.diagnostic.detail");
+        }
+    }
+
+    @Test
     void rangeCountSeesLocalDeleteAndRollback() throws Exception {
         String databasePath = tempDir.resolve("adb-range-local-delete").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

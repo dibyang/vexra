@@ -54,6 +54,7 @@ public class TxnManager {
   private volatile AdbSqlDistributedScanRuntime sqlDistributedScanRuntime;
   private volatile AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime;
   private volatile AdbSqlDiagnosticRecorder sqlDiagnosticRecorder;
+  private volatile boolean detailedSqlDiagnostics;
 
   public TxnManager(DbStore store) {
     this.store = store;
@@ -187,6 +188,8 @@ public class TxnManager {
   public void setSqlDiagnosticRecorder(
       AdbSqlDiagnosticRecorder sqlDiagnosticRecorder) {
     this.sqlDiagnosticRecorder = sqlDiagnosticRecorder;
+    this.detailedSqlDiagnostics = sqlDiagnosticRecorder != null
+        && Boolean.getBoolean("vexra.adb.sql.diagnostic.detail");
   }
 
   /**
@@ -235,6 +238,10 @@ public class TxnManager {
         // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果。
       }
     }
+  }
+
+  private boolean detailedSqlDiagnostics() {
+    return detailedSqlDiagnostics;
   }
 
   public AdbTimestampProvider getTimestampProvider() {
@@ -801,6 +808,9 @@ public class TxnManager {
   }
 
   public RowValue getVisible(Transaction2 txn, DataKey rowKey) throws SQLException {
+    if (detailedSqlDiagnostics()) {
+      return getVisibleDetailed(txn, rowKey);
+    }
     // 1. 鍏堢湅褰撳墠浜嬪姟鏈湴 writeSet
     RowValue local = txn.getLocalWrite(rowKey);
     if (local != null) {
@@ -819,6 +829,34 @@ public class TxnManager {
 
     long version = visible == null ? 0L : visible.commitTs;
     txn.recordRead(rowKey, version);
+    return visible;
+  }
+
+  private RowValue getVisibleDetailed(Transaction2 txn, DataKey rowKey)
+      throws SQLException {
+    long localStarted = System.nanoTime();
+    RowValue local = txn.getLocalWrite(rowKey);
+    long localElapsed = System.nanoTime() - localStarted;
+    recordSqlPhase("ADB_VISIBLE_LOCAL_WRITE_CHECK", localElapsed);
+    if (local != null) {
+      recordSqlPhase("ADB_VISIBLE_LOCAL_WRITE_HIT", localElapsed);
+      return local;
+    }
+    recordSqlPhase("ADB_VISIBLE_LOCAL_WRITE_MISS", localElapsed);
+
+    long routeStarted = System.nanoTime();
+    regionReadRouter.routePointRead(txn, rowKey);
+    recordSqlPhase("ADB_VISIBLE_ROUTE_POINT_READ",
+        System.nanoTime() - routeStarted);
+
+    RowValue cached = getVisibleCommittedFromCacheDetailed(txn, rowKey);
+    if (cached != null) {
+      return cached.deleted ? null : cached;
+    }
+
+    RowValue visible = getVisibleCommittedDetailed(txn, rowKey);
+    long version = visible == null ? 0L : visible.commitTs;
+    recordReadVersion(txn, rowKey, version);
     return visible;
   }
 
@@ -841,6 +879,110 @@ public class TxnManager {
       return cached;
     }
     return copyWithRowKey(cached, rowKey.getRowId());
+  }
+
+  private RowValue getVisibleCommittedFromCacheDetailed(Transaction2 txn,
+      DataKey rowKey) throws SQLException {
+    long started = System.nanoTime();
+    boolean hit = false;
+    try {
+      if (rowKey == null || !rowKey.isRow()) {
+        return null;
+      }
+      RowValue cached = committedRowCache.get(rowKey);
+      if (cached == null || cached.commitTs > txn.getStartTs()) {
+        return null;
+      }
+      if (!TRUST_COMMITTED_ROW_CACHE) {
+        long validateStarted = System.nanoTime();
+        boolean exists = cachedCommittedVersionExists(rowKey, cached.commitTs);
+        recordSqlPhase("ADB_VISIBLE_COMMITTED_CACHE_VALIDATE",
+            System.nanoTime() - validateStarted);
+        if (!exists) {
+          committedRowCache.remove(rowKey, cached);
+          return null;
+        }
+      }
+      recordReadVersion(txn, rowKey, cached.commitTs);
+      hit = true;
+      if (cached.rowKey == rowKey.getRowId()) {
+        return cached;
+      }
+      return copyWithRowKey(cached, rowKey.getRowId());
+    } finally {
+      recordSqlPhase(hit ? "ADB_VISIBLE_COMMITTED_CACHE_HIT"
+              : "ADB_VISIBLE_COMMITTED_CACHE_MISS",
+          System.nanoTime() - started);
+    }
+  }
+
+  private RowValue getVisibleCommittedDetailed(Transaction2 txn,
+      DataKey rowKey) throws SQLException {
+    long scanStarted = System.nanoTime();
+    try {
+      byte[] prefix = rowKey.toBytes();
+      byte[] end = KeyCodec.prefixEnd(prefix);
+
+      try (VersionScanSource scan =
+               store.openVersionScanSource(ScanDirection.FORWARD)) {
+        long seekStarted = System.nanoTime();
+        scan.seekToRangeStart(prefix, end);
+        recordSqlPhase("ADB_VISIBLE_STORE_SEEK",
+            System.nanoTime() - seekStarted);
+
+        while (scan.isValid()) {
+          byte[] rawKey = scan.key();
+          if (rawKey == null || !KeyCodec.startsWith(rawKey, prefix)) {
+            return null;
+          }
+
+          long keyDecodeStarted = System.nanoTime();
+          VersionKey versionKey = VersionKey.fromBytes(rawKey);
+          recordSqlPhase("ADB_VISIBLE_VERSION_KEY_DECODE",
+              System.nanoTime() - keyDecodeStarted);
+          if (!versionKey.isCommited()) {
+            recordSqlPhase("ADB_VISIBLE_INTENT_SKIP", 0L);
+            long advanceStarted = System.nanoTime();
+            scan.advance();
+            recordSqlPhase("ADB_VISIBLE_STORE_ADVANCE",
+                System.nanoTime() - advanceStarted);
+            continue;
+          }
+
+          long rowDecodeStarted = System.nanoTime();
+          RowValue rowValue = RowValue.decodeValue(scan.value());
+          recordSqlPhase("ADB_VISIBLE_ROW_VALUE_DECODE",
+              System.nanoTime() - rowDecodeStarted);
+          if (rowValue.commitTs <= txn.getStartTs()) {
+            return rowValue.deleted ? null : rowValue;
+          }
+
+          long advanceStarted = System.nanoTime();
+          scan.advance();
+          recordSqlPhase("ADB_VISIBLE_STORE_ADVANCE",
+              System.nanoTime() - advanceStarted);
+        }
+        return null;
+      }
+    } catch (Exception e) {
+      if (e instanceof SQLException) {
+        throw (SQLException) e;
+      }
+      throw new SQLException("Failed to get visible committed version", e);
+    } finally {
+      recordSqlPhase("ADB_VISIBLE_COMMITTED_STORE_SCAN",
+          System.nanoTime() - scanStarted);
+    }
+  }
+
+  private void recordReadVersion(Transaction2 txn, DataKey key, long version) {
+    long started = System.nanoTime();
+    try {
+      txn.recordRead(key, version);
+    } finally {
+      recordSqlPhase("ADB_VISIBLE_READ_SET_RECORD",
+          System.nanoTime() - started);
+    }
   }
 
   private boolean cachedCommittedVersionExists(DataKey rowKey, long commitTs)

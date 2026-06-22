@@ -1629,3 +1629,83 @@ JFR 采集同轮的 `mixed` 8 线程结果：
 - 在没有 JFR 证据证明 Proxy / ResultSet 是大头前，暂不实现专用 `ResultSet`；下一步更有价值的是在
   JFR 可解析环境导出 `adb-focus.txt`，或继续拆 `TxnMap2.getVisible` / write batch
   内部阶段。
+
+## 第二十三轮：visible row 内部分段诊断
+
+本轮继续推进 `TxnMap2.getVisible` / visible row 解析路径，不直接猜测优化点，而是先把
+prepared point lookup 和 primary find 都会经过的 `TxnManager.getVisible` 拆成 detail-only
+phase。默认模式只读取 `TxnManager` 实例上缓存的 detail 开关，不做纳秒计时和 phase 记录。
+
+新增分段：
+
+| phase | 含义 |
+| --- | --- |
+| `ADB_VISIBLE_LOCAL_WRITE_CHECK` | 检查当前事务本地 write-set |
+| `ADB_VISIBLE_LOCAL_WRITE_HIT` / `ADB_VISIBLE_LOCAL_WRITE_MISS` | 本地写命中/未命中 |
+| `ADB_VISIBLE_ROUTE_POINT_READ` | region point read 路由边界 |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` / `ADB_VISIBLE_COMMITTED_CACHE_MISS` | committed row cache 命中/未命中 |
+| `ADB_VISIBLE_COMMITTED_CACHE_VALIDATE` | 不信任 cache 时校验底层 committed version |
+| `ADB_VISIBLE_STORE_SEEK` | 版本扫描 cursor seek 到逻辑行前缀 |
+| `ADB_VISIBLE_VERSION_KEY_DECODE` | 解析 `VersionKey` |
+| `ADB_VISIBLE_INTENT_SKIP` | 跳过未提交 intent 版本 |
+| `ADB_VISIBLE_ROW_VALUE_DECODE` | `RowValue.decodeValue(...)` |
+| `ADB_VISIBLE_STORE_ADVANCE` | scan advance |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | committed store scan 总耗时 |
+| `ADB_VISIBLE_READ_SET_RECORD` | 记录事务 read-set 版本 |
+
+新增测试 `preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` 覆盖：
+
+1. 关闭并重开数据库后读取已提交行，触发 committed cache miss + store scan + row decode。
+2. 同一事务内插入未提交行后点查，触发 local write hit。
+3. 断言上述 visible row 分段 phase 进入 SQL diagnostics。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+detail mixed 8 线程复现命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_detail_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-breakdown-detail-stage/adb-benchmark
+```
+
+detail mixed 8 线程结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detail | 8 | 2454.99 | 2386 | 8439 | 11670 | 733451 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_detail_stage.properties` |
+
+visible row 关键分段：
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_VISIBLE_LOCAL_WRITE_CHECK` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_LOCAL_WRITE_MISS` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_ROUTE_POINT_READ` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_COMMITTED_CACHE_MISS` | 2359 | 0 | 52 |
+| `ADB_VISIBLE_STORE_SEEK` | 2359 | 278 | 7402 |
+| `ADB_VISIBLE_VERSION_KEY_DECODE` | 2100 | 0 | 45 |
+| `ADB_VISIBLE_ROW_VALUE_DECODE` | 2100 | 0 | 25 |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2359 | 296 | 7490 |
+| `ADB_VISIBLE_READ_SET_RECORD` | 2359 | 0 | 36 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 | 240 | 7010 |
+
+默认 mixed 8 线程复跑：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2400.00 | 2446 | 8525 | 11921 | 683624 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_default_stage.properties` |
+
+结论：
+
+- 在 detail mixed 中，visible row 的主要可见成本是 store scan / seek：`ADB_VISIBLE_COMMITTED_STORE_SCAN`
+  平均约 `296us`，其中 `ADB_VISIBLE_STORE_SEEK` 平均约 `278us`。
+- `ADB_VISIBLE_ROW_VALUE_DECODE` 平均接近 `0us`，说明当前 point lookup 的 payload decode 不是最大头。
+- committed cache 在该 mixed 场景中全部表现为 miss，下一步更值得评估的是 committed row cache 的可用性、
+  cursor/seek 复用，或针对只读点查的更直接 store get 路径。
+- 默认 mixed 8 线程没有出现明显语义或性能回退；后续若继续优化第 3 项，应优先减少 store seek/scan 边界，
+  而不是继续压 `RowValue.decodeValue`。

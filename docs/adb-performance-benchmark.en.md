@@ -1878,3 +1878,91 @@ Conclusion:
   dedicated `ResultSet` work remains intentionally deferred. The next valuable
   step is to export `adb-focus.txt` in a JFR-capable environment or continue
   splitting the `TxnMap2.getVisible` / write-batch internal phases.
+
+## Round 23: Visible Row Internal Phase Breakdown
+
+This round continues the `TxnMap2.getVisible` / visible-row path work. Instead
+of guessing the next optimization, it splits `TxnManager.getVisible`, which is
+shared by prepared point lookup and primary find, into detail-only phases. In
+the default mode, the method only reads a cached per-manager detail flag and
+does not perform nanosecond timing or phase recording.
+
+New phases:
+
+| phase | Meaning |
+| --- | --- |
+| `ADB_VISIBLE_LOCAL_WRITE_CHECK` | Check the current transaction local write-set |
+| `ADB_VISIBLE_LOCAL_WRITE_HIT` / `ADB_VISIBLE_LOCAL_WRITE_MISS` | Local write hit / miss |
+| `ADB_VISIBLE_ROUTE_POINT_READ` | Region point-read routing boundary |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` / `ADB_VISIBLE_COMMITTED_CACHE_MISS` | Committed row cache hit / miss |
+| `ADB_VISIBLE_COMMITTED_CACHE_VALIDATE` | Underlying committed-version validation when the cache is not trusted |
+| `ADB_VISIBLE_STORE_SEEK` | Version-scan cursor seek to the logical-row prefix |
+| `ADB_VISIBLE_VERSION_KEY_DECODE` | `VersionKey` decoding |
+| `ADB_VISIBLE_INTENT_SKIP` | Skipping an uncommitted intent version |
+| `ADB_VISIBLE_ROW_VALUE_DECODE` | `RowValue.decodeValue(...)` |
+| `ADB_VISIBLE_STORE_ADVANCE` | Scan advance |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | Total committed store scan time |
+| `ADB_VISIBLE_READ_SET_RECORD` | Transaction read-set version recording |
+
+The new `preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` test covers:
+
+1. Close and reopen the database, then read a committed row to force a committed
+   cache miss, store scan, and row decode.
+2. Insert an uncommitted row in the same transaction, then point-read it to
+   force a local write hit.
+3. Assert that the visible-row breakdown phases are recorded in SQL diagnostics.
+
+Verification command:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Verification result: passed.
+
+Detail mixed 8-thread reproduction command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_detail_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-visible-breakdown-detail-stage/adb-benchmark
+```
+
+Detail mixed 8-thread result:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detail | 8 | 2454.99 | 2386 | 8439 | 11670 | 733451 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_detail_stage.properties` |
+
+Key visible-row phases:
+
+| phase | count | avg us | max us |
+| --- | ---: | ---: | ---: |
+| `ADB_VISIBLE_LOCAL_WRITE_CHECK` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_LOCAL_WRITE_MISS` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_ROUTE_POINT_READ` | 2359 | 0 | 34 |
+| `ADB_VISIBLE_COMMITTED_CACHE_MISS` | 2359 | 0 | 52 |
+| `ADB_VISIBLE_STORE_SEEK` | 2359 | 278 | 7402 |
+| `ADB_VISIBLE_VERSION_KEY_DECODE` | 2100 | 0 | 45 |
+| `ADB_VISIBLE_ROW_VALUE_DECODE` | 2100 | 0 | 25 |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2359 | 296 | 7490 |
+| `ADB_VISIBLE_READ_SET_RECORD` | 2359 | 0 | 36 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 | 240 | 7010 |
+
+Default mixed 8-thread rerun:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2400.00 | 2446 | 8525 | 11921 | 683624 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_breakdown_default_stage.properties` |
+
+Conclusion:
+
+- In the detail mixed run, the visible-row cost is mostly store scan / seek:
+  `ADB_VISIBLE_COMMITTED_STORE_SCAN` averages about `296us`, and
+  `ADB_VISIBLE_STORE_SEEK` averages about `278us`.
+- `ADB_VISIBLE_ROW_VALUE_DECODE` is close to `0us` on average, so point-lookup
+  payload decode is not the largest remaining cost.
+- The committed cache was a miss for this mixed run. The next more valuable
+  direction is therefore committed row cache usefulness, cursor/seek reuse, or a
+  more direct store-get path for read-only point lookups.
+- The default mixed 8-thread run did not show an obvious semantic or
+  performance regression. For item 3, the next optimization should reduce the
+  store seek/scan boundary before spending more effort on `RowValue.decodeValue`.
