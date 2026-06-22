@@ -159,6 +159,41 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-prepared-single-bulk-repeat").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO TEST(ID, NAME) VALUES (?, ?)")) {
+                    for (long id = 1L; id <= 3L; id++) {
+                        insert.setLong(1, id);
+                        insert.setString(2, "n" + id);
+                        Assertions.assertEquals(1, insert.executeUpdate());
+                    }
+                }
+                Assertions.assertEquals("n1,n2,n3", csv(statement,
+                        "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void statementLiteralMultiValuesInsertUsesAdbDriverBulkPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

@@ -2725,3 +2725,72 @@ Conclusion:
   close to exhausted. Larger gains likely require ldb cursor raw-view /
   reusable-entry support, or a shift to item 4 write batch / group commit
   aggregation.
+
+## Round 35: Prepared Insert Bulk-Plan Metadata Cache
+
+After Round 34, ADB-side point-lookup visibility small-object work was close to
+exhausted. This round moves to item 4, the `BULK_ADD_ROW / ADD_ROW` write entry.
+`AdbPreparedInsertPlan` already routes ordinary
+`INSERT INTO ... VALUES (?, ?)` and multi-values prepared inserts to
+`AdbTable.bulkInsertAppendRows(...)`, but every execution still repeated:
+
+1. resolving the target table from the current schema;
+2. calling `table.getColumns()`;
+3. resolving each insert column name through `table.getColumn(...)`;
+4. creating an `ArrayList` even for a single-row insert.
+
+These are stable metadata costs for repeated prepared insert execution. Changes
+in this round:
+
+1. `AdbPreparedInsertPlan` caches the resolved `AdbTable`, target table columns,
+   and insert columns.
+2. Single-row prepared insert uses `Collections.singletonList(row)`, avoiding an
+   `ArrayList` and backing array.
+3. Multi-row prepared/literal insert keeps the existing batch-list semantics.
+4. `repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata` covers executing
+   the same `PreparedStatement` three times and verifies that the path still
+   hits `ADB_TABLE_BULK_ADD_ROW` without falling back to `ADB_TABLE_ADD_ROW`.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_TABLE_BULK_ADD_ROW` avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 497.59 | 1592 | 4242 | 6788 | 36879 | 672 | `vexra-adb/build/adb-benchmark/jdbc_insert_prepared_insert_metadata_cache_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 54545.45 | 15 | 33 | 50 | 2731 | 1766 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_prepared_insert_metadata_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2083.33 | 2631 | 9073 | 13571 | 664407 | 3283 | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_insert_metadata_cache_stage.properties` |
+
+Conclusion:
+
+- This round reduces stable metadata lookup and array allocation in the prepared
+  insert fast path without changing table-level bulk write semantics.
+- `jdbc_bulk` allocation moved down to `2731 bytes/op`, compared with recent
+  historical samples around `2835 bytes/op`, indicating that metadata caching
+  has allocation value for batch prepared insert.
+- Plain `jdbc insert` recovered to `497.59 ops/s`, but p99 remained high; mixed
+  stayed near `2k ops/s`, so write-entry metadata is not the only combined
+  workload bottleneck.
+- The next item 4 step should move from prepared-plan metadata caching to larger
+  commit costs: statement-level batching, transaction-local group commit, or
+  `AdbWriteBatch` / ldb write batch aggregation.

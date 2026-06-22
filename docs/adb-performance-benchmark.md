@@ -2360,3 +2360,67 @@ benchmark：
 - 下一步继续第 3 项时，ADB 层可消除的 `RowKey` / prefix 小对象已经接近尾声；
   更大收益需要 ldb 层支持 cursor raw-view / reusable-entry，或者转向第 4 项的
   write batch / group commit 聚合。
+
+## 第三十五轮：prepared insert bulk plan 元数据缓存
+
+第三十四轮后，ADB 层点查可见性小对象已经接近尾声。本轮转向第 4 项
+`BULK_ADD_ROW / ADD_ROW` 写入入口。`AdbPreparedInsertPlan` 已经能把普通
+`INSERT INTO ... VALUES (?, ?)` 和多 values prepared insert 路由到
+`AdbTable.bulkInsertAppendRows(...)`，但每次执行都会重新：
+
+1. 按当前 schema 查找目标表；
+2. 调用 `table.getColumns()`；
+3. 根据 insert 列名逐个 `table.getColumn(...)`；
+4. 单行 insert 仍创建一个 `ArrayList` 来承载单个 row。
+
+这些都属于 prepared insert 反复执行时可缓存的元数据。本轮改动：
+
+1. `AdbPreparedInsertPlan` 缓存 resolved `AdbTable`、目标表列数组和 insert 列数组。
+2. 单行 prepared insert 使用 `Collections.singletonList(row)`，少掉 `ArrayList`
+   及其内部数组。
+3. 多行 prepared/literal insert 保持原有批量列表语义。
+4. 新增 `repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata`，覆盖同一个
+   `PreparedStatement` 连续执行三次，确认仍命中 `ADB_TABLE_BULK_ADD_ROW`，且不回退
+   `ADB_TABLE_ADD_ROW`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedSingleValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedSingleValuesInsertReusesBulkPlanMetadata --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_insert_metadata_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-insert-metadata-cache-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | `ADB_TABLE_BULK_ADD_ROW` avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 497.59 | 1592 | 4242 | 6788 | 36879 | 672 | `vexra-adb/build/adb-benchmark/jdbc_insert_prepared_insert_metadata_cache_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 54545.45 | 15 | 33 | 50 | 2731 | 1766 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_prepared_insert_metadata_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2083.33 | 2631 | 9073 | 13571 | 664407 | 3283 | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_insert_metadata_cache_stage.properties` |
+
+结论：
+
+- 本轮减少的是 prepared insert fast path 的稳定元数据查询/数组分配，不改变表级
+  bulk 写入语义。
+- `jdbc_bulk` 的 `allocation.bytesPerOperation` 从第三十四轮无直接对比的历史
+  `2835` 左右进一步降到 `2731`，说明批量 prepared insert 入口的元数据缓存有分配收益。
+- 普通 `jdbc insert` 吞吐回到 `497.59 ops/s`，但 p99 较高；mixed 仍在
+  `2k ops/s` 附近，说明写入入口元数据不是综合 workload 的唯一瓶颈。
+- 下一步继续第 4 项时，应从 prepared plan 元数据缓存转向更大的提交成本：
+  statement-level batching、事务内 group commit、或 `AdbWriteBatch` / ldb write batch
+  聚合。

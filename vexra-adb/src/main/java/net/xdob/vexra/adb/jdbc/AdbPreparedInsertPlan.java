@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
@@ -34,6 +35,9 @@ final class AdbPreparedInsertPlan {
   private final List<String> columnNames;
   private final int rowCount;
   private final List<Object> literalValues;
+  private AdbTable resolvedTable;
+  private Column[] cachedTableColumns;
+  private Column[] cachedInsertColumns;
 
   private AdbPreparedInsertPlan(String tableName, List<String> columnNames,
       int rowCount, List<Object> literalValues) {
@@ -133,7 +137,7 @@ final class AdbPreparedInsertPlan {
       return null;
     }
     SessionLocal session = session(connection);
-    AdbTable table = adbTable(session);
+    AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
     }
@@ -157,7 +161,7 @@ final class AdbPreparedInsertPlan {
       return null;
     }
     SessionLocal session = session(connection);
-    AdbTable table = adbTable(session);
+    AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
     }
@@ -191,28 +195,53 @@ final class AdbPreparedInsertPlan {
 
   private List<Row> rows(SessionLocal session, AdbTable table,
       ParameterAccessor parameters) {
-    Column[] tableColumns = table.getColumns();
-    Column[] insertColumns = new Column[columnNames.size()];
-    for (int i = 0; i < columnNames.size(); i++) {
-      insertColumns[i] = table.getColumn(columnNames.get(i));
+    Column[] tableColumns = tableColumns(table);
+    Column[] insertColumns = insertColumns(table);
+    if (rowCount == 1) {
+      return Collections.singletonList(row(session, table, parameters,
+          tableColumns, insertColumns, 1));
     }
     List<Row> rows = new ArrayList<>(rowCount);
     int parameter = 1;
     for (int r = 0; r < rowCount; r++) {
-      Value[] values = new Value[tableColumns.length];
-      java.util.Arrays.fill(values, ValueNull.INSTANCE);
-      for (Column column : insertColumns) {
-        Value value = toValue(session, parameters.get(parameter++));
-        values[column.getColumnId()] = column.convert(session, value);
-      }
-      DefaultRow row = new DefaultRow(values);
-      table.convertInsertRow(session, row, null);
-      rows.add(row);
+      rows.add(row(session, table, parameters, tableColumns, insertColumns,
+          parameter));
+      parameter += insertColumns.length;
     }
     return rows;
   }
 
-  private AdbTable adbTable(SessionLocal session) {
+  /**
+   * 构造一行待写入的 H2 Row。
+   *
+   * <p>insert/table 列元数据由计划缓存提供；每次执行只创建本行需要的 Value 数组和
+   * Row 对象，保持与 h2db insert conversion 一致。</p>
+   */
+  private Row row(SessionLocal session, AdbTable table,
+      ParameterAccessor parameters, Column[] tableColumns,
+      Column[] insertColumns, int firstParameter) {
+    Value[] values = new Value[tableColumns.length];
+    java.util.Arrays.fill(values, ValueNull.INSTANCE);
+    int parameter = firstParameter;
+    for (Column column : insertColumns) {
+      Value value = toValue(session, parameters.get(parameter++));
+      values[column.getColumnId()] = column.convert(session, value);
+    }
+    DefaultRow row = new DefaultRow(values);
+    table.convertInsertRow(session, row, null);
+    return row;
+  }
+
+  /**
+   * 解析并缓存目标 ADB 表。
+   *
+   * <p>该计划绑定单个 PreparedStatement / literal SQL 形态，命中后重复执行同一表。
+   * 缓存表对象可以避免每次 bulk insert 都重新走 schema/table lookup。</p>
+   */
+  private AdbTable resolveAdbTable(SessionLocal session) {
+    if (resolvedTable != null) {
+      return resolvedTable;
+    }
     Schema schema = session.getDatabase().getSchema(
         session.getCurrentSchemaName());
     String schemaName = null;
@@ -224,7 +253,39 @@ final class AdbPreparedInsertPlan {
       schema = session.getDatabase().getSchema(schemaName);
     }
     Table table = schema.findTableOrView(session, localTableName);
-    return table instanceof AdbTable ? (AdbTable) table : null;
+    if (!(table instanceof AdbTable)) {
+      return null;
+    }
+    resolvedTable = (AdbTable) table;
+    return resolvedTable;
+  }
+
+  /**
+   * 返回目标表列元数据。
+   *
+   * <p>列数组按表定义只读使用，不在 bulk 路径中修改。</p>
+   */
+  private Column[] tableColumns(AdbTable table) {
+    if (cachedTableColumns == null) {
+      cachedTableColumns = table.getColumns();
+    }
+    return cachedTableColumns;
+  }
+
+  /**
+   * 返回 INSERT 语句声明的列元数据。
+   *
+   * <p>PreparedStatement 反复执行时列名不会变化，因此只解析一次列名到 Column。</p>
+   */
+  private Column[] insertColumns(AdbTable table) {
+    if (cachedInsertColumns == null) {
+      Column[] columns = new Column[columnNames.size()];
+      for (int i = 0; i < columnNames.size(); i++) {
+        columns[i] = table.getColumn(columnNames.get(i));
+      }
+      cachedInsertColumns = columns;
+    }
+    return cachedInsertColumns;
   }
 
   private static SessionLocal session(Connection connection) throws SQLException {
