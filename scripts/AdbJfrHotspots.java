@@ -37,15 +37,20 @@ public final class AdbJfrHotspots {
       "RowValue.decodeValue",
       "RowCodec",
       "ADB_COMMIT",
+      "TxnManager.commit",
+      "TxnManager.commitLocalDirect",
+      "LdbStore.writeBatch",
+      "LDbImpl.writeWriteBatch",
       "WriteBatch",
-      "commit"
   };
 
   private final Map<String, Stat> eventCounts = new HashMap<>();
   private final Map<String, Stat> allocationsByClass = new HashMap<>();
   private final Map<String, Stat> allocationsByTopFrame = new HashMap<>();
+  private final Map<String, Stat> allocationsByStack = new HashMap<>();
   private final Map<String, Stat> allocationFocus = new HashMap<>();
   private final Map<String, Stat> allocationFocusByClass = new HashMap<>();
+  private final Map<String, Stat> allocationFocusByStack = new HashMap<>();
   private final Map<String, Stat> executionFocus = new HashMap<>();
   private final Map<String, Stat> executionTopFrames = new HashMap<>();
 
@@ -101,8 +106,13 @@ public final class AdbJfrHotspots {
       allocationsByTopFrame.computeIfAbsent(topFrame + " <- " + className, Stat::new)
           .add(bytes, 1);
     }
+    String stackKey = stackKey(className, stack);
+    if (!stackKey.isEmpty()) {
+      allocationsByStack.computeIfAbsent(stackKey, Stat::new).add(bytes, 1);
+    }
     recordFocus(allocationFocus, className + "\n" + stack, bytes);
     recordFocusByClass(className, stack, bytes);
+    recordFocusByStack(className, stack, bytes);
   }
 
   private void recordExecutionSample(RecordedEvent event) {
@@ -133,6 +143,20 @@ public final class AdbJfrHotspots {
     }
   }
 
+  private void recordFocusByStack(String className, String stack, long bytes) {
+    String stackKey = stackKey(className, stack);
+    if (stackKey.isEmpty()) {
+      return;
+    }
+    String lower = stackKey.toLowerCase(Locale.ROOT);
+    for (String pattern : FOCUS_PATTERNS) {
+      if (lower.contains(pattern.toLowerCase(Locale.ROOT))) {
+        String key = pattern + "\n" + stackKey;
+        allocationFocusByStack.computeIfAbsent(key, Stat::new).add(bytes, 1);
+      }
+    }
+  }
+
   private void writeReports(Path outputDir) throws IOException {
     try (BufferedWriter out = writer(outputDir.resolve("summary.txt"))) {
       out.write("# Event counts\n");
@@ -148,10 +172,14 @@ public final class AdbJfrHotspots {
       writeTop(out, allocationsByClass, 200, true);
       out.write("\n# Top allocation top frames\n");
       writeTop(out, allocationsByTopFrame, 200, true);
+      out.write("\n# Top allocation stack traces\n");
+      writeTopMultiline(out, allocationsByStack, 80, true);
       out.write("\n# Focus allocation matches\n");
       writeTop(out, allocationFocus, 100, true);
       out.write("\n# Focus allocation classes\n");
       writeTop(out, allocationFocusByClass, 200, true);
+      out.write("\n# Focus allocation stack traces\n");
+      writeTopMultiline(out, allocationFocusByStack, 80, true);
     }
 
     try (BufferedWriter out = writer(outputDir.resolve("execution-samples.txt"))) {
@@ -166,6 +194,8 @@ public final class AdbJfrHotspots {
       writeTop(out, allocationFocus, FOCUS_PATTERNS.length, true);
       out.write("\n# Focus allocation classes\n");
       writeTop(out, allocationFocusByClass, 80, true);
+      out.write("\n# Focus allocation stack traces\n");
+      writeTopMultiline(out, allocationFocusByStack, 40, true);
       out.write("\n# Focus execution matches\n");
       writeTop(out, executionFocus, FOCUS_PATTERNS.length, false);
     }
@@ -190,6 +220,28 @@ public final class AdbJfrHotspots {
         out.write(String.format(Locale.ROOT, "%8d events  %s%n",
             row.events, row.name));
       }
+    }
+  }
+
+  private static void writeTopMultiline(BufferedWriter out, Map<String, Stat> stats,
+      int limit, boolean includeBytes) throws IOException {
+    List<Stat> rows = new ArrayList<>(stats.values());
+    rows.sort(Comparator.comparingLong(Stat::primary).reversed()
+        .thenComparing(Stat::name));
+    int count = Math.min(limit, rows.size());
+    for (int i = 0; i < count; i++) {
+      Stat row = rows.get(i);
+      if (includeBytes) {
+        out.write(String.format(Locale.ROOT, "%12d bytes %8d events%n",
+            row.bytes, row.events));
+      } else {
+        out.write(String.format(Locale.ROOT, "%8d events%n", row.events));
+      }
+      out.write(row.name);
+      if (!row.name.endsWith("\n")) {
+        out.write('\n');
+      }
+      out.write('\n');
     }
   }
 
@@ -236,6 +288,22 @@ public final class AdbJfrHotspots {
       return "";
     }
     return format(stackTrace.getFrames().get(0));
+  }
+
+  private static String stackKey(String className, String stack) {
+    if (stack == null || stack.isEmpty()) {
+      return "";
+    }
+    String[] frames = stack.split("\\n");
+    StringBuilder key = new StringBuilder();
+    key.append(className).append('\n');
+    int count = Math.min(12, frames.length);
+    for (int i = 0; i < count; i++) {
+      if (!frames[i].isEmpty()) {
+        key.append("  at ").append(frames[i]).append('\n');
+      }
+    }
+    return key.toString();
   }
 
   private static String format(RecordedFrame frame) {

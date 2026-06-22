@@ -3475,3 +3475,60 @@ benchmark：
 - 直接从 RowValue payload 子区间解码列值对 `point_lookup` 和 `mixed` 都有正向吞吐信号，分别约 `+5.1%` 和 `+6.0%`。
 - allocation 没有同步下降，说明当前样本仍主要由 store value/cursor 边界、ResultSet 代理和外层 JDBC/table-engine 对象主导；本轮只消除了 committed store scan 命中时的一次 payload copy。
 - 该优化适合作为第 3 项的窄口径改进保留，但后续更高价值仍是按 JFR 继续判断是否应做专用 ResultSet，或继续压缩 committed cache 校验和 mixed 中 range/write 组合成本。
+
+## 第五十三轮：mixed 8 线程 JFR allocation 热点复核
+
+本轮完成性能目标第 1 项：不再继续盲猜对象分配来源，而是对当前 `mixed` 8 线程 JDBC
+路径跑完整 JFR，并增强 `scripts/AdbJfrHotspots.java`，让本地没有 `jfr` CLI 时也能按
+allocation stack trace 聚合热点。工具同时收紧了 commit focus 规则，避免把
+`getVisibleCommitted*` 里的 `committed` 误计为 commit 热点。
+
+JFR 运行命令：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -RangeSize 32 -Mode jdbc -TableEngine adb -SqlDiagnostics false -OutputDir vexra-adb/build/adb-benchmark/jfr-visible-column-direct
+```
+
+热点解析命令：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile vexra-adb\build\adb-benchmark\jfr-visible-column-direct\adb-mixed-20260622-174131.jfr -OutputDir vexra-adb\build\adb-benchmark\jfr-visible-column-direct\hotspots-stack-v2
+```
+
+JFR benchmark 结果：
+
+| workload | threads | operations | throughput ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 3000 | 507.44 | 703122 | 647713 | `vexra-adb/build/adb-benchmark/jfr-visible-column-direct/adb-mixed-20260622-174131.properties` |
+
+该吞吐受 JFR 记录开销影响很大，只用于 allocation 排名，不作为常规吞吐基线。
+
+修正后的 focus allocation：
+
+| focus | bytes | events | 判断 |
+| --- | ---: | ---: | --- |
+| `AdbPreparedStatementProxy` | 172096 | 4210 | 主要覆盖 range count / prepared fast path 下的 ldb cursor 迭代栈 |
+| `TxnMap2.getVisible` | 101528 | 2690 | 仍是 visible row 路径的持续分配来源 |
+| `TxnManager.commit` | 38768 | 913 | 真实 commit/write 相关分配存在，但不是本轮最大 allocation 大头 |
+| `WriteBatch` | 7888 | 27 | 写批量路径有少量分配，后续写入优化继续关注 |
+| `AdbSimpleResultSet` | 3976 | 4 | 主要是首次加载 `singleLong` 相关类，不是持续热点 |
+| `java.lang.reflect.Proxy` | 2136 | 4 | 主要是首次代理类生成，不是持续热点 |
+| `RowCodec` | 1072 | 11 | 已不是大头 |
+| `RowValue.decodeValue` | 64 | 2 | 直接列解码后已基本退出 allocation 大头 |
+
+stack trace 结论：
+
+- overall allocation 最大的 `[B` 中，有两条约 1MB 的 `HeapByteBuffer` 来自 H2
+  `MVStore/FileStore` 写 buffer，以及一批 class loading / jar 读取噪声；这些不是 ADB
+  steady-state 快路径，不应作为下一轮 ADB 代码优化目标。
+- 持续出现的 ADB 相关热点集中在 ldb cursor / block 迭代边界：
+  `Slice`、`InternalKey`、`BlockEntry`、`BasicSliceOutput`，栈上经过
+  `DbSnapshotCursor.positionToVisible`、`LdbVersionEntryCursor.seekToRangeStart`、
+  `TxnManager.getVisibleCommittedRow/getVisibleCommittedColumn` 和
+  `TxnManager.countVisibleRows...`。
+- `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 当前没有被 JFR 证明为持续分配大头。
+  因此目标第 2 项暂不实现专用 ResultSet；后续除非新的 JFR 证明 ResultSet/Proxy
+  占比上升，否则不应优先投入。
+- 下一步更高价值方向是目标第 5 项和第 3 项的交叉区域：优化 range count 外层入口和
+  visible row 的 ldb cursor/版本定位成本，优先看 prepared range count 计划缓存、count-only
+  路径减少 cursor seek/entry 构造，以及 committed cache 校验是否能减少物理版本扫描。

@@ -4022,3 +4022,69 @@ Conclusion:
   value work should still use JFR evidence to decide whether to build dedicated
   ResultSet implementations, or continue reducing committed-cache validation and
   the mixed workload's range / write combined costs.
+
+## Round 53: Mixed 8-Thread JFR Allocation Hotspot Check
+
+This round completes performance objective item 1: instead of continuing to
+guess where object allocation comes from, it records a full JFR run for the
+current `mixed` 8-thread JDBC path. `scripts/AdbJfrHotspots.java` was enhanced
+to aggregate allocation stack traces even on local environments without the
+`jfr` CLI. The commit focus rules were also tightened so
+`getVisibleCommitted*` no longer gets misclassified as a commit hotspot just
+because it contains the word `committed`.
+
+JFR command:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -RangeSize 32 -Mode jdbc -TableEngine adb -SqlDiagnostics false -OutputDir vexra-adb/build/adb-benchmark/jfr-visible-column-direct
+```
+
+Hotspot parsing command:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-jfr-hotspots.ps1 -JfrFile vexra-adb\build\adb-benchmark\jfr-visible-column-direct\adb-mixed-20260622-174131.jfr -OutputDir vexra-adb\build\adb-benchmark\jfr-visible-column-direct\hotspots-stack-v2
+```
+
+JFR benchmark result:
+
+| workload | threads | operations | throughput ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 3000 | 507.44 | 703122 | 647713 | `vexra-adb/build/adb-benchmark/jfr-visible-column-direct/adb-mixed-20260622-174131.properties` |
+
+The throughput is heavily affected by JFR recording overhead. Use it only for
+allocation ranking, not as a normal throughput baseline.
+
+Corrected focus allocations:
+
+| focus | bytes | events | Interpretation |
+| --- | ---: | ---: | --- |
+| `AdbPreparedStatementProxy` | 172096 | 4210 | Mostly covers ldb cursor iteration under the range-count / prepared fast path |
+| `TxnMap2.getVisible` | 101528 | 2690 | Still a steady allocation source in the visible-row path |
+| `TxnManager.commit` | 38768 | 913 | Real commit/write allocations exist, but are not the largest allocation source in this run |
+| `WriteBatch` | 7888 | 27 | The write-batch path allocates a small amount and remains relevant for later write optimization |
+| `AdbSimpleResultSet` | 3976 | 4 | Mostly first-use loading around `singleLong`, not a steady hotspot |
+| `java.lang.reflect.Proxy` | 2136 | 4 | Mostly first-use proxy class generation, not a steady hotspot |
+| `RowCodec` | 1072 | 11 | No longer a major allocation source |
+| `RowValue.decodeValue` | 64 | 2 | The direct column decode work has effectively removed it from the allocation hot list |
+
+Stack trace conclusions:
+
+- The largest overall `[B` allocations include two roughly 1MB `HeapByteBuffer`
+  allocations from H2 `MVStore/FileStore` write buffers, plus class loading and
+  jar-reading noise. These are not ADB steady-state fast-path allocations and
+  should not drive the next ADB code optimization.
+- The recurring ADB-related hotspots are concentrated around the ldb cursor /
+  block iteration boundary: `Slice`, `InternalKey`, `BlockEntry`, and
+  `BasicSliceOutput`, with stacks going through
+  `DbSnapshotCursor.positionToVisible`, `LdbVersionEntryCursor.seekToRangeStart`,
+  `TxnManager.getVisibleCommittedRow/getVisibleCommittedColumn`, and
+  `TxnManager.countVisibleRows...`.
+- JFR does not prove `AdbSimpleResultSet` / `java.lang.reflect.Proxy` to be
+  steady allocation dominants. Therefore item 2 should not build dedicated
+  ResultSet implementations yet. Unless a later JFR run shows a larger
+  ResultSet/Proxy share, it should stay below the current optimization targets.
+- The next higher-value target is the intersection of item 5 and item 3:
+  optimize the range-count outer entry and the visible-row ldb cursor/version
+  positioning cost. Start with prepared range-count plan caching, count-only
+  cursor seek/entry-construction reduction, and whether committed-cache
+  validation can avoid some physical-version scans.
