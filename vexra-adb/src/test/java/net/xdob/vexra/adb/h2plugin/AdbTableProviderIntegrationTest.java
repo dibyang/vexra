@@ -478,6 +478,60 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rowCountBaseSnapshotCompactsDeltaScanAfterReopen() throws Exception {
+        String previousThreshold = System.getProperty(
+                "vexra.adb.rowCount.compactDeltaThreshold");
+        System.setProperty("vexra.adb.rowCount.compactDeltaThreshold", "2");
+        AdbSqlDiagnosticsRegistry.clear();
+        String databasePath = tempDir.resolve("adb-row-count-compact").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (2, 'b')");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (3, 'c')");
+            }
+
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.resetAll();
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(3L, countRows(statement));
+            }
+            AdbSqlDiagnosticSnapshot first = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertEquals(1L,
+                    phaseCount(first, "ADB_ROW_COUNT_BASE_COMPACT"),
+                    first.getPhaseStats().toString());
+
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.resetAll();
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                Assertions.assertEquals(3L, countRows(statement));
+            }
+            AdbSqlDiagnosticSnapshot second = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertEquals(0L,
+                    phaseCount(second, "ADB_ROW_COUNT_BASE_COMPACT"),
+                    second.getPhaseStats().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+            if (previousThreshold == null) {
+                System.clearProperty("vexra.adb.rowCount.compactDeltaThreshold");
+            } else {
+                System.setProperty("vexra.adb.rowCount.compactDeltaThreshold",
+                        previousThreshold);
+            }
+        }
+    }
+
+    @Test
     void rejectsDuplicatePrimaryKeyThroughBulkInsertPath() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-duplicate").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

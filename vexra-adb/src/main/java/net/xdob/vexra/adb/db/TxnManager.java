@@ -24,6 +24,7 @@ public class TxnManager {
    */
   private static final boolean TRUST_COMMITTED_ROW_CACHE =
       Boolean.getBoolean("vexra.adb.rowCache.trustCommitted");
+  private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
 
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
@@ -430,6 +431,8 @@ public class TxnManager {
       byte[] prefix = rowCountDeltaKey.toBytes();
       byte[] start = startDeltaKey.toBytes();
       byte[] end = KeyCodec.prefixEnd(prefix);
+      int deltaCount = 0;
+      long latestDeltaCommitTs = baseCommitTs;
 
       try (VersionScanSource scan = store.openVersionScanSource(
           CF.META.getCfId(), ScanDirection.FORWARD)) {
@@ -443,9 +446,14 @@ public class TxnManager {
             if (!val.deleted && val.payload != null) {
               rowCount += RowCodec.decode(val.payload).getLong();
             }
+            deltaCount++;
+            latestDeltaCommitTs = Math.max(latestDeltaCommitTs,
+                deltaKey.getCommitTs());
           }
           scan.advance();
         }
+        compactRowCountBaseIfNeeded(key.getTabKey(), rowCount,
+            latestDeltaCommitTs, deltaCount);
         return rowCount;
       }
     } catch (Exception e) {
@@ -457,6 +465,37 @@ public class TxnManager {
       recordSqlPhase("ADB_ROW_COUNT_BASE_SCAN",
           System.nanoTime() - started);
     }
+  }
+
+  private void compactRowCountBaseIfNeeded(TabId tabId, long rowCount,
+      long compactCommitTs, int deltaCount) {
+    int threshold = rowCountCompactDeltaThreshold();
+    if (threshold <= 0
+        || deltaCount < threshold
+        || compactCommitTs <= 0L) {
+      return;
+    }
+    long started = System.nanoTime();
+    try {
+      VersionRowCountKey snapshotKey =
+          VersionRowCountKey.of(tabId, compactCommitTs);
+      RowValue snapshot = new RowValue();
+      snapshot.deleted = false;
+      snapshot.commitTs = compactCommitTs;
+      snapshot.payload = RowCodec.encode(ValueBigint.get(rowCount));
+      store.writeBatch(batch -> batch.put(CF.META.getCfId(),
+          snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
+    } catch (SQLException ignored) {
+      // row-count base snapshot 是读后优化，失败时不能反向影响本次 COUNT 结果。
+    } finally {
+      recordSqlPhase("ADB_ROW_COUNT_BASE_COMPACT",
+          System.nanoTime() - started);
+    }
+  }
+
+  private static int rowCountCompactDeltaThreshold() {
+    return Integer.getInteger("vexra.adb.rowCount.compactDeltaThreshold",
+        DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD);
   }
 
 

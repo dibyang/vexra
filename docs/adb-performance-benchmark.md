@@ -122,6 +122,53 @@ table-engine 边界仍是主要瓶颈。
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## row-count base snapshot 读后压实结果
+
+本轮继续深化 row-count 缓存：当冷启动 `getBaseRowCount` 扫描到较多
+row-count delta 时，读路径会用本次扫描得到的精确行数写入一条新的
+`VersionRowCountKey` base snapshot。后续冷启动会从该 base snapshot 的
+`commitTs` 之后继续扫描 delta，从而减少 delta meta 重扫。
+
+实现约束：
+
+1. 只写新的 base snapshot，不删除旧 delta，避免并发提交场景下 `deleteRange`
+   误删较新的 delta。
+2. 压实是 best-effort 优化，写 snapshot 失败不会影响本次 `COUNT(*)` 结果。
+3. 默认阈值为 `vexra.adb.rowCount.compactDeltaThreshold=256`；设置为 `0` 或负数可关闭。
+4. benchmark 可通过 `-PadbRowCountCompactDeltaThreshold=...` 控制阈值。
+
+验证命令 `.\gradlew.bat :vexra-adb:test --rerun-tasks` 已通过；新增测试覆盖：
+首次 reopen count 触发 `ADB_ROW_COUNT_BASE_COMPACT`，再次 reopen count 不再触发压实，证明后续读取已从新 base snapshot 开始。
+
+mixed 8 线程、阈值 16 的结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1221.00 | 2373 | 11121 | 15080 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_compact_threads_8.properties` |
+
+诊断结论：
+
+- 本轮 benchmark 中 `ADB_ROW_COUNT_BASE_COMPACT` 记录 1 次，耗时约 3268 us。
+- `ADB_ROW_COUNT_BASE_SCAN` 仍只记录 1 次，说明 single-flight 仍有效。
+- 该优化主要面向“delta 很多后的重启 / 首次 COUNT”场景，不应期望显著提升在线 mixed 主窗口吞吐。
+  当前 mixed 仍主要受 `ADB_TABLE_POINT_LOOKUP_FAST`、`ADB_TABLE_ADD_ROW`、
+  `ADB_TABLE_PRIMARY_FIND` 和 `ADB_TABLE_RANGE_COUNT_FAST` 影响。
+
+复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowcount-compact-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbRowCountCompactDeltaThreshold=16" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_compact_threads_8.properties"
+```
+
 ## prepared point lookup Value 数组复用结果
 
 本轮继续收窄 `SELECT col FROM table WHERE ID = ?` prepared fast path 的对象边界：

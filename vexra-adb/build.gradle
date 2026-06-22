@@ -162,6 +162,10 @@ tasks.register('adbBenchmark', JavaExec) {
     mainClass = 'net.xdob.vexra.adb.AdbBenchmarkMain'
     systemProperty 'vexra.adb.sql.diagnostic.detail',
         (findProperty('adbBenchmarkDetailedDiagnostics') ?: 'false').toString()
+    if (findProperty('adbRowCountCompactDeltaThreshold') != null) {
+        systemProperty 'vexra.adb.rowCount.compactDeltaThreshold',
+            findProperty('adbRowCountCompactDeltaThreshold').toString()
+    }
     def output = findProperty('adbBenchmarkOutput')
         ? rootProject.file(findProperty('adbBenchmarkOutput').toString()).absolutePath
         : layout.buildDirectory.file('adb-benchmark/adb-benchmark.properties').get().asFile.absolutePath

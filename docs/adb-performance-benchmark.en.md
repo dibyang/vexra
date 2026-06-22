@@ -141,6 +141,62 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Row-Count Base Snapshot Read-After-Scan Compaction Result
+
+This round further deepens row-count caching. When cold-start
+`getBaseRowCount` scans many row-count delta records, the read path writes a
+new `VersionRowCountKey` base snapshot using the exact row count computed by
+that scan. Later cold starts can begin delta scanning after that base
+snapshot's `commitTs`, reducing repeated delta metadata scans.
+
+Implementation constraints:
+
+1. It only writes a new base snapshot and does not delete old delta records, so
+   concurrent commits cannot lose newer deltas through a broad `deleteRange`.
+2. Compaction is a best-effort optimization. A snapshot write failure does not
+   affect the current `COUNT(*)` result.
+3. The default threshold is `vexra.adb.rowCount.compactDeltaThreshold=256`;
+   set it to `0` or a negative value to disable the optimization.
+4. Benchmark runs can control the threshold with
+   `-PadbRowCountCompactDeltaThreshold=...`.
+
+Verification passed with `.\gradlew.bat :vexra-adb:test --rerun-tasks`. The new
+test covers the first reopen count triggering `ADB_ROW_COUNT_BASE_COMPACT`, and
+a second reopen count not triggering compaction again, proving that later reads
+start from the new base snapshot.
+
+8-thread mixed result with threshold 16:
+
+| Mode | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `mixed` | 8 | 3000 | 1221.00 | 2373 | 11121 | 15080 | `vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_compact_threads_8.properties` |
+
+Diagnostic conclusion:
+
+- This run recorded one `ADB_ROW_COUNT_BASE_COMPACT` phase at about 3268 us.
+- `ADB_ROW_COUNT_BASE_SCAN` was still recorded only once, so the single-flight
+  cold-start behavior remains effective.
+- This optimization targets restart / first `COUNT(*)` scenarios after many
+  deltas. It should not be expected to significantly improve online mixed
+  throughput. The current mixed window is still dominated by
+  `ADB_TABLE_POINT_LOOKUP_FAST`, `ADB_TABLE_ADD_ROW`,
+  `ADB_TABLE_PRIMARY_FIND`, and `ADB_TABLE_RANGE_COUNT_FAST`.
+
+Reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-rowcount-compact-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbRowCountCompactDeltaThreshold=16" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_rowcount_compact_threads_8.properties"
+```
+
 ## Prepared Point Lookup Value Array Reuse Result
 
 This round continues narrowing the object boundary for the
