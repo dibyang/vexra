@@ -2282,3 +2282,84 @@ Conclusion:
   by historical snapshots. This gives a safer foundation for later latest
   committed cache, trusted cache defaulting, and store generation work to reduce
   store seek cost.
+
+## Round 29: Bulk Append Batch Unique-Check Decision
+
+While continuing item 4, `BULK_ADD_ROW / ADD_ROW` write-entry optimization, this
+round found that `bulkInsertAppendRows` still called
+`canSkipAppendUniqueCheck(rowKey)` row by row. This round lifts the append
+decision to the batch entry for multi-row append inserts:
+
+1. `TxnManager` adds a `TabId + rowId` append-hint check, so a batch can test
+   the committed high-water mark without constructing a `RowKey` first for
+   every row.
+2. `TxnMap2` adds `canSkipAppendUniqueChecks(tabId, minRowId, maxRowId)`.
+   After the caller has de-duplicated the batch, the whole batch can skip the
+   committed unique scan when the rowId range does not overlap local writes and
+   the minimum rowId is above the transaction-local or committed high-water
+   mark.
+3. `TxnMap2.putEncodedAppend(...)` records the transaction-local append
+   high-water after a bulk row write, so later append batches in the same
+   transaction can continue to use the fast path.
+4. Single-row bulk keeps a dedicated branch, so ordinary
+   `INSERT INTO ... VALUES (...)` is not charged with the multi-row
+   `HashSet` and two-pass loop.
+5. `canSkipAppendUniqueCheck(DataKey)` now checks the same transaction's local
+   write for the exact key first, preventing an update/delete followed by an
+   insert of the same key from being incorrectly accepted by append high-water.
+
+New tests:
+
+- `rejectsDuplicatePrimaryKeyAcrossBulkBatchesInOneTransaction` covers one
+  successful batch followed by a duplicate batch in the same transaction and
+  verifies that only the failed batch is rolled back.
+- `appendsMultipleBulkBatchesInOneTransaction` covers consecutive append
+  batches in one transaction.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 802.78 | 1010 | 2449 | 3322 | 38034 | `vexra-adb/build/adb-benchmark/jdbc_insert_single_branch_bulk_append_batch_skip_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 54545.45 | 18 | 28 | 31 | 2838 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_single_branch_bulk_append_batch_skip_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2572.90 | 2335 | 7853 | 10089 | 663424 | `vexra-adb/build/adb-benchmark/jdbc_mixed_single_branch_bulk_append_batch_skip_stage.properties` |
+
+Conclusion:
+
+- This round completes part of item 4: merging multi-row insert unique checks
+  inside one transaction and expanding the append-only primary-key fast path.
+- `jdbc_bulk` benefits directly from the batch entry. The measured window only
+  records 30 `ADB_TABLE_BULK_ADD_ROW` operations, and
+  `allocation.bytesPerOperation` drops to about `2.8KB/op`, so the direct bulk
+  entry remains the highest-value write path today.
+- Mixed 8-thread throughput recovered from Round 28's `2228.83 ops/s` to
+  `2572.90 ops/s`, and p99 dropped from `12591us` to `10089us`. This indicates
+  that the change does not introduce an obvious regression in the mixed path.
+- Plain single-row `jdbc insert` is still only `802.78 ops/s`, below the Round
+  15 allocation baseline of `1004.35 ops/s`. Since this round already keeps a
+  dedicated single-row branch, the next valuable write optimization is not more
+  bulk unique-check work; it is breaking down `ADB_COMMIT_WRITE`, write batch,
+  and fsync cost, or making more ordinary JDBC scenarios truly aggregate into
+  batched commits.

@@ -720,6 +720,62 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void rejectsDuplicatePrimaryKeyAcrossBulkBatchesInOneTransaction() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-cross-batch-duplicate").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+
+                AdbTable table = adbTable(connection, "TEST");
+                Assertions.assertEquals(2, table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(1L, "first"),
+                        row(2L, "second"))));
+                DbException error = Assertions.assertThrows(DbException.class,
+                        () -> table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                                row(2L, "duplicate"),
+                                row(3L, "third"))));
+                Assertions.assertTrue(error.getMessage().contains("primary key"), error.getMessage());
+                Assertions.assertEquals(2L, countRows(statement));
+                connection.commit();
+                Assertions.assertEquals("first,second",
+                        csv(statement, "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
+    void appendsMultipleBulkBatchesInOneTransaction() throws Exception {
+        String databasePath = tempDir.resolve("adb-bulk-cross-batch-append").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = new org.h2.Driver().connect(url, new Properties());
+                 Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+
+                AdbTable table = adbTable(connection, "TEST");
+                Assertions.assertEquals(2, table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(10L, "a"),
+                        row(11L, "b"))));
+                Assertions.assertEquals(2, table.bulkInsertAppendRows(session(connection), Arrays.asList(
+                        row(12L, "c"),
+                        row(13L, "d"))));
+                Assertions.assertEquals(4L, countRows(statement));
+                connection.commit();
+                Assertions.assertEquals("a,b,c,d",
+                        csv(statement, "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+        }
+    }
+
+    @Test
     void bulkInsertsRowsAndSecondaryIndexEntries() throws Exception {
         String databasePath = tempDir.resolve("adb-bulk-secondary-index").toAbsolutePath().toString().replace('\\', '/');
         String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";

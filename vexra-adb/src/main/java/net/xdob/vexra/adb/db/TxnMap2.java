@@ -113,11 +113,13 @@ public class TxnMap2 {
       throws SQLException {
     if (canSkipAppendUniqueCheck(dataKey)) {
       this.put(dataKey, value, null);
+      recordAppendHighWater(dataKey);
       return null;
     }
     RowValue old = getVisible(dataKey);
     if (old == null || old.deleted || old.payload == null) {
       this.put(dataKey, value, old);
+      recordAppendHighWater(dataKey);
       return null;
     }
     return old;
@@ -141,16 +143,77 @@ public class TxnMap2 {
   }
 
   /**
+   * 写入 bulk append row，并登记当前事务内的 rowId 上界。
+   *
+   * <p>bulk insert 已经在 table 层完成批内重复主键检查和必要的 committed
+   * 可见性检查；这里在复用旧值写入事务本地 write set 后，同步维护本事务内 append
+   * high-water，让同一事务的后续追加批次可以继续走 fast path。</p>
+   *
+   * @param dataKey row key
+   * @param value 已编码 row value
+   * @param oldValue 同一事务快照下的旧可见值；不存在时为 null
+   * @throws SQLException 写入事务本地状态失败时抛出
+   */
+  public void putEncodedAppend(DataKey dataKey, RowValue value,
+      RowValue oldValue) throws SQLException {
+    this.put(dataKey, value, oldValue);
+    recordAppendHighWater(dataKey);
+  }
+
+  /**
    * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
    *
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
    */
   public boolean canSkipAppendUniqueCheck(DataKey dataKey) {
+    if (dataKey == null || !dataKey.isRow()) {
+      return false;
+    }
+    if (transaction.getLocalWrite(dataKey) != null) {
+      return false;
+    }
     if (canSkipByLocalAppendHighWater(dataKey)) {
       return true;
     }
-    return txnManager.canSkipAppendUniqueCheck(dataKey)
-        && transaction.getLocalWrite(dataKey) == null;
+    return txnManager.canSkipAppendUniqueCheck(dataKey);
+  }
+
+  /**
+   * 判断整批 append row 是否可以跳过 committed 唯一性扫描。
+   *
+   * <p>调用方必须已经完成批内主键去重。该方法只在整批范围与当前事务本地写集不重叠时才
+   * 返回 true，避免同一事务中先 update/delete 某个 rowId、随后 bulk insert 相同 rowId
+   * 时被 append high-water 误判为可直接插入。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param minRowId 本批最小 rowId
+   * @param maxRowId 本批最大 rowId
+   * @return true 表示本批可以跳过 committed 可见性扫描
+   */
+  public boolean canSkipAppendUniqueChecks(TabId tabId, long minRowId,
+      long maxRowId) {
+    if (tabId == null || minRowId > maxRowId
+        || hasLocalRowWriteInRange(tabId, minRowId, maxRowId)) {
+      return false;
+    }
+    Long highWater = appendHighWater.get(tabId);
+    if (highWater != null && minRowId > highWater) {
+      return true;
+    }
+    return txnManager.canSkipAppendUniqueCheck(tabId, minRowId);
+  }
+
+  private boolean hasLocalRowWriteInRange(TabId tabId, long minRowId,
+      long maxRowId) {
+    for (DataKey key : transaction.getWriteSet().keySet()) {
+      if (key != null && key.isRow() && tabId.equals(key.getTabID())) {
+        long rowId = key.getRowId();
+        if (rowId >= minRowId && rowId <= maxRowId) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   private boolean canSkipByLocalAppendHighWater(DataKey dataKey) {

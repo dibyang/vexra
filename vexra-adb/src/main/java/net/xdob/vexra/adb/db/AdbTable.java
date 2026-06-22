@@ -714,13 +714,10 @@ public class AdbTable extends TableBase {
     try {
       long txnId = map.getTransaction().getTxnId();
       TabId tabId = map.getTabId(getId());
-      Set<Long> rowIds = new HashSet<>(hashCapacity(rows.size()));
-      for (Row row : rows) {
+      if (rows.size() == 1) {
+        Row row = rows.get(0);
         prepareBulkRow(row);
         RowKey rowKey = RowKey.of(tabId, row.getKey());
-        if (!rowIds.add(row.getKey())) {
-          throw duplicateKey(row.getKey(), null);
-        }
         RowValue old = null;
         if (!map.canSkipAppendUniqueCheck(rowKey)) {
           old = map.getVisible(rowKey);
@@ -728,14 +725,41 @@ public class AdbTable extends TableBase {
             throw duplicateKey(row.getKey(), old);
           }
         }
-        map.putEncoded(rowKey, rowValue(txnId, row), old);
+        map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+        count = 1;
+      } else {
+        Set<Long> rowIds = new HashSet<>(hashCapacity(rows.size()));
+        long minRowId = Long.MAX_VALUE;
+        long maxRowId = Long.MIN_VALUE;
+        for (Row row : rows) {
+          prepareBulkRow(row);
+          long rowId = row.getKey();
+          if (!rowIds.add(rowId)) {
+            throw duplicateKey(rowId, null);
+          }
+          minRowId = Math.min(minRowId, rowId);
+          maxRowId = Math.max(maxRowId, rowId);
+        }
+        boolean skipBatchUniqueCheck = map.canSkipAppendUniqueChecks(tabId,
+            minRowId, maxRowId);
+        for (Row row : rows) {
+          RowKey rowKey = RowKey.of(tabId, row.getKey());
+          RowValue old = null;
+          if (!skipBatchUniqueCheck && !map.canSkipAppendUniqueCheck(rowKey)) {
+            old = map.getVisible(rowKey);
+            if (isExistingRow(old)) {
+              throw duplicateKey(row.getKey(), old);
+            }
+          }
+          map.putEncodedAppend(rowKey, rowValue(txnId, row), old);
+        }
+        count = rows.size();
       }
       for (Index index : indexes) {
         if (index instanceof AdbSecondaryIndex) {
           ((AdbSecondaryIndex) index).bulkInsertRows(session, rows);
         }
       }
-      count = rows.size();
     } catch (SQLException e) {
       failure = convertException(e);
       rollbackBulkSavepoint(map, savepointId, failure);

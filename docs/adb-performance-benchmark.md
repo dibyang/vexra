@@ -1970,3 +1970,68 @@ benchmark：
 - `point_lookup` 在去掉内部返回对象后恢复到可接受区间，但仍未超过历史最好样本。
 - 正向价值是 committed read-fill cache 不再被历史快照污染，这为后续“latest committed cache / trusted cache
   默认化 / store generation”继续降 store seek 成本提供了更稳的语义基础。
+
+## 第二十九轮：bulk append 批量唯一性判定
+
+继续推进第 4 项 `BULK_ADD_ROW / ADD_ROW` 写入入口优化时，发现
+`bulkInsertAppendRows` 仍然对每一行分别调用 `canSkipAppendUniqueCheck(rowKey)`。
+本轮把多行 append 的判定提升到批量入口：
+
+1. `TxnManager` 新增按 `TabId + rowId` 判断 append hint 的入口，避免整批判定时先构造
+   每行 `RowKey` 再查 committed high-water。
+2. `TxnMap2` 新增 `canSkipAppendUniqueChecks(tabId, minRowId, maxRowId)`，调用方完成批内去重后，
+   只要本批 rowId 范围不与事务本地写集重叠，且整批最小 rowId 大于本事务或 committed high-water，
+   就可整批跳过 committed 唯一性扫描。
+3. `TxnMap2.putEncodedAppend(...)` 在 bulk 写入后登记事务内 append high-water，让同一事务后续追加批次继续命中 fast path。
+4. 单行 bulk 入口保留专用分支，避免普通 `INSERT INTO ... VALUES (...)` 被多行批处理的
+   `HashSet` 和两遍循环污染。
+5. `canSkipAppendUniqueCheck(DataKey)` 先检查同一事务本地相同 key 写入，避免 update/delete
+   后再插入同 key 时被 append high-water 误判。
+
+新增测试：
+
+- `rejectsDuplicatePrimaryKeyAcrossBulkBatchesInOneTransaction` 覆盖同一事务内第一批成功、
+  第二批重复主键失败，并验证只回滚失败批次。
+- `appendsMultipleBulkBatchesInOneTransaction` 覆盖同一事务多批连续 append。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_insert_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-insert-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc_bulk -PadbBenchmarkWorkload=insert -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkStatementBatchSize=100 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_bulk_insert_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-bulk-insert-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_single_branch_bulk_append_batch_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-single-branch-bulk-append-batch-skip-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | `jdbc` | 1 | 802.78 | 1010 | 2449 | 3322 | 38034 | `vexra-adb/build/adb-benchmark/jdbc_insert_single_branch_bulk_append_batch_skip_stage.properties` |
+| `insert` | `jdbc_bulk` | 1 | 54545.45 | 18 | 28 | 31 | 2838 | `vexra-adb/build/adb-benchmark/jdbc_bulk_insert_single_branch_bulk_append_batch_skip_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2572.90 | 2335 | 7853 | 10089 | 663424 | `vexra-adb/build/adb-benchmark/jdbc_mixed_single_branch_bulk_append_batch_skip_stage.properties` |
+
+结论：
+
+- 本轮完成了第 4 项中“单事务内多行 insert 合并唯一性检查”和“append-only 主键继续扩大 fast path”的一部分。
+- `jdbc_bulk` 明确受益于批量入口，正式窗口只记录 30 次 `ADB_TABLE_BULK_ADD_ROW`，
+  `allocation.bytesPerOperation` 降到约 `2.8KB/op`，说明批量直接入口仍是当前最高价值写入方式。
+- mixed 8 线程从第二十八轮 `2228.83 ops/s` 回到 `2572.90 ops/s`，p99 从 `12591us`
+  降到 `10089us`；这说明该改动没有给综合路径带来明显回退。
+- 普通单行 `jdbc insert` 仍只有 `802.78 ops/s`，低于第十五轮 allocation 基线的
+  `1004.35 ops/s`。本轮单行分支已经避免了多行批处理额外循环，因此下一阶段若继续优化写入，
+  最有价值的方向不是再拆 bulk 唯一性判定，而是拆 `ADB_COMMIT_WRITE` / write batch / fsync
+  路径，或让更多普通 JDBC 场景真正聚合成批量提交。

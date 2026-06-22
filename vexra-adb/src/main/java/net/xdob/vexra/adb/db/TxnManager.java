@@ -585,9 +585,26 @@ public class TxnManager {
     if (key == null || !key.isRow()) {
       return false;
     }
-    java.util.concurrent.atomic.AtomicLong hint = maxRowIdHints.get(
-        key.getTabID());
-    return hint != null && key.getRowId() > hint.get();
+    return canSkipAppendUniqueCheck(key.getTabID(), key.getRowId());
+  }
+
+  /**
+   * 判断指定表的 append insert 是否可以跳过 committed 唯一性扫描。
+   *
+   * <p>该入口供 bulk insert 在已经收集整批最小 rowId 后复用，避免为每一行都构造
+   * RowKey 后再查一次全局 rowId hint。它只读取进程内成功提交后维护的最大 rowId
+   * 上界，不改变事务状态；调用方仍需自行处理事务内本地写集冲突。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param rowId 待插入 rowId 或整批最小 rowId
+   * @return true 表示该 rowId 一定大于当前进程已知 committed 上界
+   */
+  public boolean canSkipAppendUniqueCheck(TabId tabId, long rowId) {
+    if (tabId == null) {
+      return false;
+    }
+    java.util.concurrent.atomic.AtomicLong hint = maxRowIdHints.get(tabId);
+    return hint != null && rowId > hint.get();
   }
 
   /**
