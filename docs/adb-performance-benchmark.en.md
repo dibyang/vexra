@@ -1966,3 +1966,90 @@ Conclusion:
 - The default mixed 8-thread run did not show an obvious semantic or
   performance regression. For item 3, the next optimization should reduce the
   store seek/scan boundary before spending more effort on `RowValue.decodeValue`.
+
+## Round 24: Read-Fill Visible Committed Cache
+
+Round 23 showed that `ADB_VISIBLE_COMMITTED_STORE_SCAN` /
+`ADB_VISIBLE_STORE_SEEK` is the main visible-row cost, and the mixed workload
+showed committed cache misses only. Inspection confirmed:
+
+1. `RowKey` inherits byte-array `equals/hashCode` from `Key`, so cache-key
+   equality is correct.
+2. `committedRowCache` was previously refreshed only after commits in the same
+   process through `refreshCommittedRowCache(...)`.
+3. Benchmark seed data and historical rows after database reopen were not
+   filled into the cache after a store scan, so later reads of the same row
+   continued to seek/scan.
+
+Changes:
+
+1. `TxnManager.getVisibleCommitted(...)` fills `committedRowCache` after it
+   resolves a committed visible row from store.
+2. The detail-only `getVisibleCommittedDetailed(...)` does the same when a
+   committed visible row is found during store scan.
+3. Deleted rows, null rows, and non-row keys are not cached. Cached values copy
+   the `rowKey` to avoid sharing mutable `RowValue` state.
+4. Existing commit/update/delete `refreshCommittedRowCache(...)` still replaces
+   or removes cache entries for the same key.
+5. The default `TRUST_COMMITTED_ROW_CACHE=false` validation is preserved, so a
+   stale in-memory cache entry is checked against the underlying committed
+   version before it is returned.
+
+Test enhancement:
+
+- `preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` now reads the same
+  committed row twice. The first read exercises store scan, and the second read
+  must record `ADB_VISIBLE_COMMITTED_CACHE_HIT` and
+  `ADB_VISIBLE_COMMITTED_CACHE_VALIDATE`.
+- The same test continues to cover current-transaction local write hits through
+  `ADB_VISIBLE_LOCAL_WRITE_HIT`.
+
+Verification command:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+Verification result: passed.
+
+Detail mixed 8-thread result:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detail | 8 | 2568.49 | 2327 | 7969 | 10319 | 711405 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_detail_stage.properties` |
+
+Key visible-row phase comparison:
+
+| phase | Round 23 count / avg us | Round 24 count / avg us | Notes |
+| --- | ---: | ---: | --- |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2359 / 296 | 2139 / 276 | Read-fill avoided 220 store scans |
+| `ADB_VISIBLE_STORE_SEEK` | 2359 / 278 | 2139 / 258 | Seek count and average both dropped |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` | 0 / - | 220 / 102 | New cache hits; default validation is still included |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 / 240 | 2100 / 215 | Point visible-row average dropped |
+
+Default mixed 8-thread rerun:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2497.92 | 2379 | 8240 | 10566 | 663277 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_default_stage.properties` |
+
+Point lookup rerun:
+
+| workload | threads | throughput ops/s | p99 us | Result file |
+| --- | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1969.80 | 1673 | `vexra-adb/build/adb-benchmark/point_lookup_visible_cache_fill_stage.properties` |
+
+Conclusion:
+
+- Read-filling the committed cache shows a positive mixed-workload signal:
+  detail mixed improved from `2454.99 ops/s` to `2568.49 ops/s`, and default
+  mixed improved from `2400.00 ops/s` to `2497.92 ops/s`.
+- The phase breakdown proves fewer store seek/scan operations and 220 committed
+  cache hits.
+- The point lookup standalone run did not exceed the best historical result, so
+  it is not treated as the headline improvement. It needs repeated runs that
+  account for random access pattern and cache-validation cost.
+- For item 3, the next useful step is reducing cache-hit validation cost or
+  running a controlled trusted-cache benchmark. If work shifts to item 5, the
+  same read-fill / dedicated-ResultSet thinking can be applied to the range
+  count outer entry.

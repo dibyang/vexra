@@ -1709,3 +1709,73 @@ visible row 关键分段：
   cursor/seek 复用，或针对只读点查的更直接 store get 路径。
 - 默认 mixed 8 线程没有出现明显语义或性能回退；后续若继续优化第 3 项，应优先减少 store seek/scan 边界，
   而不是继续压 `RowValue.decodeValue`。
+
+## 第二十四轮：visible committed cache 读后回填
+
+第二十三轮显示 `ADB_VISIBLE_COMMITTED_STORE_SCAN` / `ADB_VISIBLE_STORE_SEEK`
+是 visible row 的主要成本，并且 mixed 场景中 committed cache 全部 miss。检查后确认：
+
+1. `RowKey` 继承 `Key` 的 byte-array `equals/hashCode`，cache key 等值语义正常。
+2. `committedRowCache` 之前只在本进程 commit 后由 `refreshCommittedRowCache(...)` 刷新。
+3. benchmark 预置数据和数据库重开后的历史数据，第一次从 store scan 读出后不会回填 cache，因此后续相同 row
+   仍会继续 seek/scan。
+
+本轮改动：
+
+1. `TxnManager.getVisibleCommitted(...)` 从 store 解析出 committed 可见行后，回填 `committedRowCache`。
+2. detail-only 的 `getVisibleCommittedDetailed(...)` 在 store scan 命中 committed 可见行后同样回填 cache。
+3. deleted/null/非 row key 不缓存；缓存值复制 `rowKey`，避免共享可变 `RowValue` 状态。
+4. 既有 commit/update/delete 后的 `refreshCommittedRowCache(...)` 仍负责覆盖或移除同 key cache entry。
+5. 默认仍保留 `TRUST_COMMITTED_ROW_CACHE=false` 下的 committed version 存在性校验，避免 restore 后返回已不存在的旧 cache。
+
+测试增强：
+
+- `preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` 现在先读同一 committed row 两次，断言第一次触发
+  store scan，第二次触发 `ADB_VISIBLE_COMMITTED_CACHE_HIT` 和
+  `ADB_VISIBLE_COMMITTED_CACHE_VALIDATE`。
+- 同一测试继续覆盖当前事务本地写命中 `ADB_VISIBLE_LOCAL_WRITE_HIT`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --rerun-tasks
+```
+
+验证结果：通过。
+
+detail mixed 8 线程结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detail | 8 | 2568.49 | 2327 | 7969 | 10319 | 711405 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_detail_stage.properties` |
+
+visible row 关键分段对比：
+
+| phase | 第二十三轮 count / avg us | 第二十四轮 count / avg us | 说明 |
+| --- | ---: | ---: | --- |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 2359 / 296 | 2139 / 276 | 读后回填后减少 220 次 store scan |
+| `ADB_VISIBLE_STORE_SEEK` | 2359 / 278 | 2139 / 258 | seek 次数和均值均下降 |
+| `ADB_VISIBLE_COMMITTED_CACHE_HIT` | 0 / - | 220 / 102 | 新增 cache 命中；默认仍含 version 校验 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 2100 / 240 | 2100 / 215 | 点查 visible row 均值下降 |
+
+默认 mixed 8 线程复跑：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | 8 | 2497.92 | 2379 | 8240 | 10566 | 663277 | `vexra-adb/build/adb-benchmark/jdbc_mixed_visible_cache_fill_default_stage.properties` |
+
+point lookup 单项复跑：
+
+| workload | threads | throughput ops/s | p99 us | 结果文件 |
+| --- | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 1969.80 | 1673 | `vexra-adb/build/adb-benchmark/point_lookup_visible_cache_fill_stage.properties` |
+
+结论：
+
+- committed cache 读后回填对 mixed 有正向信号：detail mixed 从 `2454.99 ops/s` 到
+  `2568.49 ops/s`，默认 mixed 从 `2400.00 ops/s` 到 `2497.92 ops/s`。
+- 分段数据证明 store seek/scan 次数下降，并出现 220 次 committed cache hit。
+- point_lookup 单项本轮没有超过历史最好值，因此不把该结果作为 headline；它需要结合随机访问模式、
+  cache 校验成本和多轮复跑再判断。
+- 下一步若继续第 3 项，最值得评估的是降低 cache hit 校验成本或提供受控的 trust 模式压测；
+  若转向第 5 项，则可把类似“读后回填/专用 ResultSet”的思路用于 range count 外层入口。

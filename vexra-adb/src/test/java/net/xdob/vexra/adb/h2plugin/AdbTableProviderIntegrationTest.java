@@ -985,6 +985,7 @@ class AdbTableProviderIntegrationTest {
                          "SELECT NAME FROM TEST WHERE ID = ?")) {
                 AdbSqlDiagnosticsRegistry.resetAll();
                 Assertions.assertEquals("committed", preparedName(select, 1L));
+                Assertions.assertEquals("committed", preparedName(select, 1L));
 
                 connection.setAutoCommit(false);
                 statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (2, 'local')");
@@ -1005,6 +1006,10 @@ class AdbTableProviderIntegrationTest {
                     "ADB_VISIBLE_ROUTE_POINT_READ"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_VISIBLE_COMMITTED_CACHE_MISS"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_COMMITTED_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_VISIBLE_COMMITTED_CACHE_VALIDATE"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_VISIBLE_COMMITTED_STORE_SCAN"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(

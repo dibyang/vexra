@@ -799,7 +799,9 @@ public class TxnManager {
 
   public RowValue getVisibleCommitted(Transaction2 txn, DataKey key) throws SQLException {
     VersionResolver resolver = new DefaultVersionResolver(store);
-    return resolver.getLatestCommittedBefore(key, txn.getStartTs());
+    RowValue visible = resolver.getLatestCommittedBefore(key, txn.getStartTs());
+    cacheCommittedVisible(key, visible);
+    return visible;
   }
 
   public RowValue getLatestCommitted(Key key) throws SQLException {
@@ -954,7 +956,12 @@ public class TxnManager {
           recordSqlPhase("ADB_VISIBLE_ROW_VALUE_DECODE",
               System.nanoTime() - rowDecodeStarted);
           if (rowValue.commitTs <= txn.getStartTs()) {
-            return rowValue.deleted ? null : rowValue;
+            if (rowValue.deleted) {
+              return null;
+            }
+            rowValue.rowKey = versionKey.getRowId();
+            cacheCommittedVisible(rowKey, rowValue);
+            return rowValue;
           }
 
           long advanceStarted = System.nanoTime();
@@ -989,6 +996,23 @@ public class TxnManager {
       throws SQLException {
     VersionKey versionKey = VersionKey.of(rowKey, true, commitTs);
     return store.get(versionKey.toBytes()) != null;
+  }
+
+  /**
+   * 回填从 store 读出的 committed 可见行。
+   *
+   * <p>只缓存真实存在的 row 版本；deleted/null/索引 key 仍走原路径。缓存值复制一份，避免后续调用方修改
+   * {@link RowValue#rowKey} 时影响共享缓存。</p>
+   */
+  private void cacheCommittedVisible(DataKey key, RowValue visible) {
+    if (key == null || !key.isRow() || visible == null || visible.deleted
+        || visible.payload == null) {
+      return;
+    }
+    RowValue cached = visible.rowKey == key.getRowId()
+        ? copyWithRowKey(visible, visible.rowKey)
+        : copyWithRowKey(visible, key.getRowId());
+    committedRowCache.put(key, cached);
   }
 
 
