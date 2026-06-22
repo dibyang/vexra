@@ -2949,3 +2949,61 @@ benchmark：
   会跳过较新版本而不读取 value。
 - 第 5 项仍未完全解决：要显著压低宽 range count 和 mixed allocation，仍需要
   segment/block-level count 元数据，或 `vexra-ldb` 暴露 raw-view / reusable-entry cursor。
+
+## 第四十四轮：本地写 range count 路径 raw key 判定
+
+第四十三轮优化了无本地 write-set 的 raw range count 路径。本轮继续收敛带本地写事务的
+range count 路径：`resolveVisibleCountableInCurrentLogicalRow(...)` 原先每个版本都会
+构造 `VersionKey.fromBytes(...)` 判断 committed，再读取 value metadata。该路径在事务内
+存在本地 insert/delete 时会被使用，因此仍属于第 5 项 range count 外层入口优化范围。
+
+本轮改动：
+
+1. 当当前 key 是固定长度 row version raw key 时，直接使用 `isRawCommittedVersion(...)`
+   判断 intent/committed，不再构造 `VersionRowKey` 对象。
+2. 对 committed 版本先用 `rawCommitTs(...)` 判断是否晚于 `startTs`；晚于快照的版本直接跳过，
+   不读取 value。
+3. 非 raw key 保留原 `VersionKey.fromBytes(...)` 回退逻辑，避免扩大兼容风险。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+验证结果：通过。
+
+新增测试：
+
+- `shouldKeepSnapshotRangeCountWithLocalWriteWhenNewerVersionsExist` 覆盖事务内存在本地写时，
+  range count 仍能跳过晚于快照的 committed update/delete，并把本地新行计入结果。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_local_raw_version_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-local-raw-version-skip-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_local_raw_version_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-local-raw-version-skip-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 1700.68 | 528 | 957 | 1596 | 502356 | `vexra-adb/build/adb-benchmark/range_count_local_raw_version_skip_stage.properties` |
+| `mixed` | 8 | 2276.18 | 2574 | 8956 | 12637 | 662659 | `vexra-adb/build/adb-benchmark/jdbc_mixed_local_raw_version_skip_stage.properties` |
+
+结论：
+
+- `range_scan` 吞吐样本回到 `1700 ops/s` 级别，但 allocation 仍约 `502KB/op`，说明当前
+  单版本 range benchmark 主要受 ldb cursor 边界影响。
+- 本轮对带本地写、多版本旧快照场景更有意义：它减少 `VersionKey` 对象化解析和较新版本
+  value 读取。
+- 第 5 项剩余的高价值工作已经不在 ADB 层小修小补：需要 segment/block-level count 元数据，
+  或让 `vexra-ldb` 提供 raw/reusable cursor，才能真正压低 `range_scan/mixed` allocation。

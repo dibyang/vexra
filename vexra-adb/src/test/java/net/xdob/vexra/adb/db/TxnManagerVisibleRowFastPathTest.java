@@ -105,6 +105,33 @@ class TxnManagerVisibleRowFastPathTest {
     }
   }
 
+  /**
+   * 验证带本地写的 range count 路径也会跳过晚于快照的 committed 版本。
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldKeepSnapshotRangeCountWithLocalWriteWhenNewerVersionsExist()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-local").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+
+      putCommitted(store, RowKey.of(tabId, 1L), 10L, "old-1");
+      putCommitted(store, RowKey.of(tabId, 1L), 20L, "new-1");
+      putCommitted(store, RowKey.of(tabId, 2L), 10L, "old-2");
+      putDeleted(store, RowKey.of(tabId, 2L), 20L);
+      putCommitted(store, RowKey.of(tabId, 3L), 10L, "old-3");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      manager.put(reader, RowKey.of(tabId, 4L), row("local-4", 0L));
+
+      assertEquals(4L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
+          1L, 4L));
+    }
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)

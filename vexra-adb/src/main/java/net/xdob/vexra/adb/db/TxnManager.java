@@ -1402,6 +1402,28 @@ public class TxnManager {
         return false;
       }
 
+      if (isRawVersionRowKey(rawKey)) {
+        if (!isRawCommittedVersion(rawKey)) {
+          scan.advance();
+          continue;
+        }
+
+        long commitTs = rawCommitTs(rawKey);
+        if (commitTs > startTs) {
+          scan.advance();
+          continue;
+        }
+
+        RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
+        if (metadata != null) {
+          skipCurrentLogicalRow(scan, null, rowPrefix);
+          return !metadata.deleted && metadata.hasPayload();
+        }
+
+        scan.advance();
+        continue;
+      }
+
       VersionKey versionKey = VersionKey.fromBytes(rawKey);
       if (!versionKey.isCommited()) {
         scan.advance();

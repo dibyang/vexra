@@ -3394,3 +3394,70 @@ Conclusion:
 - Item 5 is still not fully solved. Materially reducing wide range count and
   mixed allocation still requires segment/block-level count metadata or a
   `vexra-ldb` raw-view / reusable-entry cursor API.
+
+## Round 44: Raw-Key Checks for Local-Write Range Count
+
+Round 43 optimized the no-local-write raw range-count path. This round narrows
+the local-write transaction path as well. `resolveVisibleCountableInCurrentLogicalRow(...)`
+previously created `VersionKey.fromBytes(...)` for every version to check
+whether it was committed, then read value metadata. This path is used when the
+transaction has local inserts or deletes, so it is still part of item 5, the
+range-count outer-entry optimization.
+
+Changes:
+
+1. When the current key is a fixed-length row version raw key, the method now
+   uses `isRawCommittedVersion(...)` to distinguish intent from committed
+   versions without constructing `VersionRowKey`.
+2. For committed versions, `rawCommitTs(...)` is checked before reading the
+   value. Versions newer than the snapshot are skipped without calling
+   `scan.value()`.
+3. Non-raw keys keep the previous `VersionKey.fromBytes(...)` fallback to avoid
+   widening compatibility risk.
+
+Verification commands:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --rerun-tasks
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyRangeCountUsesAdbDriverFastPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --rerun-tasks
+```
+
+Result: passed.
+
+New test:
+
+- `shouldKeepSnapshotRangeCountWithLocalWriteWhenNewerVersionsExist` covers a
+  transaction with a local write, newer committed update/delete versions, and a
+  range count that must include the local new row.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_local_raw_version_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-local-raw-version-skip-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_local_raw_version_skip_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-local-raw-version-skip-stage/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 1700.68 | 528 | 957 | 1596 | 502356 | `vexra-adb/build/adb-benchmark/range_count_local_raw_version_skip_stage.properties` |
+| `mixed` | 8 | 2276.18 | 2574 | 8956 | 12637 | 662659 | `vexra-adb/build/adb-benchmark/jdbc_mixed_local_raw_version_skip_stage.properties` |
+
+Conclusion:
+
+- The `range_scan` throughput sample returned to the `1700 ops/s` range, but
+  allocation is still around `502KB/op`. The current single-version range
+  benchmark is still dominated by the ldb cursor boundary.
+- This round is more meaningful for local-write, multi-version old-snapshot
+  scenarios: it avoids `VersionKey` object decoding and value reads for newer
+  versions.
+- The remaining high-value part of item 5 is no longer a small ADB-side cleanup:
+  ADB needs segment/block-level count metadata, or `vexra-ldb` needs a
+  raw/reusable cursor, to materially reduce `range_scan/mixed` allocation.
