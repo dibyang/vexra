@@ -2794,3 +2794,68 @@ Conclusion:
 - The next item 4 step should move from prepared-plan metadata caching to larger
   commit costs: statement-level batching, transaction-local group commit, or
   `AdbWriteBatch` / ldb write batch aggregation.
+
+## Round 36: Prepared Count Fast-Path Session Cache
+
+This round returns to item 5, the range count outer entry. `AdbPreparedRangeCountPlan`
+already cached the resolved table and row prefix, and `AdbTableCountPlan` already
+cached the resolved table. However, every prepared count execution still called
+`connection.unwrap(JdbcConnection.class).getSession()` to obtain the H2
+`SessionLocal`. A PreparedStatement plan is bound to one JDBC connection, so the
+session can be cached safely and the count fast path can avoid repeated unwrap /
+type-check overhead.
+
+Changes:
+
+1. `AdbPreparedRangeCountPlan` caches `SessionLocal` for repeated execution of
+   the same prepared range count.
+2. `AdbTableCountPlan` caches `SessionLocal` for prepared table count.
+3. `repeatedPreparedRangeCountReusesPlanSession` verifies that the same range
+   count `PreparedStatement` can be re-executed with different parameters and
+   still hit the fast path.
+4. `repeatedPreparedTableCountReusesPlanSession` verifies that the same table
+   count `PreparedStatement` sees a newly inserted row on later execution.
+
+Verification command:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedTableCountReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=table_count -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_count_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-count-session-cache-stage/adb-benchmark
+```
+
+Results:
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | fast path avg us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | `jdbc` | 1 | 779.42 | 1100 | 2379 | 3861 | 502543 | 1270 | `vexra-adb/build/adb-benchmark/range_count_prepared_session_cache_stage.properties` |
+| `table_count` | `jdbc` | 1 | 1292.55 | 533 | 1782 | 3913 | 9489 | 767 | `vexra-adb/build/adb-benchmark/table_count_prepared_session_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2304.15 | 2537 | 8729 | 12078 | 711170 | 2698 (`ADB_TABLE_RANGE_COUNT_FAST`) | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_count_session_cache_stage.properties` |
+
+Conclusion:
+
+- This round removes repeated `Connection.unwrap(...)` and session type checks
+  from the prepared count fast path. It keeps using the same H2 session, so
+  transaction visibility semantics are unchanged.
+- Mixed 8-thread recovered from Round 35's `2083.33 ops/s` to `2304.15 ops/s`,
+  and p99 moved from `13571us` to `12078us`, but allocation remains around
+  `711KB/op`; this is not the primary allocation source.
+- Standalone `range_scan` and `table_count` did not produce a throughput win, so
+  the session cache is recorded as a small outer-boundary shrink.
+- Further item 5 work needs a larger mechanism such as segment/block-level count
+  or ldb-level count metadata, rather than continuing to shave a few JDBC outer
+  objects.

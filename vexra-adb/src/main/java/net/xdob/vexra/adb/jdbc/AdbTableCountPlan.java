@@ -26,6 +26,7 @@ final class AdbTableCountPlan {
 
   private final String tableName;
   private AdbTable resolvedTable;
+  private SessionLocal cachedSession;
 
   private AdbTableCountPlan(String tableName) {
     this.tableName = tableName;
@@ -77,7 +78,7 @@ final class AdbTableCountPlan {
    * @throws SQLException 读取 row-count 元数据失败时抛出
    */
   ResultSet tryExecuteQuery(Connection connection) throws SQLException {
-    SessionLocal session = session(connection);
+    SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
@@ -125,13 +126,23 @@ final class AdbTableCountPlan {
     return table instanceof AdbTable ? (AdbTable) table : null;
   }
 
-  private static SessionLocal session(Connection connection) throws SQLException {
+  /**
+   * 返回当前 PreparedStatement 绑定连接的 H2 session。
+   *
+   * <p>prepared table count 计划绑定单个 JDBC statement，缓存 session 可以减少
+   * 高频 COUNT 快路径上的 unwrap / 类型检查成本。</p>
+   */
+  private SessionLocal resolveSession(Connection connection) throws SQLException {
+    if (cachedSession != null) {
+      return cachedSession;
+    }
     Session session = connection.unwrap(JdbcConnection.class).getSession();
     if (!(session instanceof SessionLocal)) {
       throw new SQLException("Unsupported H2 session type: "
           + session.getClass().getName());
     }
-    return (SessionLocal) session;
+    cachedSession = (SessionLocal) session;
+    return cachedSession;
   }
 
   private static String normalizeIdentifier(String identifier) {

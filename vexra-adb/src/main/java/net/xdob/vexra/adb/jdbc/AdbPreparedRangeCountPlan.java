@@ -35,6 +35,7 @@ final class AdbPreparedRangeCountPlan {
   private final String tableName;
   private final String whereColumn;
   private AdbTable resolvedTable;
+  private SessionLocal cachedSession;
   private TabId cachedTabId;
   private RowPrefix cachedRowPrefix;
 
@@ -110,7 +111,7 @@ final class AdbPreparedRangeCountPlan {
         || !parameterSet[2]) {
       return null;
     }
-    SessionLocal session = session(connection);
+    SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
@@ -189,13 +190,23 @@ final class AdbPreparedRangeCountPlan {
     return table instanceof AdbTable ? (AdbTable) table : null;
   }
 
-  private static SessionLocal session(Connection connection) throws SQLException {
+  /**
+   * 返回当前 PreparedStatement 绑定连接的 H2 session。
+   *
+   * <p>计划对象随 PreparedStatement 创建，生命周期绑定单个 JDBC 连接；缓存 session
+   * 可以避免每次 range count 快路径执行都重复 {@code unwrap(JdbcConnection)}。</p>
+   */
+  private SessionLocal resolveSession(Connection connection) throws SQLException {
+    if (cachedSession != null) {
+      return cachedSession;
+    }
     Session session = connection.unwrap(JdbcConnection.class).getSession();
     if (!(session instanceof SessionLocal)) {
       throw new SQLException("Unsupported H2 session type: "
           + session.getClass().getName());
     }
-    return (SessionLocal) session;
+    cachedSession = (SessionLocal) session;
+    return cachedSession;
   }
 
   private static long toLong(Object value) throws SQLException {

@@ -1179,6 +1179,72 @@ class AdbTableProviderIntegrationTest {
         }
     }
 
+    @Test
+    void repeatedPreparedRangeCountReusesPlanSession() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-range-session-cache").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b'), (3, 'c')");
+
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST WHERE ID BETWEEN ? AND ?")) {
+                    count.setLong(1, 1L);
+                    count.setLong(2, 2L);
+                    Assertions.assertEquals(2L, singleLong(count));
+
+                    count.setLong(1, 2L);
+                    count.setLong(2, 3L);
+                    Assertions.assertEquals(2L, singleLong(count));
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_RANGE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
+    void repeatedPreparedTableCountReusesPlanSession() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-table-count-session-cache").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a'), (2, 'b')");
+
+                try (PreparedStatement count = connection.prepareStatement(
+                        "SELECT COUNT(*) FROM TEST")) {
+                    Assertions.assertEquals(2L, singleLong(count));
+                    statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (3, 'c')");
+                    Assertions.assertEquals(3L, singleLong(count));
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_TABLE_COUNT_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
     private static String preparedName(PreparedStatement select, long id)
             throws SQLException {
         select.setLong(1, id);
@@ -1187,6 +1253,15 @@ class AdbTableProviderIntegrationTest {
                 return null;
             }
             String value = resultSet.getString(1);
+            Assertions.assertFalse(resultSet.next());
+            return value;
+        }
+    }
+
+    private static long singleLong(PreparedStatement statement) throws Exception {
+        try (ResultSet resultSet = statement.executeQuery()) {
+            resultSet.next();
+            long value = resultSet.getLong(1);
             Assertions.assertFalse(resultSet.next());
             return value;
         }

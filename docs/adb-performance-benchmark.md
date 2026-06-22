@@ -2424,3 +2424,61 @@ benchmark：
 - 下一步继续第 4 项时，应从 prepared plan 元数据缓存转向更大的提交成本：
   statement-level batching、事务内 group commit、或 `AdbWriteBatch` / ldb write batch
   聚合。
+
+## 第三十六轮：prepared count 快路径 session 缓存
+
+本轮回到第 5 项 range count 外层入口。`AdbPreparedRangeCountPlan` 已经缓存
+resolved table 与 row prefix，`AdbTableCountPlan` 也已经缓存 resolved table；但
+每次 prepared count 执行仍会通过 `connection.unwrap(JdbcConnection.class).getSession()`
+重新取得 H2 `SessionLocal`。PreparedStatement 计划对象的生命周期绑定单个 JDBC
+连接，因此可以安全缓存 session，减少 count 快路径外层 unwrap / 类型检查成本。
+
+改动：
+
+1. `AdbPreparedRangeCountPlan` 缓存 `SessionLocal`，重复执行同一个 prepared range
+   count 时不再重复 unwrap。
+2. `AdbTableCountPlan` 同步缓存 `SessionLocal`，覆盖 prepared table count 快路径。
+3. 新增 `repeatedPreparedRangeCountReusesPlanSession`，验证同一个 range count
+   `PreparedStatement` 修改参数后重复执行仍返回正确结果并命中 fast path。
+4. 新增 `repeatedPreparedTableCountReusesPlanSession`，验证同一个 table count
+   `PreparedStatement` 在插入新行后重复执行仍看见新行数。
+
+验证命令：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedRangeCountReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedTableCountReusesPlanSession --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedRangeCountSeesLocalInsertDeleteAndRollback --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=range_scan -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/range_count_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/range-count-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=table_count -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=1 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/table_count_prepared_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/table-count-prepared-session-cache-stage/adb-benchmark
+```
+
+```powershell
+.\gradlew.bat --% :vexra-adb:adbBenchmark -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkThreads=8 -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_count_session_cache_stage.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-prepared-count-session-cache-stage/adb-benchmark
+```
+
+结果：
+
+| workload | mode | threads | throughput ops/s | p50 us | p95 us | p99 us | allocation bytes/op | fast path avg us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | `jdbc` | 1 | 779.42 | 1100 | 2379 | 3861 | 502543 | 1270 | `vexra-adb/build/adb-benchmark/range_count_prepared_session_cache_stage.properties` |
+| `table_count` | `jdbc` | 1 | 1292.55 | 533 | 1782 | 3913 | 9489 | 767 | `vexra-adb/build/adb-benchmark/table_count_prepared_session_cache_stage.properties` |
+| `mixed` | `jdbc` | 8 | 2304.15 | 2537 | 8729 | 12078 | 711170 | 2698 (`ADB_TABLE_RANGE_COUNT_FAST`) | `vexra-adb/build/adb-benchmark/jdbc_mixed_prepared_count_session_cache_stage.properties` |
+
+结论：
+
+- 本轮减少了 prepared count 快路径外层的重复 `Connection.unwrap(...)` 和 session 类型检查，
+  语义上仍使用同一个 H2 session，因此不改变事务可见性。
+- mixed 8 线程从第三十五轮 `2083.33 ops/s` 回升到 `2304.15 ops/s`，p99 从
+  `13571us` 降到 `12078us`，但 allocation 仍在 `711KB/op` 左右，说明这不是主要分配源。
+- 单独 `range_scan` 和 `table_count` 没有形成吞吐收益，外层 session 缓存只能算小幅边界收缩。
+- 第 5 项继续向前时，更大的收益应来自 segment/block-level count 或 ldb 层 count
+  元数据，而不是继续压 JDBC 外层几个对象。
