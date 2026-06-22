@@ -4,7 +4,6 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
@@ -249,13 +248,13 @@ final class AdbPreparedPointLookupPlan {
     if (cached != null && cached.commitTs == rowValue.commitTs) {
       table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_HIT",
           System.nanoTime() - started);
-      return cached.copyValues();
+      return cached.values();
     }
     try {
       Value[] values = RowCodec.decodeColumns(rowValue.payload,
           resolvedColumnIds);
       cacheDecodedValues(rowId, rowValue.commitTs, values);
-      return Arrays.copyOf(values, values.length);
+      return values;
     } finally {
       table.recordSqlPhase("ADB_POINT_LOOKUP_DECODE_CACHE_MISS",
           System.nanoTime() - started);
@@ -270,8 +269,7 @@ final class AdbPreparedPointLookupPlan {
       decodedColumnCache.clear();
     }
     decodedColumnCache.put(Long.valueOf(rowId),
-        new CachedColumnValues(commitTs, Arrays.copyOf(values,
-            values.length)));
+        new CachedColumnValues(commitTs, values));
   }
 
   private AdbTable adbTable(SessionLocal session) {
@@ -342,8 +340,8 @@ final class AdbPreparedPointLookupPlan {
       this.values = values;
     }
 
-    private Value[] copyValues() {
-      return Arrays.copyOf(values, values.length);
+    private Value[] values() {
+      return values;
     }
   }
 }

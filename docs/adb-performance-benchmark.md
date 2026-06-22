@@ -122,6 +122,58 @@ table-engine 边界仍是主要瓶颈。
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_threads_8.properties"
 ```
 
+## prepared point lookup Value 数组复用结果
+
+本轮继续收窄 `SELECT col FROM table WHERE ID = ?` prepared fast path 的对象边界：
+
+1. `AdbPreparedPointLookupPlan` 的 decoded column cache 不再在命中时复制 `Value[]`。
+2. cache miss 后也直接把 `RowCodec.decodeColumns(...)` 返回的 `Value[]` 交给只读的
+   `AdbSimpleResultSet`，避免 decode 后再复制一次。
+3. `AdbSimpleResultSet` 不修改 `Value[]`，H2 `Value` 在该路径按不可变值对象使用，因此该优化不改变查询语义。
+
+验证命令 `.\gradlew.bat :vexra-adb:test --rerun-tasks` 已通过。
+
+可复现结果：
+
+| 模式 | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | 3000 | 2373.42 | 332 | 843 | 1252 | `vexra-adb/build/adb-benchmark/point_lookup_value_array_reuse.properties` |
+| `jdbc` | `mixed` | 8 | 3000 | 1197.60 | - | - | 15177 | `vexra-adb/build/adb-benchmark/jdbc_mixed_value_array_reuse_threads_8.properties` |
+
+结论：
+
+- 纯 prepared point lookup 明显受益，`ADB_TABLE_POINT_LOOKUP_FAST` 平均约 416 us，p99 为 1252 us。
+- mixed 8 线程没有同步改善，说明综合负载仍由 `ADB_TABLE_PRIMARY_FIND`、`ADB_TABLE_ADD_ROW`、
+  `ADB_TABLE_RANGE_COUNT_FAST` 和外层 JDBC/table-engine 边界主导。
+- 下一步应继续处理 primary find 的可见性解析与 Row 构造边界，或者推进普通 JDBC insert 的写入入口优化。
+
+point lookup 复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-value-array-reuse/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_value_array_reuse.properties"
+```
+
+mixed 8 线程复现命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-value-array-reuse-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_value_array_reuse_threads_8.properties"
+```
+
 ## point lookup / primary find 详细诊断开关
 
 本轮为 point lookup 和 primary find 增加了按需启用的细粒度 phase：

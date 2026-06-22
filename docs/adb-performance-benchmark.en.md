@@ -141,6 +141,68 @@ Transaction-layer insert reproduction command:
   "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/txn_insert_goal.properties"
 ```
 
+## Prepared Point Lookup Value Array Reuse Result
+
+This round continues narrowing the object boundary for the
+`SELECT col FROM table WHERE ID = ?` prepared fast path:
+
+1. `AdbPreparedPointLookupPlan` no longer copies the cached `Value[]` on a
+   decoded-column cache hit.
+2. On a cache miss, it directly passes the `Value[]` returned by
+   `RowCodec.decodeColumns(...)` to the read-only `AdbSimpleResultSet`, avoiding
+   another array copy after decode.
+3. `AdbSimpleResultSet` does not mutate the `Value[]`, and H2 `Value` objects
+   are treated as immutable values on this path, so query semantics are
+   unchanged.
+
+Verification passed with `.\gradlew.bat :vexra-adb:test --rerun-tasks`.
+
+Reproducible results:
+
+| Mode | workload | threads | operations | throughput ops/s | p50 us | p95 us | p99 us | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `point_lookup` | 1 | 3000 | 2373.42 | 332 | 843 | 1252 | `vexra-adb/build/adb-benchmark/point_lookup_value_array_reuse.properties` |
+| `jdbc` | `mixed` | 8 | 3000 | 1197.60 | - | - | 15177 | `vexra-adb/build/adb-benchmark/jdbc_mixed_value_array_reuse_threads_8.properties` |
+
+Conclusion:
+
+- Standalone prepared point lookup benefits clearly. `ADB_TABLE_POINT_LOOKUP_FAST`
+  averaged about 416 us, with p99 at 1252 us.
+- The 8-thread mixed workload did not improve in the same way, which confirms
+  that the combined workload is still dominated by `ADB_TABLE_PRIMARY_FIND`,
+  `ADB_TABLE_ADD_ROW`, `ADB_TABLE_RANGE_COUNT_FAST`, and the outer
+  JDBC/table-engine boundary.
+- The next step should keep reducing primary-find visible-row resolution and
+  Row construction boundaries, or move to ordinary JDBC insert write-entry
+  optimization.
+
+Point lookup reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/point-lookup-value-array-reuse/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=point_lookup" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/point_lookup_value_array_reuse.properties"
+```
+
+Mixed 8-thread reproduction command:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark `
+  "-PadbBenchmarkMode=jdbc" `
+  "-PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/jdbc-mixed-value-array-reuse-threads-8/adb-benchmark;DB_CLOSE_DELAY=0" `
+  "-PadbBenchmarkWorkload=mixed" `
+  "-PadbBenchmarkRows=5000" `
+  "-PadbBenchmarkWarmupOperations=300" `
+  "-PadbBenchmarkOperations=3000" `
+  "-PadbBenchmarkThreads=8" `
+  "-PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/jdbc_mixed_value_array_reuse_threads_8.properties"
+```
+
 ## Point Lookup / Primary Find Detailed Diagnostics Toggle
 
 This round adds optional fine-grained phases for point lookup and primary find:
