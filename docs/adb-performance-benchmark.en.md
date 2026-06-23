@@ -4899,3 +4899,91 @@ Conclusion:
   `BULK_ADD_ROW` and the range-count outer path. A major `range_scan/mixed`
   allocation reduction still requires ldb raw/reusable cursors or
   segment-level count metadata design.
+
+## Round 66: Savepoint-free Single-row Append-safe Write Plan
+
+This round continues objective 4 (`BULK_ADD_ROW / ADD_ROW`). The round-65
+diagnostic workload showed:
+
+1. `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` is hit consistently, with about
+   `279 us` average latency inside the raw local count path.
+2. `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` averages about `669 us`, still one of the
+   main costs in the local-write-covered range-count workload.
+3. `bulkInsertAppendRow(...)` currently creates a `TxnMap2` savepoint for every
+   single-row prepared insert. The earlier broad "skip savepoint" experiment
+   regressed `mixed`, so it should not be restored as a wide policy.
+
+This round only optimizes a narrower safe scenario:
+
+1. Local table, with no distributed write runtime and no region commit
+   coordinator.
+2. No `AdbSecondaryIndex`, so there is no secondary-index write that could fail
+   after the local row write.
+3. `map.canSkipAppendUniqueCheck(rowKey)` has already proved the row is
+   append-safe:
+   - the current transaction has not written the same row key;
+   - the rowId is above the transaction append high-water or the process-known
+     committed rowId upper bound;
+   - no store visibility scan is needed for duplicate primary-key detection.
+4. `prepareBulkRow(...)`, `RowKey`, `RowValue`, and append-safe checks complete
+   before mutating the local transaction state; after the local write, no index
+   logic that requires rollback is executed.
+
+Expected value:
+
+- Avoid savepoint name creation, `Savepoint2`, `HashMap` mutation, and rollback
+  boundary work on the single-row append-safe fast path.
+- Keep the conservative path for ordinary single-row inserts, secondary-index
+  tables, non-append-safe rowIds, distributed writes, and multi-row bulk.
+
+Implementation result:
+
+1. `bulkInsertAppendRow(...)` now first tries
+   `tryBulkInsertAppendRowWithoutSavepoint(...)` for local, no-secondary-index,
+   append-safe single-row prepared inserts.
+2. On hit, `prepareBulkRow(...)`, `RowKey`, `RowValue`, and append-safe checks
+   complete before mutating the local transaction state; then
+   `putEncodedAppendAlreadyChecked(...)` writes directly to the local write-set.
+3. Misses continue through the original savepoint path; multi-row bulk,
+   secondary-index tables, distributed writes, and non-append-safe rowIds are
+   unchanged.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 37500.00 | 60 | 3421 | `vexra-adb/build/adb-benchmark/insert_no_savepoint_20260623-111533.properties` |
+| `range_count_local_write` | 1 | 506.33 | 5063 | 347844 | `vexra-adb/build/adb-benchmark/range_count_local_write_no_savepoint_20260623-111533.properties` |
+
+Diagnostic excerpt:
+
+- `insert`: `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` averaged `700 us`, and
+  `ADB_COMMIT_WRITE` averaged `362 us`. This short run is much faster than the
+  round-63 `520.56 ops/s` sample and the pre-round-66 single-insert sample, but
+  insert short runs are sensitive to file-store flushes and millisecond timing
+  windows; treat this mainly as a positive signal.
+- `range_count_local_write`: `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` averaged
+  `820 us`, `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` averaged `331 us`, and
+  total throughput was below the round-65 `618.81 ops/s` sample. This did not
+  prove a combined-workload improvement.
+
+Conclusion:
+
+- The narrow path reduces the savepoint boundary for append-safe single-row
+  inserts and shows a positive signal for pure append writes.
+- `range_count_local_write` is still dominated by the range-count outer path,
+  LDB scan/cursor allocation, and commit variance; this round should not be
+  counted as a combined-workload win.
+- If the next round stays in the ADB repository, prioritize
+  `ADB_TABLE_RANGE_COUNT_FAST` outer-path and commit/write-batch breakdown. A
+  large `range_scan/mixed` allocation reduction still requires ldb raw/reusable
+  cursors or segment-level count metadata.

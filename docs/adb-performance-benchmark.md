@@ -4206,3 +4206,72 @@ benchmark：
 - 下一轮如果继续做 ADB 仓库内优化，优先看 `BULK_ADD_ROW` 单行插入入口和 range count
   外层；若要显著降低 `range_scan/mixed` allocation，仍需要 ldb raw/reusable cursor 或
   segment-level count 元数据设计。
+
+## 第六十六轮：单行 append-safe 写入免 savepoint 计划
+
+本轮继续目标第 4 项 `BULK_ADD_ROW / ADD_ROW`。第六十五轮专项 workload 显示：
+
+1. `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` 已稳定命中，内部平均约 `279 us`。
+2. `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 平均约 `669 us`，仍是本地写覆盖 range count
+   workload 的主要成本之一。
+3. `bulkInsertAppendRow(...)` 当前每次单行 prepared insert 都创建 `TxnMap2` savepoint；
+   旧的“全局跳过 savepoint”实验对 `mixed` 有负收益，不能恢复为宽松策略。
+
+本轮只优化更窄的安全场景：
+
+1. 本地表，无分布式写 runtime / region commit coordinator。
+2. 没有 `AdbSecondaryIndex`，避免索引写入失败后需要回滚本地 row write。
+3. `map.canSkipAppendUniqueCheck(rowKey)` 已确认 append-safe，说明：
+   - 当前事务未写过相同 row key；
+   - rowId 大于事务内 append high-water 或当前进程已知 committed rowId 上界；
+   - 不需要 store 可见性扫描来判断重复主键。
+4. 在真正写入本地事务状态前完成 `prepareBulkRow(...)`、`RowKey`、`RowValue` 构造和
+   append-safe 判定；写入后不再执行可能抛异常且需要回滚的索引逻辑。
+
+预期收益：
+
+- 避免单行 append-safe fast path 的 savepoint 名称、`Savepoint2`、`HashMap` 写入和失败回滚边界。
+- 不改变普通单行 insert、二级索引表、非 append-safe rowId、分布式写入或多行 bulk 的保守路径。
+
+实现结果：
+
+1. `bulkInsertAppendRow(...)` 在本地、无二级索引、append-safe 的单行 prepared insert
+   中先尝试 `tryBulkInsertAppendRowWithoutSavepoint(...)`。
+2. 命中时在写入本地事务状态前完成 `prepareBulkRow(...)`、`RowKey`、`RowValue` 和
+   append-safe 判定，然后用 `putEncodedAppendAlreadyChecked(...)` 直接写入本地 write-set。
+3. 未命中时继续走原 savepoint 分支；多行 bulk、二级索引、分布式写入和非 append-safe
+   rowId 不受影响。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 37500.00 | 60 | 3421 | `vexra-adb/build/adb-benchmark/insert_no_savepoint_20260623-111533.properties` |
+| `range_count_local_write` | 1 | 506.33 | 5063 | 347844 | `vexra-adb/build/adb-benchmark/range_count_local_write_no_savepoint_20260623-111533.properties` |
+
+诊断摘录：
+
+- `insert`：`ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 平均 `700 us`，`ADB_COMMIT_WRITE`
+  平均 `362 us`；该短跑吞吐显著高于第六十三轮 `520.56 ops/s` 和第六十五轮专项前的
+  单次 insert 样本，但 insert 短跑受文件库 flush 与毫秒窗口影响，主要看作正向信号。
+- `range_count_local_write`：`ADB_TABLE_BULK_ADD_ROW ADB_BENCH` 平均 `820 us`，
+  `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` 平均 `331 us`，整体吞吐低于第六十五轮的
+  `618.81 ops/s`，没有证明组合 workload 改善。
+
+结论：
+
+- 该窄路径减少了 append-safe 单行 insert 的 savepoint 边界，对纯追加写入有正向信号。
+- `range_count_local_write` 仍被 range count 外层、LDB scan/cursor 和 commit 波动主导；
+  本轮不应算作组合 workload 的性能收益。
+- 后续若继续在 ADB 仓库内推进，应优先拆 `ADB_TABLE_RANGE_COUNT_FAST` 外层和 commit/write
+  batch；若目标是大幅降低 `range_scan/mixed` allocation，仍需要 ldb raw/reusable cursor
+  或 segment-level count 元数据。

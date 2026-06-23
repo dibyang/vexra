@@ -803,6 +803,19 @@ public class AdbTable extends TableBase {
     RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
     TxnMap2 map = getTxnMap(session);
+    Integer appendSafeCount;
+    try {
+      appendSafeCount = tryBulkInsertAppendRowWithoutSavepoint(map, row);
+    } catch (RuntimeException e) {
+      failure = e;
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
+      throw e;
+    }
+    if (appendSafeCount != null) {
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, null);
+      analyzeIfRequired(session);
+      return appendSafeCount.intValue();
+    }
     long savepointId = System.nanoTime();
     map.setSavepoint(savepointId);
     try {
@@ -837,6 +850,48 @@ public class AdbTable extends TableBase {
     }
     analyzeIfRequired(session);
     return 1;
+  }
+
+  /**
+   * 尝试执行单行 append-safe 插入的免 savepoint fast path。
+   *
+   * <p>该路径只服务本地、无二级索引、已确认 append-safe 的单行 prepared insert。
+   * 所有可能失败的构造和判定都在写入事务本地状态之前完成；写入后不再执行二级索引逻辑，
+   * 因此不需要为失败回滚预先创建 savepoint。保守场景返回 {@code null} 并继续走原路径。</p>
+   *
+   * @param map 当前 session 绑定的事务 map
+   * @param row 待插入行
+   * @return 命中时返回写入行数；不命中时返回 {@code null}
+   */
+  private Integer tryBulkInsertAppendRowWithoutSavepoint(TxnMap2 map,
+      Row row) {
+    if (hasAdbSecondaryIndex()) {
+      return null;
+    }
+    long txnId = map.getTransaction().getTxnId();
+    TabId tabId = map.getTabId(getId());
+    prepareBulkRow(row);
+    RowKey rowKey = RowKey.of(tabId, row.getKey());
+    if (!map.canSkipAppendUniqueCheck(rowKey)) {
+      return null;
+    }
+    RowValue value = rowValue(txnId, row);
+    try {
+      map.putEncodedAppendAlreadyChecked(rowKey, value, null);
+    } catch (SQLException e) {
+      throw convertException(e);
+    }
+    map.recordAppendHighWater(tabId, row.getKey());
+    return Integer.valueOf(1);
+  }
+
+  private boolean hasAdbSecondaryIndex() {
+    for (Index index : indexes) {
+      if (index instanceof AdbSecondaryIndex) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static void rollbackBulkSavepoint(TxnMap2 map, long savepointId,
