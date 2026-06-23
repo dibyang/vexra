@@ -4987,3 +4987,105 @@ Conclusion:
   `ADB_TABLE_RANGE_COUNT_FAST` outer-path and commit/write-batch breakdown. A
   large `range_scan/mixed` allocation reduction still requires ldb raw/reusable
   cursors or segment-level count metadata.
+
+## Round 67: Transaction Registry Fast Path Plan
+
+This round continues objective 3/5, focusing on outer-path read costs. The
+latest ADB/H2 comparison reran the current code for `insert`, `point_lookup`,
+`range_scan`, `table_count`, and 8-thread `mixed`:
+
+| workload | threads | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op | Result directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 23809.52 | 21276.60 | 1.12 | 83 | 111 | 3434 | 2703 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `point_lookup` | 1 | 2305.92 | 30303.03 | 0.08 | 1559 | 591 | 10016 | 2353 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `range_scan` | 1 | 1463.41 | 25423.73 | 0.06 | 3132 | 351 | 95260 | 3395 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `table_count` | 1 | 1920.61 | 30927.84 | 0.06 | 1677 | 466 | 10715 | 1951 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `mixed` | 8 | 3374.58 | 29126.21 | 0.12 | 7163 | 3018 | 389914 | 3646 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+
+Conclusion:
+
+1. Pure `insert` is now slightly faster than H2; the next high-value work is in
+   read paths and `mixed` outer fixed costs.
+2. JFR already showed that `AdbSimpleResultSet` / JDK dynamic proxies are not
+   steady allocation hot spots, and the current code already has `singleLong`
+   / `singleValue` handlers. This round will not replace the full `ResultSet`
+   implementation.
+3. `VersionScanSource` currently exposes only `byte[] key()/value()`, and the
+   LDB / Rocks cursors both have copy semantics. A large `range_scan/mixed`
+   allocation reduction still requires ldb raw/reusable cursors or
+   segment-level count metadata.
+4. Inside the ADB repository, we can still reduce the fixed lookup cost in
+   `JDBC fast path -> AdbTable.getTxnMap(session) -> AdbTransactionRegistry`.
+   Today each fast-path operation builds a registry key and hits a
+   `ConcurrentHashMap`, while the same thread and H2 session repeatedly reuse
+   the same `TxnMap2` inside one transaction boundary.
+
+Plan:
+
+1. Add a thread-local current-session cache to `AdbTransactionRegistry`, hitting
+   only when database/session/txnManager match exactly and the transaction is
+   still `PENDING`.
+2. Clear the thread-local cache from `afterCommit` / `afterRollback` through
+   `clear(...)`, so an old `TxnMap2` is not reused across transaction
+   boundaries.
+3. Keep the original `ConcurrentHashMap<TransactionKey, TxnMap2>` as the
+   authoritative store; the cache is only a fast entrance for the current
+   thread/session.
+4. Add a JDBC integration test that verifies prepared fast paths still observe
+   the new transaction view after multiple commits on the same connection.
+
+Implementation result:
+
+1. `AdbTransactionRegistry` now has a `ThreadLocal<CurrentTransaction>`.
+2. `getOrCreate(...)` first checks the current-thread cache and only returns
+   the cached `TxnMap2` when the database object, session id, and `TxnManager`
+   match exactly and the cached transaction is still `PENDING`.
+3. Cache misses still go through the original
+   `ConcurrentHashMap<TransactionKey, TxnMap2>`; if a non-`PENDING` transaction
+   remains in the map, a new `TxnMap2` is created.
+4. `clear(database, sessionId)` removes the authoritative map entry and also
+   clears the matching current-thread session cache.
+5. Added
+   `AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit`,
+   which verifies that the same JDBC connection and prepared point lookup still
+   see newly inserted data after a commit boundary.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedPointLookupReusesPlanSession
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | Before ADB ops/s | After ADB ops/s | Speedup | After p99 us | After alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 23809.52 | 32258.06 | 1.35 | 55 | 3478 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_insert.properties` |
+| `point_lookup` | 1 | 2305.92 | 36144.58 | 15.67 | 1105 | 1363 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_point_lookup.properties` |
+| `range_scan` | 1 | 1463.41 | 12931.03 | 8.84 | 1055 | 84376 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_range_scan.properties` |
+| `table_count` | 1 | 1920.61 | 53571.43 | 27.89 | 875 | 1127 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_table_count.properties` |
+| `mixed` | 8 | 3374.58 | 13100.44 | 3.88 | 6840 | 379341 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_mixed.properties` |
+
+Repeat confirmation:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 51724.14 | 721 | 1372 | `vexra-adb/build/adb-benchmark/registry-cache-repeat-20260623-114156/adb_point_lookup.properties` |
+| `mixed` | 8 | 12500.00 | 7479 | 376533 | `vexra-adb/build/adb-benchmark/registry-cache-repeat-20260623-114156/adb_mixed.properties` |
+
+Conclusion:
+
+- This optimization significantly reduces the transaction-context lookup cost
+  on the JDBC fast-path outer boundary. `point_lookup`, `table_count`,
+  `range_scan`, and 8-thread `mixed` all show clear positive movement.
+- `point_lookup` and `table_count` are now above the pre-round H2 baseline.
+  `range_scan` and `mixed` are still slower than H2, and
+  `range_scan/mixed` allocation is still dominated by LDB scan/cursor and
+  version-scan paths.
+- The next high-value direction is unchanged: inside the ADB repository, break
+  down `commit/write batch` and the remaining range-count outer-path objects;
+  for a large `range_scan/mixed` allocation reduction, move on ldb
+  raw/reusable cursors or segment/block-level count metadata.

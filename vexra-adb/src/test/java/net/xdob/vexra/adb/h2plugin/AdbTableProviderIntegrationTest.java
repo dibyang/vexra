@@ -346,6 +346,49 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedFastPathSeesNewTransactionAfterCommit() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-prepared-commit-cache-clear")
+                .toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+                connection.commit();
+
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT NAME FROM TEST WHERE ID = ?");
+                     PreparedStatement insert = connection.prepareStatement(
+                             "INSERT INTO TEST(ID, NAME) VALUES (?, ?)")) {
+                    Assertions.assertEquals("a", preparedName(select, 1L));
+
+                    insert.setLong(1, 2L);
+                    insert.setString(2, "b");
+                    Assertions.assertEquals(1, insert.executeUpdate());
+                    connection.commit();
+
+                    Assertions.assertEquals("b", preparedName(select, 2L));
+                }
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_POINT_LOOKUP_FAST TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void preparedPrimaryKeyLookupUsesAdbDriverFastPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

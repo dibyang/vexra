@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import net.xdob.vexra.adb.db.TxnManager;
 import net.xdob.vexra.adb.db.TxnMap2;
+import net.xdob.vexra.adb.db.TxnState;
 import org.h2.engine.Database;
 import org.h2.engine.SessionLocal;
 
@@ -17,6 +18,7 @@ import org.h2.engine.SessionLocal;
 public final class AdbTransactionRegistry {
 
     private static final Map<TransactionKey, TxnMap2> TXN_MAPS = new ConcurrentHashMap<>();
+    private static final ThreadLocal<CurrentTransaction> CURRENT = new ThreadLocal<>();
 
     private AdbTransactionRegistry() {
     }
@@ -29,8 +31,20 @@ public final class AdbTransactionRegistry {
      * @return ADB 事务上下文
      */
     public static TxnMap2 getOrCreate(SessionLocal session, TxnManager txnManager) {
-        TransactionKey key = TransactionKey.of(session.getDatabase(), session.getId());
-        return TXN_MAPS.computeIfAbsent(key, k -> new TxnMap2(txnManager, txnManager.beginTransaction()));
+        Database database = session.getDatabase();
+        int sessionId = session.getId();
+        CurrentTransaction current = CURRENT.get();
+        if (current != null && current.matches(database, sessionId, txnManager)
+                && isPending(current.map)) {
+            return current.map;
+        }
+
+        TransactionKey key = TransactionKey.of(database, sessionId);
+        TxnMap2 map = TXN_MAPS.compute(key, (ignored, existing) ->
+                isPending(existing) ? existing
+                        : new TxnMap2(txnManager, txnManager.beginTransaction()));
+        CURRENT.set(new CurrentTransaction(database, sessionId, txnManager, map));
+        return map;
     }
 
     /**
@@ -67,6 +81,38 @@ public final class AdbTransactionRegistry {
      */
     public static void clear(Database database, int sessionId) {
         TXN_MAPS.remove(TransactionKey.of(database, sessionId));
+        CurrentTransaction current = CURRENT.get();
+        if (current != null && current.matches(database, sessionId)) {
+            CURRENT.remove();
+        }
+    }
+
+    private static boolean isPending(TxnMap2 map) {
+        return map != null && TxnState.PENDING.equals(map.getTransaction().getState());
+    }
+
+    private static final class CurrentTransaction {
+        private final Database database;
+        private final int sessionId;
+        private final TxnManager txnManager;
+        private final TxnMap2 map;
+
+        private CurrentTransaction(Database database, int sessionId,
+                                   TxnManager txnManager, TxnMap2 map) {
+            this.database = database;
+            this.sessionId = sessionId;
+            this.txnManager = txnManager;
+            this.map = map;
+        }
+
+        private boolean matches(Database database, int sessionId,
+                                TxnManager txnManager) {
+            return this.txnManager == txnManager && matches(database, sessionId);
+        }
+
+        private boolean matches(Database database, int sessionId) {
+            return this.database == database && this.sessionId == sessionId;
+        }
     }
 
     private static final class TransactionKey {

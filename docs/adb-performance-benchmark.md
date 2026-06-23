@@ -4275,3 +4275,85 @@ benchmark：
 - 后续若继续在 ADB 仓库内推进，应优先拆 `ADB_TABLE_RANGE_COUNT_FAST` 外层和 commit/write
   batch；若目标是大幅降低 `range_scan/mixed` allocation，仍需要 ldb raw/reusable cursor
   或 segment-level count 元数据。
+
+## 第六十七轮：事务上下文 registry 快路径计划
+
+本轮继续目标第 3/5 项的外层路径优化。最新 ADB/H2 对比使用当前代码重新跑了
+`insert`、`point_lookup`、`range_scan`、`table_count` 和 8 线程 `mixed`：
+
+| workload | threads | ADB ops/s | H2 ops/s | ADB/H2 | ADB p99 us | H2 p99 us | ADB alloc bytes/op | H2 alloc bytes/op | 结果目录 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 23809.52 | 21276.60 | 1.12 | 83 | 111 | 3434 | 2703 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `point_lookup` | 1 | 2305.92 | 30303.03 | 0.08 | 1559 | 591 | 10016 | 2353 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `range_scan` | 1 | 1463.41 | 25423.73 | 0.06 | 3132 | 351 | 95260 | 3395 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `table_count` | 1 | 1920.61 | 30927.84 | 0.06 | 1677 | 466 | 10715 | 1951 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+| `mixed` | 8 | 3374.58 | 29126.21 | 0.12 | 7163 | 3018 | 389914 | 3646 | `vexra-adb/build/adb-benchmark/compare-20260623-112556` |
+
+结论：
+
+1. 纯 `insert` 已经略快于 H2；下一阶段价值集中在读路径和 `mixed` 的外层固定成本。
+2. JFR 已经证明 `AdbSimpleResultSet` / JDK dynamic proxy 不是稳定分配大头，当前又已有
+   `singleLong` / `singleValue` 专用 handler，因此本轮不做完整 `ResultSet` 类替换。
+3. `VersionScanSource` 目前只暴露 `byte[] key()/value()`，LDB / Rocks cursor 都是拷贝语义；
+   大幅降低 `range_scan/mixed` allocation 仍需要 ldb raw/reusable cursor 或 segment-level count。
+4. 在 ADB 仓库内仍可先收窄 `JDBC fast path -> AdbTable.getTxnMap(session) ->
+   AdbTransactionRegistry` 的固定查找成本。当前每次 fast path 都要构造 registry key 并访问
+   `ConcurrentHashMap`，而同一线程同一 H2 session 在一个事务边界内会重复使用同一个
+   `TxnMap2`。
+
+本轮计划：
+
+1. 在 `AdbTransactionRegistry` 增加线程内 current-session cache，只在 database/session/txnManager
+   完全一致且事务仍为 `PENDING` 时命中。
+2. `afterCommit` / `afterRollback` 调用 `clear(...)` 时同步清理线程内 cache，避免跨事务复用旧
+   `TxnMap2`。
+3. 保留原 `ConcurrentHashMap<TransactionKey, TxnMap2>` 作为权威存储；cache 只是命中同一线程当前
+   session 的快速入口。
+4. 补充 JDBC 集成测试，覆盖同一连接多次 commit 后 prepared fast path 仍能读到新事务视图。
+
+实现结果：
+
+1. `AdbTransactionRegistry` 增加 `ThreadLocal<CurrentTransaction>`。
+2. `getOrCreate(...)` 先检查当前线程缓存，只有 database 对象、session id、`TxnManager` 完全一致，
+   且缓存事务状态仍为 `PENDING` 时才直接返回缓存的 `TxnMap2`。
+3. cache 未命中时仍通过原 `ConcurrentHashMap<TransactionKey, TxnMap2>` 获取或创建事务上下文；
+   如果 map 中残留非 `PENDING` 事务，会创建新的 `TxnMap2`。
+4. `clear(database, sessionId)` 删除权威 map 后，同步清理当前线程命中的 current-session cache。
+5. 新增 `AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit`，覆盖同一
+   JDBC connection、同一 prepared point lookup 跨 commit 后仍能看到新插入数据。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.repeatedPreparedPointLookupReusesPlanSession
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | 本轮前 ADB ops/s | 本轮后 ADB ops/s | 提升倍数 | 本轮后 p99 us | 本轮后 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 23809.52 | 32258.06 | 1.35 | 55 | 3478 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_insert.properties` |
+| `point_lookup` | 1 | 2305.92 | 36144.58 | 15.67 | 1105 | 1363 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_point_lookup.properties` |
+| `range_scan` | 1 | 1463.41 | 12931.03 | 8.84 | 1055 | 84376 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_range_scan.properties` |
+| `table_count` | 1 | 1920.61 | 53571.43 | 27.89 | 875 | 1127 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_table_count.properties` |
+| `mixed` | 8 | 3374.58 | 13100.44 | 3.88 | 6840 | 379341 | `vexra-adb/build/adb-benchmark/registry-cache-20260623-114045/adb_mixed.properties` |
+
+复跑确认：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `point_lookup` | 1 | 51724.14 | 721 | 1372 | `vexra-adb/build/adb-benchmark/registry-cache-repeat-20260623-114156/adb_point_lookup.properties` |
+| `mixed` | 8 | 12500.00 | 7479 | 376533 | `vexra-adb/build/adb-benchmark/registry-cache-repeat-20260623-114156/adb_mixed.properties` |
+
+结论：
+
+- 该优化显著降低了 JDBC fast path 外层事务上下文查找成本，`point_lookup`、`table_count`、
+  `range_scan` 和 8 线程 `mixed` 都有明确正向收益。
+- `point_lookup` 和 `table_count` 已经超过本轮前 H2 基线；`range_scan` 与 `mixed` 仍慢于 H2，
+  并且 `range_scan/mixed` allocation 仍主要来自 LDB scan/cursor 与版本扫描链路。
+- 下一轮高价值方向保持不变：如果继续留在 ADB 仓库内，应拆 `commit/write batch` 与
+  range count 外层剩余对象；如果目标是大幅降低 `range_scan/mixed` allocation，需要推进
+  ldb raw/reusable cursor 或 segment/block-level count 元数据。
