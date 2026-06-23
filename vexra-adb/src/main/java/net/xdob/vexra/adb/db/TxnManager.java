@@ -1694,10 +1694,10 @@ public class TxnManager {
           continue;
         }
 
-        RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
-        if (metadata != null) {
+        int countableState = RowValue.countableState(scan.value());
+        if (countableState != RowValue.COUNTABLE_INVALID) {
           skipCurrentLogicalRow(scan, null, rowPrefix);
-          return !metadata.deleted && metadata.hasPayload();
+          return countableState == RowValue.COUNTABLE_ROW;
         }
 
         scan.advance();
@@ -1710,10 +1710,14 @@ public class TxnManager {
         continue;
       }
 
-      RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
-      if (metadata != null && metadata.commitTs <= startTs) {
-        skipCurrentLogicalRow(scan, null, rowPrefix);
-        return !metadata.deleted && metadata.hasPayload();
+      byte[] encoded = scan.value();
+      if (encoded != null && encoded.length > 0
+          && RowValue.commitTs(encoded) <= startTs) {
+        int countableState = RowValue.countableState(encoded);
+        if (countableState != RowValue.COUNTABLE_INVALID) {
+          skipCurrentLogicalRow(scan, null, rowPrefix);
+          return countableState == RowValue.COUNTABLE_ROW;
+        }
       }
 
       scan.advance();
@@ -1741,10 +1745,10 @@ public class TxnManager {
         continue;
       }
 
-      RowValue.Metadata metadata = RowValue.decodeMetadata(scan.value());
-      if (metadata != null) {
+      int countableState = RowValue.countableState(scan.value());
+      if (countableState != RowValue.COUNTABLE_INVALID) {
         skipCurrentRawLogicalRow(scan, null, firstRowKey);
-        return !metadata.deleted && metadata.hasPayload();
+        return countableState == RowValue.COUNTABLE_ROW;
       }
 
       scan.advance();

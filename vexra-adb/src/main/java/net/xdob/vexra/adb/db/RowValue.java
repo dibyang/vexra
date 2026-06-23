@@ -7,6 +7,9 @@ public class RowValue {
   private static final int OFFSET_PAYLOAD_LENGTH = 17;
   private static final int OFFSET_PAYLOAD = 21;
   private static final byte[] EMPTY_PAYLOAD = new byte[0];
+  static final int COUNTABLE_INVALID = 0;
+  static final int COUNTABLE_ROW = 1;
+  static final int COUNTABLE_NOT_ROW = 2;
 
   public long txnId;     // 濮嬬粓琛ㄧず鍐欏叆浜嬪姟
   public long commitTs;  // 0 = 鏈彁浜?
@@ -74,6 +77,28 @@ public class RowValue {
     metadata.deleted = data[OFFSET_DELETED] != 0;
     metadata.payloadLength = readInt(data, OFFSET_PAYLOAD_LENGTH);
     return metadata;
+  }
+
+  /**
+   * 只判断 encoded row value 是否可被 COUNT 计入，不创建 metadata 对象。
+   *
+   * <p>range count 只关心 value 是否有效、是否删除、payload 是否存在。该入口复用固定磁盘
+   * offset，避免在每个候选 committed 版本上分配 {@link Metadata}。返回三态而不是 boolean，
+   * 是为了保留旧逻辑中“无效 value 继续尝试更旧版本”的行为。</p>
+   *
+   * @param data encoded row value
+   * @return {@link #COUNTABLE_INVALID}、{@link #COUNTABLE_ROW} 或
+   *     {@link #COUNTABLE_NOT_ROW}
+   */
+  static int countableState(byte[] data) {
+    if (data == null || data.length == 0) {
+      return COUNTABLE_INVALID;
+    }
+    if (data[OFFSET_DELETED] != 0) {
+      return COUNTABLE_NOT_ROW;
+    }
+    return readInt(data, OFFSET_PAYLOAD_LENGTH) > 0
+        ? COUNTABLE_ROW : COUNTABLE_NOT_ROW;
   }
 
   static long commitTs(byte[] data) {

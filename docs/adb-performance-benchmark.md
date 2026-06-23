@@ -4357,3 +4357,58 @@ benchmark：
 - 下一轮高价值方向保持不变：如果继续留在 ADB 仓库内，应拆 `commit/write batch` 与
   range count 外层剩余对象；如果目标是大幅降低 `range_scan/mixed` allocation，需要推进
   ldb raw/reusable cursor 或 segment/block-level count 元数据。
+
+## 第六十八轮：range count metadata 去对象化计划
+
+本轮继续目标第 3/5 项，聚焦 `range_scan/mixed` 中仍然较高的 per-row allocation。第六十七轮后
+`range_scan` 吞吐已经有明显改善，但 allocation 仍约 `84 KB/op`，`mixed` 仍约 `376-379 KB/op`。
+
+复核 `TxnManager.countVisibleRows*` 后确认：
+
+1. count-only 路径已经避免完整 `RowValue.decodeValue(...)`，改用 `RowValue.decodeMetadata(...)`。
+2. 但 `decodeMetadata(...)` 仍会为每个候选 committed 版本创建一个 `RowValue.Metadata` 对象。
+3. range count 实际只需要三态结果：encoded value 无效、可计数、不可计数。
+4. 底层 `VersionScanSource.value()` 仍是 `byte[]` 拷贝语义，因此本轮不能消除 value copy；但可以先去掉
+   count-only 路径上的 metadata 对象。
+
+本轮计划：
+
+1. 在 `RowValue` 增加 package-private 的 countable state 解码入口，用 int 表示无效、可计数、不可计数。
+2. 将 `TxnManager.resolveVisibleCountableInCurrentLogicalRow(...)` 和
+   `resolveVisibleCountableInCurrentRawLogicalRow(...)` 中的 `RowValue.Metadata` 替换为该状态入口。
+3. 保留 `decodeMetadata(...)` 供已有测试和其它诊断路径使用，避免扩大变更面。
+4. 补充 `RowValueTest`，覆盖 active row、deleted row、empty/null encoded value 的 countable state。
+
+实现结果：
+
+1. `RowValue` 增加 `COUNTABLE_INVALID` / `COUNTABLE_ROW` / `COUNTABLE_NOT_ROW`
+   三态常量和 `countableState(byte[])`。
+2. `TxnManager` 的 raw 与兼容 range count 可见性判断改为使用三态状态；无效 encoded value 仍继续尝试更旧版本，
+   保持原语义。
+3. `RowValue.decodeMetadata(...)` 保留不变，供已有测试和其它调用继续使用。
+4. `RowValueTest.shouldDecodeCountableStateWithoutMetadataObject` 覆盖 active、deleted、empty、null/empty
+   encoded value。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | 本轮前 ops/s | 本轮后 ops/s | 本轮前 p99 us | 本轮后 p99 us | 本轮前 alloc bytes/op | 本轮后 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 12931.03 | 12396.69 | 1055 | 1117 | 84376 | 84374 | `vexra-adb/build/adb-benchmark/count-state-20260623-115217/adb_range_scan.properties` |
+| `mixed` | 8 | 13100.44 | 13452.91 | 6840 | 6279 | 379341 | 377292 | `vexra-adb/build/adb-benchmark/count-state-20260623-115217/adb_mixed.properties` |
+
+结论：
+
+- 本轮去掉了 count-only 路径中的 `RowValue.Metadata` per-version 对象，属于正确方向的小对象收窄。
+- benchmark 没有证明 `range_scan` allocation 明显下降：`range_scan` 基本持平，`mixed` 仅小幅下降约 0.5%。
+- 该结果进一步确认：大头仍在 `VersionScanSource.value()` 字节拷贝、cursor 前进与 LDB/Rocks/Raft scan
+  抽象边界。下一轮如果要继续显著优化 `range_scan/mixed`，应优先推进 ldb raw/reusable cursor；
+  若继续只在 ADB 仓库内做，则应转向 `commit/write batch` 或 segment/block-level count 的设计实现。

@@ -5089,3 +5089,76 @@ Conclusion:
   down `commit/write batch` and the remaining range-count outer-path objects;
   for a large `range_scan/mixed` allocation reduction, move on ldb
   raw/reusable cursors or segment/block-level count metadata.
+
+## Round 68: Range Count Metadata De-objectification Plan
+
+This round continues objective 3/5, focusing on the remaining per-row
+allocation in `range_scan/mixed`. After round 67, `range_scan` throughput moved
+clearly upward, but allocation is still about `84 KB/op`, and `mixed` remains
+around `376-379 KB/op`.
+
+Reviewing `TxnManager.countVisibleRows*` shows:
+
+1. The count-only path already avoids full `RowValue.decodeValue(...)` and uses
+   `RowValue.decodeMetadata(...)`.
+2. `decodeMetadata(...)` still allocates one `RowValue.Metadata` object for
+   each candidate committed version.
+3. Range count only needs three states: invalid encoded value, countable, and
+   non-countable.
+4. The underlying `VersionScanSource.value()` still has `byte[]` copy
+   semantics, so this round cannot remove value copies; it can remove the
+   metadata object from count-only paths first.
+
+Plan:
+
+1. Add a package-private countable-state decode entrypoint to `RowValue`, using
+   ints for invalid, countable, and non-countable states.
+2. Replace `RowValue.Metadata` usage in
+   `TxnManager.resolveVisibleCountableInCurrentLogicalRow(...)` and
+   `resolveVisibleCountableInCurrentRawLogicalRow(...)` with that state
+   entrypoint.
+3. Keep `decodeMetadata(...)` for existing tests and diagnostic-style callers,
+   avoiding broader churn.
+4. Extend `RowValueTest` to cover active rows, deleted rows, and empty/null
+   encoded values for the countable state.
+
+Implementation result:
+
+1. `RowValue` now has `COUNTABLE_INVALID` / `COUNTABLE_ROW` /
+   `COUNTABLE_NOT_ROW` constants and `countableState(byte[])`.
+2. Raw and compatibility range-count visibility checks in `TxnManager` now use
+   that tri-state result. Invalid encoded values still continue to older
+   versions, preserving the previous behavior.
+3. `RowValue.decodeMetadata(...)` remains unchanged for existing tests and
+   other callers.
+4. `RowValueTest.shouldDecodeCountableStateWithoutMetadataObject` covers active
+   rows, deleted rows, empty rows, and null/empty encoded values.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.RowValueTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | Before ops/s | After ops/s | Before p99 us | After p99 us | Before alloc bytes/op | After alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 12931.03 | 12396.69 | 1055 | 1117 | 84376 | 84374 | `vexra-adb/build/adb-benchmark/count-state-20260623-115217/adb_range_scan.properties` |
+| `mixed` | 8 | 13100.44 | 13452.91 | 6840 | 6279 | 379341 | 377292 | `vexra-adb/build/adb-benchmark/count-state-20260623-115217/adb_mixed.properties` |
+
+Conclusion:
+
+- This round removes the per-version `RowValue.Metadata` object from
+  count-only paths. It is a small object-boundary improvement in the right
+  direction.
+- The benchmark does not prove a meaningful `range_scan` allocation reduction:
+  `range_scan` is effectively flat, and `mixed` is down only about 0.5%.
+- This confirms that the remaining large cost is in `VersionScanSource.value()`
+  byte copies, cursor advancement, and the LDB/Rocks/Raft scan abstraction
+  boundary. The next high-impact `range_scan/mixed` optimization should move on
+  ldb raw/reusable cursors; if staying only in the ADB repository, shift to
+  `commit/write batch` or segment/block-level count design and implementation.

@@ -76,4 +76,34 @@ class RowValueTest {
     assertEquals(0, metadata.payloadLength);
     assertFalse(metadata.hasPayload());
   }
+
+  @Test
+  void shouldDecodeCountableStateWithoutMetadataObject() {
+    RowValue active = new RowValue();
+    active.txnId = 1L;
+    active.commitTs = 2L;
+    active.deleted = false;
+    active.payload = RowCodec.encode(ValueVarchar.get("active"));
+
+    RowValue deleted = new RowValue();
+    deleted.txnId = 1L;
+    deleted.commitTs = 2L;
+    deleted.deleted = true;
+    deleted.payload = active.payload;
+
+    RowValue empty = new RowValue();
+    empty.txnId = 1L;
+    empty.commitTs = 2L;
+    empty.deleted = false;
+    empty.payload = new byte[0];
+
+    assertEquals(RowValue.COUNTABLE_ROW,
+        RowValue.countableState(RowValue.encodeValue(active)));
+    assertEquals(RowValue.COUNTABLE_NOT_ROW,
+        RowValue.countableState(RowValue.encodeValue(deleted)));
+    assertEquals(RowValue.COUNTABLE_NOT_ROW,
+        RowValue.countableState(RowValue.encodeValue(empty)));
+    assertEquals(RowValue.COUNTABLE_INVALID, RowValue.countableState(null));
+    assertEquals(RowValue.COUNTABLE_INVALID, RowValue.countableState(new byte[0]));
+  }
 }
