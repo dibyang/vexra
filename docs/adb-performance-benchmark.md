@@ -3747,3 +3747,65 @@ snapshot 安装前的旧值。
   继续向“可控失效的局部优化开关”推进。
 - 若要把该收益安全默认化，仍需要覆盖直接 `DbStore.restore(...)` 调用方、生产 region snapshot installer
   的构造注入，以及外部 store 内容替换通知；否则默认跳过物理版本校验仍有 stale cache 风险。
+
+## 第五十八轮：prepared 单列点查直接值缓存
+
+本轮继续推进目标第 3 项 `TxnMap2.getVisible / visible row` 路径优化。上一轮 ADB/H2 对比显示，
+单线程 `point_lookup` 下 ADB 仍落后 H2；而 `SELECT NAME FROM TEST WHERE ID = ?` 这类 prepared
+单列点查在表内容不变时，会反复进入 `TxnMap2.getVisibleColumn(...)`，即使命中上层解码缓存，也仍需
+先通过可见性读取拿到 commitTs。
+
+本轮改动：
+
+1. `TxnManager.VisibleColumnValue` 新增 `latestCommitted()` 标记。`getVisibleCommittedColumn(...)`
+   如果为了当前事务快照跳过了更新的 committed version，会返回 `latestCommitted=false`，防止旧快照读到的
+   旧值被上层当作“当前表最新值”直接缓存。
+2. `AdbPreparedPointLookupPlan` 对单列 prepared 点查新增直接值缓存。缓存项同时记录 rowId、commitTs、
+   H2 `AdbTable.getMaxDataModificationId()` 和 `latestCommitted`；只有表 modification id 未变化且缓存值来自
+   最新 committed version 时，才跳过 `TxnMap2.getVisibleColumn(...)` 直接构造 ResultSet。
+3. 当同一个点查 plan 观察到表 modification id 多次变化时，会自适应禁用直接值缓存，避免 mixed workload
+   中持续写入导致低命中缓存反复拖累。默认阈值为
+   `-Dadb.pointLookup.valueCacheModificationChangeLimit=8`。
+4. 表 modification id 变化时会清空该 plan 的解码和值缓存，避免 update/delete 后继续使用旧值。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPointLookupDecodeCacheSeesCommittedUpdateAndDelete --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldDecodeVisibleColumnFromCommittedStoreValue --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldMarkVisibleColumnAsNotLatestWhenNewerVersionExists --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_value_cache_adaptive_20260623-084423.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_value_cache_adaptive-20260623-084423/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_value_cache_adaptive_20260623-084423.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_value_cache_adaptive-20260623-084423/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+对照禁用直接值缓存：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dadb.pointLookup.valueCacheModificationChangeLimit=0 -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_value_cache_disabled_20260623-084504.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_value_cache_disabled-20260623-084504/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+结果：
+
+| workload | ops/s | p99 us | 结果文件 |
+| --- | ---: | ---: | --- |
+| `point_lookup` | 2744.74 | 1401 | `vexra-adb/build/adb-benchmark/adb_point_lookup_value_cache_adaptive_20260623-084423.properties` |
+| `mixed`，自适应直接值缓存 | 2901.35 | 8376 | `vexra-adb/build/adb-benchmark/adb_mixed_value_cache_adaptive_20260623-084423.properties` |
+| `mixed`，禁用直接值缓存 | 2857.14 | 8270 | `vexra-adb/build/adb-benchmark/adb_mixed_value_cache_disabled_20260623-084504.properties` |
+
+结论：
+
+- 单线程 `point_lookup` 从第五十六轮 `1321.00 ops/s` 提升到 `2744.74 ops/s`，约 `+107.8%`；
+  相比本轮前 ADB/H2 对比里的 ADB `1100.51 ops/s`，约 `+149.4%`。
+- 相比同一轮 H2 点查样本 `1528.27 ops/s`，ADB 当前点查约 `1.80x`。这说明单列 prepared 点查的外层
+  可见性边界确实是高价值优化点。
+- `mixed` 本轮样本低于第五十六轮 `3205.13 ops/s`，但自适应与显式禁用直接值缓存的结果接近
+  (`2901.35` vs `2857.14 ops/s`)，暂不能证明该优化是 mixed 回落主因。mixed 仍需继续针对写入入口、
+  range count 和事务边界做后续优化。

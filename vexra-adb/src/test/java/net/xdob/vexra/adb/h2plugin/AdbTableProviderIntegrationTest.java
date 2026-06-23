@@ -1133,7 +1133,9 @@ class AdbTableProviderIntegrationTest {
                     .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
                     .snapshot();
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
-                    "ADB_POINT_LOOKUP_DECODE_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+                    "ADB_POINT_LOOKUP_VALUE_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+            Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
+                    "ADB_POINT_LOOKUP_VALUE_CACHE_MISS"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_POINT_LOOKUP_VISIBLE_ROW"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(

@@ -185,6 +185,34 @@ class TxnManagerVisibleRowFastPathTest {
     }
   }
 
+  /**
+   * 验证单列快路径在跳过更新版本时不会把旧快照值标记为最新 committed 值。
+   */
+  @Test
+  void shouldMarkVisibleColumnAsNotLatestWhenNewerVersionExists()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "visible-column-not-latest").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      RowKey key = RowKey.of(TabId.of(1, 0L), 1L);
+
+      putCommittedRow(store, key, 10L, 1L, "old-name");
+      putCommittedRow(store, key, 20L, 1L, "new-name");
+
+      TxnManager.VisibleColumnValue oldVisible =
+          manager.getVisibleColumn(new Transaction2(1L, 15L), key, 1);
+      TxnManager.VisibleColumnValue latestVisible =
+          manager.getVisibleColumn(new Transaction2(2L, 25L), key, 1);
+
+      assertNotNull(oldVisible);
+      assertEquals("old-name", oldVisible.value().getString());
+      assertTrue(!oldVisible.latestCommitted());
+      assertNotNull(latestVisible);
+      assertEquals("new-name", latestVisible.value().getString());
+      assertTrue(latestVisible.latestCommitted());
+    }
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)

@@ -1143,6 +1143,7 @@ public class TxnManager {
   private VisibleColumnValue getVisibleCommittedColumn(Transaction2 txn,
       RowKey rowKey, int columnId) throws SQLException {
     byte[] prefix = rowKey.versionScanPrefixBytes();
+    boolean latestCommitted = true;
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
       scan.seekToRangeStart(prefix, null);
@@ -1162,6 +1163,7 @@ public class TxnManager {
 
         long commitTs = rawCommitTs(rawKey);
         if (commitTs > txn.getStartTs()) {
+          latestCommitted = false;
           scan.advance();
           continue;
         }
@@ -1177,7 +1179,7 @@ public class TxnManager {
         }
         Value value = RowCodec.decodeColumn(encoded, RowValue.payloadOffset(),
             payloadLength, columnId);
-        return new VisibleColumnValue(commitTs, value);
+        return new VisibleColumnValue(commitTs, value, latestCommitted);
       }
       return null;
     } catch (Exception e) {
@@ -1195,7 +1197,7 @@ public class TxnManager {
       return null;
     }
     return new VisibleColumnValue(rowValue.commitTs,
-        RowCodec.decodeColumn(rowValue.payload, columnId));
+        RowCodec.decodeColumn(rowValue.payload, columnId), true);
   }
 
   private void recordReadVersion(Transaction2 txn, DataKey key, long version) {
@@ -1498,10 +1500,13 @@ public class TxnManager {
   public static final class VisibleColumnValue {
     private final long commitTs;
     private final Value value;
+    private final boolean latestCommitted;
 
-    private VisibleColumnValue(long commitTs, Value value) {
+    private VisibleColumnValue(long commitTs, Value value,
+        boolean latestCommitted) {
       this.commitTs = commitTs;
       this.value = value;
+      this.latestCommitted = latestCommitted;
     }
 
     public long commitTs() {
@@ -1510,6 +1515,10 @@ public class TxnManager {
 
     public Value value() {
       return value;
+    }
+
+    public boolean latestCommitted() {
+      return latestCommitted;
     }
   }
 

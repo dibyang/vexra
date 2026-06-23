@@ -4348,3 +4348,77 @@ Conclusion:
   `DbStore.restore(...)` callers, production region snapshot installer
   injection, and external store replacement notifications; otherwise skipping
   physical version validation by default still risks stale cache reads.
+
+## Round 58: Direct Value Cache for Prepared Single-Column Point Lookup
+
+This round continues objective item 3, `TxnMap2.getVisible / visible row`
+optimization. The latest ADB/H2 comparison showed ADB still behind H2 on
+single-thread `point_lookup`. For prepared single-column lookups such as
+`SELECT NAME FROM TEST WHERE ID = ?`, even a decoded-value cache hit still had
+to enter `TxnMap2.getVisibleColumn(...)` first to obtain the visible commitTs.
+
+Changes:
+
+1. `TxnManager.VisibleColumnValue` now exposes `latestCommitted()`.
+   `getVisibleCommittedColumn(...)` returns `latestCommitted=false` when it had
+   to skip a newer committed version for the current transaction snapshot. This
+   prevents old snapshot reads from being cached as the latest table value by
+   upper layers.
+2. `AdbPreparedPointLookupPlan` now has a direct value cache for prepared
+   single-column point lookups. Cache entries record rowId, commitTs,
+   `AdbTable.getMaxDataModificationId()`, and the `latestCommitted` flag. Only
+   entries from the latest committed version, with an unchanged table
+   modification id, can skip `TxnMap2.getVisibleColumn(...)` and build the
+   ResultSet directly.
+3. If one point-lookup plan observes repeated table modification-id changes, it
+   adaptively disables the direct value cache to avoid low-hit cache checks in
+   mixed workloads with continuous writes. The default threshold is
+   `-Dadb.pointLookup.valueCacheModificationChangeLimit=8`.
+4. When the table modification id changes, the plan clears its decoded/value
+   caches so update/delete paths cannot reuse old values.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPointLookupDecodeCacheSeesCommittedUpdateAndDelete --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedPrimaryKeyLookupUsesAdbDriverFastPath --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldDecodeVisibleColumnFromCommittedStoreValue --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldMarkVisibleColumnAsNotLatestWhenNewerVersionExists --rerun-tasks
+```
+
+Result: passed.
+
+Benchmarks:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=point_lookup -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=1 -PadbBenchmarkTransactionBatchSize=1 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_point_lookup_value_cache_adaptive_20260623-084423.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_point_lookup_value_cache_adaptive-20260623-084423/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_value_cache_adaptive_20260623-084423.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_value_cache_adaptive-20260623-084423/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Direct-value-cache disabled comparison:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkJvmArgs=-Dadb.pointLookup.valueCacheModificationChangeLimit=0 -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=3000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=false -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_value_cache_disabled_20260623-084504.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_value_cache_disabled-20260623-084504/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Results:
+
+| workload | ops/s | p99 us | Result file |
+| --- | ---: | ---: | --- |
+| `point_lookup` | 2744.74 | 1401 | `vexra-adb/build/adb-benchmark/adb_point_lookup_value_cache_adaptive_20260623-084423.properties` |
+| `mixed`, adaptive direct value cache | 2901.35 | 8376 | `vexra-adb/build/adb-benchmark/adb_mixed_value_cache_adaptive_20260623-084423.properties` |
+| `mixed`, direct value cache disabled | 2857.14 | 8270 | `vexra-adb/build/adb-benchmark/adb_mixed_value_cache_disabled_20260623-084504.properties` |
+
+Conclusion:
+
+- Single-thread `point_lookup` improved from Round 56's `1321.00 ops/s` to
+  `2744.74 ops/s`, about `+107.8%`. Compared with the latest pre-change ADB/H2
+  comparison ADB sample at `1100.51 ops/s`, the gain is about `+149.4%`.
+- Compared with the same H2 point-lookup sample at `1528.27 ops/s`, current ADB
+  point lookup is about `1.80x`. This confirms that the single-column prepared
+  point-lookup visibility boundary was a high-value optimization point.
+- This round's `mixed` sample is below Round 56's `3205.13 ops/s`, but the
+  adaptive and explicitly disabled direct-value-cache runs are close
+  (`2901.35` vs `2857.14 ops/s`). This does not prove the new cache is the cause
+  of the mixed drop. Mixed still needs continued work on write entry, range
+  count, and transaction-boundary costs.
