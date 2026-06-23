@@ -1,0 +1,119 @@
+name: Bug report
+description: Report a reproducible problem in Vexra
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈问题。请尽量提供可复现信息，安全漏洞请不要在公开 issue 中披露细节。
+
+        If this may be a security vulnerability, do not disclose exploit details in a public issue.
+  - type: input
+    id: version
+    attributes:
+      label: Vexra version or commit
+      description: Provide the release version, dependency coordinates, branch, or commit SHA.
+      placeholder: "main @ abc1234, or net.xdob:vexra-*:x.y.z"
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected module
+      description: Select the closest module or component.
+      options:
+        - vexra-adb
+        - vexra-client
+        - vexra-common
+        - vexra-grpc
+        - vexra-netty
+        - vexra-proto
+        - vexra-rmap
+        - vexra-server
+        - vexra-server-api
+        - vexra-server-sm
+        - metrics
+        - build or release
+        - documentation
+        - unsure
+    validations:
+      required: true
+  - type: input
+    id: integration-path
+    attributes:
+      label: Usage path or integration layer
+      description: Tell us whether this is direct library usage, ADB/JDBC, gRPC, Netty, a state-machine plugin, tests, or another integration layer.
+      placeholder: "ADB/JDBC via vexra-adb, direct Raft client API, custom SMPlugin, etc."
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened? Include error messages, stack traces, logs, or corrupted state symptoms.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: Prefer a small test case, command sequence, or repository that reproduces the issue.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Runtime environment
+      description: Include JDK, OS, Gradle version, transport, storage dependency version, cluster size, and relevant configuration.
+      placeholder: |
+        JDK:
+        OS:
+        Gradle:
+        Transport:
+        Cluster nodes:
+        LDB/storage version:
+    validations:
+      required: true
+  - type: textarea
+    id: concurrency-storage
+    attributes:
+      label: Concurrency, storage, or transaction context
+      description: For Raft, ADB, storage, cache, index, transaction, or timeout issues, include thread counts, iteration counts, failure frequency, first failure stack, and whether transactions/cache/index/browser paths are involved.
+      placeholder: "Thread count, iteration count, failure rate, transaction/cache/index path, first failure stack..."
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or stack traces
+      description: Paste the smallest useful log excerpt. Redact secrets before posting.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have checked the latest branch or release relevant to this issue.
+          required: true
+        - label: I included a minimal reproducer or explained why one cannot be provided.
+          required: true
+        - label: I removed secrets, tokens, production credentials, and private repository URLs from the report.
+          required: true
+        - label: This report does not disclose an unpatched security vulnerability.
+          required: true

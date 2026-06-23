@@ -68,6 +68,7 @@ LDB 自身测试应在独立 LDB 项目中执行；Vexra 侧重点验证 ADB 与
 - [项目设计文档](docs/project-design.md)
 - [Project Design Document](docs/project-design.en.md)
 - [开源发布合规清单](docs/open-source-compliance.md)
+- [Bug 提交指南](docs/bug-reporting.md)
 - [贡献指南](CONTRIBUTING.md)
 - [安全策略](SECURITY.md)
 

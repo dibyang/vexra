@@ -65,11 +65,12 @@ LDB's own tests should run in the independent LDB project. In Vexra, testing sho
 
 ## Documentation
 
-- [项目设计文档](docs/project-design.md)
+- [Project design document](docs/project-design.md)
 - [Project Design Document](docs/project-design.en.md)
 - [Open source compliance checklist](docs/open-source-compliance.md)
-- [Contributing guide](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
+- [Bug reporting guide](docs/en/bug-reporting.md)
+- [Contributing guide](docs/en/CONTRIBUTING.md)
+- [Security policy](docs/en/SECURITY.md)
 
 LDB design, reliability plans, and API compatibility notes are now maintained in the independent LDB project.
 

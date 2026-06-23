@@ -1,6 +1,8 @@
 # 贡献指南
 
-感谢关注 Vexra。提交贡献前，请先阅读本指南和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
+简体中文 | [English](docs/en/CONTRIBUTING.md)
+
+感谢关注 Vexra。提交贡献前，请先阅读本指南、[Bug 提交指南](docs/bug-reporting.md) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 ## 开发环境
 
@@ -8,6 +10,12 @@
 - 使用仓库自带 Gradle Wrapper。
 - 所有文档、源码注释和项目说明文件保持 UTF-8。
 - 中文为项目说明和注释的默认语言，公开接口文档可按需要补充英文说明。
+
+## 反馈与沟通
+
+- 普通缺陷请使用 GitHub 的 Bug report 表单，并按 [Bug 提交指南](docs/bug-reporting.md) 提供可复现信息。
+- 安全漏洞请按 [安全策略](SECURITY.md) 私下报告，不要在公开 issue 中披露利用细节。
+- 功能建议请使用 Feature request 模板，说明使用场景、期望行为和兼容性影响。
 
 ## 本地验证
 
@@ -24,6 +32,7 @@
 
 - 保持改动聚焦，不混入无关格式化。
 - 涉及接口、协议、磁盘格式、数据库结构、状态机流程、迁移或兼容性行为时，先补充设计说明或变更说明。
+- Bug 修复应尽量包含回归测试；如果暂时无法补测试，请说明复现方式、验证命令和剩余风险。
 - 新增第三方源码、资源或生成物时，必须同步补充许可证、来源、修改记录和 NOTICE/第三方清单。
 - 不提交密钥、令牌、账号密码、签名文件、生产配置或私有仓库地址。
 - Java 代码保持 JDK 8 兼容。

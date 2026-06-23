@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/dibyang/vexra/security/advisories/new
+    about: Please report suspected vulnerabilities privately. If private reporting is unavailable, open a public placeholder without exploit details.
+  - name: Bug reporting guide
+    url: https://github.com/dibyang/vexra/blob/master/docs/bug-reporting.md
+    about: Read what information helps maintainers reproduce and triage a bug.
