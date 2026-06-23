@@ -3976,3 +3976,56 @@ benchmark：
 结论：该改动主要修复带 intent 的 correctness 与异常扫描放大；常规无 intent benchmark
 没有证明吞吐会大幅提升，也没有出现明显功能回归。下一步若继续压低 allocation，仍需要
 `vexra-ldb` raw/reusable cursor 或 ADB segment/block-level count 元数据。
+
+## 第六十二轮：prepared setter 记录复用计划
+
+本轮继续目标第 4 项 `BULK_ADD_ROW / ADD_ROW`，同时覆盖第 3/5 项中
+`PreparedStatement` fast path 的外层对象边界。复核当前写入入口后确认：
+
+1. 普通 `INSERT INTO ... VALUES (?, ?)` 已经由 `AdbPreparedInsertPlan`
+   进入 `AdbTable.bulkInsertAppendRow(...)` / `bulkInsertAppendRows(...)`。
+2. 多行 bulk、append high-water、批量唯一性检查、二级索引批量写入等核心语义已经实现。
+3. 之前“跳过 savepoint”的实验对纯 insert 有利，但 mixed 负收益，不能作为保留方向。
+4. `AdbPreparedStatementProxy` 仍在每次 `setXxx(...)` 时创建 `SetterCall`，
+   并复制参数数组；当 ADB insert / point lookup / range count fast path 命中时，
+   这些对象不会被回放到 h2db delegate，属于可安全减少的 per-operation 小对象。
+
+本轮改动：
+
+1. 为每个参数槽复用一个可变 setter 记录对象，避免每次 setter 调用都新建 `SetterCall`。
+2. 对常见 setter（如 `setLong`、`setInt`、`setString`、`setBoolean`、`setObject`、
+   `setNull`）保存参数编号和值，fallback 时直接调用 delegate 的强类型方法。
+3. 未覆盖的 setter 继续保留反射回放，并复制参数数组，保持兼容边界。
+4. 保持 `clearParameters()`、fallback execution、`unwrap/isWrapperFor` 语义不变。
+
+新增测试：
+
+- `AdbTableProviderIntegrationTest.preparedInsertReplaysLatestSetterValuesAfterClearParameters`
+  覆盖先设置旧参数、调用 `clearParameters()`、再设置新参数并执行的场景，防止 setter
+  记录复用后把旧值带入下一次 fast path。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 319.01 | 5818 | 34714 | `vexra-adb/build/adb-benchmark/insert_setter_reuse_20260623.properties` |
+| `point_lookup` | 1 | 2181.82 | 1384 | 8578 | `vexra-adb/build/adb-benchmark/point_lookup_setter_reuse_20260623.properties` |
+| `mixed` | 8 | 2156.72 | 12725 | 387656 | `vexra-adb/build/adb-benchmark/mixed_setter_reuse_20260623.properties` |
+
+结论：
+
+- 该优化不改变 MVCC、写入原子性、唯一性检查或 commit 行为，主要降低 prepared fast path
+  命中时的 setter 侧对象分配。
+- `point_lookup` allocation 相比第六十轮样本 `10410 B/op` 降到 `8578 B/op`，说明 setter
+  侧分配确实被压低；吞吐基本持平。
+- `mixed` allocation 相比第六十一轮样本 `388470 B/op` 小幅降到 `387656 B/op`，但吞吐短跑没有
+  正向证据。本轮应视为对象分配收窄，而不是 mixed 吞吐主优化。
+- `insert` 本轮吞吐明显偏低，判断受文件库 flush / 环境波动影响较大；只把 allocation 作为参考。

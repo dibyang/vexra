@@ -194,6 +194,41 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedInsertReplaysLatestSetterValuesAfterClearParameters() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-prepared-clear-parameters").toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO TEST(ID, NAME) VALUES (?, ?)")) {
+                    insert.setLong(1, 1L);
+                    insert.setString(2, "old");
+                    insert.clearParameters();
+                    insert.setLong(1, 2L);
+                    insert.setString(2, "new");
+                    Assertions.assertEquals(1, insert.executeUpdate());
+                }
+                Assertions.assertEquals("new", singleString(statement,
+                        "SELECT NAME FROM TEST WHERE ID = 2"));
+                Assertions.assertEquals(1L, countRows(statement));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void statementLiteralMultiValuesInsertUsesAdbDriverBulkPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

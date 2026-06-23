@@ -84,13 +84,18 @@ final class AdbPreparedStatementProxy {
         parameterSet[parameter] = true;
         parameters[parameter] = "setNull".equals(name) ? null
             : args.length > 1 ? args[1] : null;
-        deferredSetters[parameter] = new SetterCall(method, args);
+        SetterCall setter = deferredSetters[parameter];
+        if (setter == null) {
+          setter = new SetterCall();
+          deferredSetters[parameter] = setter;
+        }
+        setter.capture(name, method, args);
         return null;
       }
       if ("clearParameters".equals(name)) {
         java.util.Arrays.fill(parameters, null);
         java.util.Arrays.fill(parameterSet, false);
-        java.util.Arrays.fill(deferredSetters, null);
+        clearDeferredSetters();
         delegateMayHaveParameters = false;
         return invokeDelegate(method, args);
       }
@@ -163,7 +168,7 @@ final class AdbPreparedStatementProxy {
     private void replayDeferredSetters() throws Throwable {
       boolean hasDeferredSetter = false;
       for (SetterCall setter : deferredSetters) {
-        if (setter != null) {
+        if (setter != null && setter.isActive()) {
           hasDeferredSetter = true;
           break;
         }
@@ -175,11 +180,19 @@ final class AdbPreparedStatementProxy {
         delegate.clearParameters();
       }
       for (SetterCall setter : deferredSetters) {
-        if (setter != null) {
+        if (setter != null && setter.isActive()) {
           setter.invoke(delegate);
         }
       }
       delegateMayHaveParameters = true;
+    }
+
+    private void clearDeferredSetters() {
+      for (SetterCall setter : deferredSetters) {
+        if (setter != null) {
+          setter.clear();
+        }
+      }
     }
 
     private Object invokeDelegate(Method method, Object[] args) throws Throwable {
@@ -230,15 +243,154 @@ final class AdbPreparedStatementProxy {
 
   private static final class SetterCall {
 
-    private final Method method;
-    private final Object[] args;
+    private static final int NONE = 0;
+    private static final int REFLECTIVE = 1;
+    private static final int LONG = 2;
+    private static final int INT = 3;
+    private static final int STRING = 4;
+    private static final int BOOLEAN = 5;
+    private static final int DOUBLE = 6;
+    private static final int FLOAT = 7;
+    private static final int OBJECT = 8;
+    private static final int NULL = 9;
+    private static final int BIG_DECIMAL = 10;
+    private static final int BYTES = 11;
 
-    private SetterCall(Method method, Object[] args) {
+    private int kind;
+    private int parameter;
+    private Object value;
+    private int sqlType;
+    private String typeName;
+    private Method method;
+    private Object[] args;
+
+    private boolean isActive() {
+      return kind != NONE;
+    }
+
+    private void clear() {
+      kind = NONE;
+      parameter = 0;
+      value = null;
+      sqlType = 0;
+      typeName = null;
+      method = null;
+      args = null;
+    }
+
+    /**
+     * 记录最近一次参数 setter 调用。
+     *
+     * <p>ADB fast path 命中时这些 setter 不会回放到 h2db delegate，因此常见 setter
+     * 只保存参数编号和值，避免每次调用都分配反射回放对象和参数数组副本。无法直接安全回放的
+     * setter 仍保留原反射路径。</p>
+     */
+    private void capture(String name, Method method, Object[] args) {
+      clear();
+      parameter = ((Integer) args[0]).intValue();
+      if ("setLong".equals(name) && args.length == 2
+          && args[1] instanceof Long) {
+        kind = LONG;
+        value = args[1];
+        return;
+      }
+      if ("setInt".equals(name) && args.length == 2
+          && args[1] instanceof Integer) {
+        kind = INT;
+        value = args[1];
+        return;
+      }
+      if ("setString".equals(name) && args.length == 2) {
+        kind = STRING;
+        value = args[1];
+        return;
+      }
+      if ("setBoolean".equals(name) && args.length == 2
+          && args[1] instanceof Boolean) {
+        kind = BOOLEAN;
+        value = args[1];
+        return;
+      }
+      if ("setDouble".equals(name) && args.length == 2
+          && args[1] instanceof Double) {
+        kind = DOUBLE;
+        value = args[1];
+        return;
+      }
+      if ("setFloat".equals(name) && args.length == 2
+          && args[1] instanceof Float) {
+        kind = FLOAT;
+        value = args[1];
+        return;
+      }
+      if ("setObject".equals(name) && args.length == 2) {
+        kind = OBJECT;
+        value = args[1];
+        return;
+      }
+      if ("setNull".equals(name) && args.length >= 2
+          && args[1] instanceof Integer) {
+        kind = NULL;
+        sqlType = ((Integer) args[1]).intValue();
+        typeName = args.length >= 3 ? (String) args[2] : null;
+        return;
+      }
+      if ("setBigDecimal".equals(name) && args.length == 2) {
+        kind = BIG_DECIMAL;
+        value = args[1];
+        return;
+      }
+      if ("setBytes".equals(name) && args.length == 2) {
+        kind = BYTES;
+        value = args[1];
+        return;
+      }
+      kind = REFLECTIVE;
       this.method = method;
       this.args = args == null ? null : args.clone();
     }
 
     private void invoke(PreparedStatement delegate) throws Throwable {
+      switch (kind) {
+        case LONG:
+          delegate.setLong(parameter, ((Long) value).longValue());
+          return;
+        case INT:
+          delegate.setInt(parameter, ((Integer) value).intValue());
+          return;
+        case STRING:
+          delegate.setString(parameter, (String) value);
+          return;
+        case BOOLEAN:
+          delegate.setBoolean(parameter, ((Boolean) value).booleanValue());
+          return;
+        case DOUBLE:
+          delegate.setDouble(parameter, ((Double) value).doubleValue());
+          return;
+        case FLOAT:
+          delegate.setFloat(parameter, ((Float) value).floatValue());
+          return;
+        case OBJECT:
+          delegate.setObject(parameter, value);
+          return;
+        case NULL:
+          if (typeName == null) {
+            delegate.setNull(parameter, sqlType);
+          } else {
+            delegate.setNull(parameter, sqlType, typeName);
+          }
+          return;
+        case BIG_DECIMAL:
+          delegate.setBigDecimal(parameter, (java.math.BigDecimal) value);
+          return;
+        case BYTES:
+          delegate.setBytes(parameter, (byte[]) value);
+          return;
+        case REFLECTIVE:
+          break;
+        default:
+          return;
+      }
       try {
         method.invoke(delegate, args);
       } catch (java.lang.reflect.InvocationTargetException e) {

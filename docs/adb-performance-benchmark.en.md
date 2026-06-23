@@ -4617,3 +4617,71 @@ when intents are present. The common no-intent benchmark path does not show a
 large throughput gain, but it also does not show an obvious functional
 regression. Further allocation reduction still requires a `vexra-ldb`
 raw/reusable cursor or ADB segment/block-level count metadata.
+
+## Round 62: Prepared Setter Recording Reuse Plan
+
+This round continues objective 4 (`BULK_ADD_ROW / ADD_ROW`) and also covers the
+outer `PreparedStatement` object boundary used by objectives 3 and 5. The
+current write path review shows:
+
+1. Plain `INSERT INTO ... VALUES (?, ?)` already reaches
+   `AdbPreparedInsertPlan`, then `AdbTable.bulkInsertAppendRow(...)` /
+   `bulkInsertAppendRows(...)`.
+2. Multi-row bulk insert, append high-water, batched uniqueness checks, and
+   secondary-index bulk writes already exist.
+3. The earlier "skip savepoint" experiment helped pure insert but regressed
+   `mixed`, so it should not be kept.
+4. `AdbPreparedStatementProxy` still creates a new `SetterCall` and clones the
+   setter argument array for every `setXxx(...)` call. When the ADB insert /
+   point-lookup / range-count fast path succeeds, those objects are never
+   replayed to the H2 delegate and are avoidable per-operation allocations.
+
+Changes:
+
+1. Reuse one mutable setter record per parameter slot instead of creating a new
+   `SetterCall` on every setter call.
+2. Store common setters such as `setLong`, `setInt`, `setString`, `setBoolean`,
+   `setObject`, and `setNull` as parameter index plus value, and replay them
+   with direct delegate calls on fallback.
+3. Keep reflective replay with cloned arguments for unsupported setters.
+4. Preserve `clearParameters()`, fallback execution, `unwrap`, and
+   `isWrapperFor` behavior.
+
+New test:
+
+- `AdbTableProviderIntegrationTest.preparedInsertReplaysLatestSetterValuesAfterClearParameters`
+  covers setting old parameters, calling `clearParameters()`, setting new
+  parameters, and then executing the fast path. This prevents reused setter
+  records from leaking old values into the next execution.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 319.01 | 5818 | 34714 | `vexra-adb/build/adb-benchmark/insert_setter_reuse_20260623.properties` |
+| `point_lookup` | 1 | 2181.82 | 1384 | 8578 | `vexra-adb/build/adb-benchmark/point_lookup_setter_reuse_20260623.properties` |
+| `mixed` | 8 | 2156.72 | 12725 | 387656 | `vexra-adb/build/adb-benchmark/mixed_setter_reuse_20260623.properties` |
+
+Conclusion:
+
+- This does not change MVCC, write atomicity, uniqueness checks, or commit
+  behavior. It mainly reduces setter-side allocation when prepared fast paths
+  hit.
+- `point_lookup` allocation dropped from the round-60 sample `10410 B/op` to
+  `8578 B/op`, showing that the setter-side allocation was reduced while
+  throughput stayed roughly flat.
+- `mixed` allocation dropped slightly from the round-61 sample `388470 B/op` to
+  `387656 B/op`, but the short throughput run did not show positive evidence.
+  This round should be treated as allocation narrowing, not a main `mixed`
+  throughput win.
+- The `insert` throughput sample was much lower than surrounding runs and is
+  likely dominated by file-store flush / environment variance; use only its
+  allocation number as a reference.
