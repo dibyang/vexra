@@ -126,6 +126,49 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void preparedMultiValuesInsertKeepsAppendFastPathAcrossBatches() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-driver-prepared-bulk-repeat")
+                .toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                connection.setAutoCommit(false);
+                try (PreparedStatement insert = connection.prepareStatement(
+                        "INSERT INTO TEST(ID, NAME) VALUES (?, ?), (?, ?), (?, ?)")) {
+                    for (int batch = 0; batch < 2; batch++) {
+                        long firstId = 1L + batch * 3L;
+                        insert.setLong(1, firstId);
+                        insert.setString(2, "n" + firstId);
+                        insert.setLong(3, firstId + 1L);
+                        insert.setString(4, "n" + (firstId + 1L));
+                        insert.setLong(5, firstId + 2L);
+                        insert.setString(6, "n" + (firstId + 2L));
+                        Assertions.assertEquals(3, insert.executeUpdate());
+                    }
+                }
+                connection.commit();
+                Assertions.assertEquals("n1,n2,n3,n4,n5,n6", csv(statement,
+                        "SELECT NAME FROM TEST ORDER BY ID"));
+            }
+
+            AdbSqlDiagnosticSnapshot snapshot = AdbSqlDiagnosticsRegistry
+                    .get(AdbSqlDiagnosticsRegistry.scope(databasePath))
+                    .snapshot();
+            Assertions.assertTrue(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_BULK_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+            Assertions.assertFalse(snapshot.getOperationStats().containsKey(
+                    "ADB_TABLE_ADD_ROW TEST"), snapshot.getOperationStats().keySet().toString());
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void preparedSingleValuesInsertUsesAdbDriverBulkPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

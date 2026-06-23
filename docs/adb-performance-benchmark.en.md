@@ -5254,3 +5254,86 @@ Conclusion:
 - If continuing objective 4 next, the higher-value work is merging uniqueness
   checks within a multi-row transaction, expanding append-only batch writes,
   and reducing per-row row/index key construction.
+
+## Round 70: Multi-row Append-safe Bulk Insert Without Savepoint Plan
+
+This round continues objective 4. Round 69 showed that empty-collection
+allocation is not the main `insert` cost. Reviewing
+`AdbTable.bulkInsertAppendRows(...)` shows that multi-row bulk insert already
+has a batch-level `canSkipAppendUniqueChecks(...)`, but still creates a
+savepoint even when the table has no secondary index and the whole batch is
+append-safe. Single-row append-safe insert already has a no-savepoint fast path,
+so this round extends that strategy to multi-row batches.
+
+Compatibility boundary:
+
+1. Only local tables with no secondary index, no region commit coordinator, and
+   a batch whose row ids are append-safe can hit this path.
+2. Before mutating transaction-local state, finish `prepareBulkRow(...)`,
+   in-batch duplicate checking, batch append-safe validation, and `RowKey` /
+   `RowValue` construction.
+3. The hit path does not execute secondary-index logic, so it does not need a
+   rollback boundary. Non-hit cases keep using the existing savepoint branch.
+4. Disk format, commit path, ordinary `ADD_ROW`, secondary-index tables,
+   unordered/duplicate keys, and distributed write semantics stay unchanged.
+
+Plan:
+
+1. Try the multi-row no-savepoint fast path at the start of
+   `bulkInsertAppendRows(...)`.
+2. Add a private `tryBulkInsertAppendRowsWithoutSavepoint(...)` that reuses the
+   existing row-id scan and batch append-safe validation.
+3. On hit, register all rows into the local write-set and advance append
+   high-water once.
+4. Add a prepared multi-values insert regression test covering two consecutive
+   append-safe batches and bulk diagnostics.
+5. Run short `jdbc` insert with `statementBatchSize > 1` and `jdbc_bulk` insert
+   benchmarks to check whether the benefit is real.
+
+Implementation result:
+
+1. `bulkInsertAppendRows(...)` now tries
+   `tryBulkInsertAppendRowsWithoutSavepoint(...)` before creating a savepoint.
+2. The new fast path only hits for tables without secondary indexes and
+   append-safe batches. Non-hit cases keep using the existing savepoint branch.
+3. Before a hit mutates local transaction state, it completes row-id range
+   scanning, duplicate-key checking, batch append validation, and `RowKey` /
+   `RowValue` construction. After that it only registers local write-set
+   entries and advances append high-water once.
+4. The original savepoint branch now reuses `prepareBulkRows(...)`, avoiding
+   duplicate row-id scan logic.
+5. Added
+   `AdbTableProviderIntegrationTest.preparedMultiValuesInsertKeepsAppendFastPathAcrossBatches`,
+   covering two consecutive multi-values prepared insert batches.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertKeepsAppendFastPathAcrossBatches
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| mode | workload | statementBatchSize | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `insert` | 100 | 29126.21 | 31 | 58 | 69 | 3467 | `vexra-adb/build/adb-benchmark/multi-row-no-savepoint-20260623-122614/jdbc_insert_batch100.properties` |
+| `jdbc_bulk` | `insert` | 100 | 230769.23 | 4 | 6 | 7 | 2497 | `vexra-adb/build/adb-benchmark/multi-row-no-savepoint-20260623-122614/jdbc_bulk_insert_batch100.properties` |
+
+Conclusion:
+
+- The multi-row append-safe no-savepoint path shows a clear positive signal for
+  batch writes. The `jdbc_bulk` short run is above the round-39
+  `103448.28 ops/s` sample, and allocation moved from about `2564` down to
+  `2497 bytes/op`.
+- Ordinary JDBC multi-values plus `transactionBatchSize=100` reached
+  `29126.21 ops/s`, in the same band and slightly above the round-37
+  `27272.73 ops/s` sample, so ordinary SQL multi-values routing benefits too.
+- This optimization only covers append-only multi-row batches without secondary
+  indexes. Secondary-index tables, unordered/duplicate keys, and distributed
+  writes keep the conservative path.
+- The next high-value objective-4 work is reducing `RowKey` / `RowValue` /
+  `Value[]` construction in batch writes, or batching row-count delta/meta
+  encoding further on the commit side.

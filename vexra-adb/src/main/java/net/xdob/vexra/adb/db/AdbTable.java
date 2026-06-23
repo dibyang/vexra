@@ -711,40 +711,38 @@ public class AdbTable extends TableBase {
     RuntimeException failure = null;
     syncLastModificationIdWithDatabase();
     TxnMap2 map = getTxnMap(session);
+    Integer appendSafeCount;
+    try {
+      appendSafeCount = tryBulkInsertAppendRowsWithoutSavepoint(map, rows);
+    } catch (RuntimeException e) {
+      failure = e;
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
+      throw e;
+    }
+    if (appendSafeCount != null) {
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, null);
+      analyzeIfRequired(session);
+      return appendSafeCount.intValue();
+    }
     long savepointId = System.nanoTime();
     map.setSavepoint(savepointId);
     int count = 0;
     try {
       long txnId = map.getTransaction().getTxnId();
       TabId tabId = map.getTabId(getId());
-      long minRowId = Long.MAX_VALUE;
-      long maxRowId = Long.MIN_VALUE;
-      long previousRowId = Long.MIN_VALUE;
-      boolean hasPreviousRowId = false;
-      boolean strictlyIncreasingRowIds = true;
-      for (Row row : rows) {
-        prepareBulkRow(row);
-        long rowId = row.getKey();
-        if (hasPreviousRowId && rowId <= previousRowId) {
-          strictlyIncreasingRowIds = false;
-        }
-        previousRowId = rowId;
-        hasPreviousRowId = true;
-        minRowId = Math.min(minRowId, rowId);
-        maxRowId = Math.max(maxRowId, rowId);
-      }
-      if (!strictlyIncreasingRowIds) {
+      BulkRowIdRange rowIds = prepareBulkRows(rows);
+      if (!rowIds.strictlyIncreasing) {
         assertNoDuplicateBulkRowIds(rows);
       }
       boolean skipBatchUniqueCheck = map.canSkipAppendUniqueChecks(tabId,
-          minRowId, maxRowId);
+          rowIds.minRowId, rowIds.maxRowId);
       if (skipBatchUniqueCheck) {
         for (Row row : rows) {
           RowKey rowKey = RowKey.of(tabId, row.getKey());
           map.putEncodedAppendAlreadyChecked(rowKey, rowValue(txnId, row),
               null);
         }
-        map.recordAppendHighWater(tabId, maxRowId);
+        map.recordAppendHighWater(tabId, rowIds.maxRowId);
       } else {
         for (Row row : rows) {
           RowKey rowKey = RowKey.of(tabId, row.getKey());
@@ -885,6 +883,51 @@ public class AdbTable extends TableBase {
     return Integer.valueOf(1);
   }
 
+  /**
+   * 尝试执行多行 append-safe 插入的免 savepoint fast path。
+   *
+   * <p>只有本地、无二级索引、整批 rowId 已确认处于 append 区间时才命中。所有可能抛出
+   * SQL 语义异常的准备工作都在写事务本地状态前完成；命中后不再执行二级索引逻辑，因此不需要
+   * savepoint 回滚边界。</p>
+   *
+   * @param map 当前 session 绑定的事务 map
+   * @param rows 待插入行
+   * @return 命中时返回写入行数；不命中时返回 {@code null}
+   */
+  private Integer tryBulkInsertAppendRowsWithoutSavepoint(TxnMap2 map,
+      List<Row> rows) {
+    if (hasAdbSecondaryIndex()) {
+      return null;
+    }
+    long txnId = map.getTransaction().getTxnId();
+    TabId tabId = map.getTabId(getId());
+    BulkRowIdRange rowIds = prepareBulkRows(rows);
+    if (!rowIds.strictlyIncreasing) {
+      assertNoDuplicateBulkRowIds(rows);
+    }
+    if (!map.canSkipAppendUniqueChecks(tabId, rowIds.minRowId,
+        rowIds.maxRowId)) {
+      return null;
+    }
+
+    RowKey[] rowKeys = new RowKey[rows.size()];
+    RowValue[] rowValues = new RowValue[rows.size()];
+    for (int i = 0; i < rows.size(); i++) {
+      Row row = rows.get(i);
+      rowKeys[i] = RowKey.of(tabId, row.getKey());
+      rowValues[i] = rowValue(txnId, row);
+    }
+    try {
+      for (int i = 0; i < rowKeys.length; i++) {
+        map.putEncodedAppendAlreadyChecked(rowKeys[i], rowValues[i], null);
+      }
+    } catch (SQLException e) {
+      throw convertException(e);
+    }
+    map.recordAppendHighWater(tabId, rowIds.maxRowId);
+    return Integer.valueOf(rows.size());
+  }
+
   private boolean hasAdbSecondaryIndex() {
     for (Index index : indexes) {
       if (index instanceof AdbSecondaryIndex) {
@@ -928,6 +971,39 @@ public class AdbTable extends TableBase {
       if (!rowIds.add(rowId)) {
         throw duplicateKey(rowId, null);
       }
+    }
+  }
+
+  private BulkRowIdRange prepareBulkRows(List<Row> rows) {
+    long minRowId = Long.MAX_VALUE;
+    long maxRowId = Long.MIN_VALUE;
+    long previousRowId = Long.MIN_VALUE;
+    boolean hasPreviousRowId = false;
+    boolean strictlyIncreasingRowIds = true;
+    for (Row row : rows) {
+      prepareBulkRow(row);
+      long rowId = row.getKey();
+      if (hasPreviousRowId && rowId <= previousRowId) {
+        strictlyIncreasingRowIds = false;
+      }
+      previousRowId = rowId;
+      hasPreviousRowId = true;
+      minRowId = Math.min(minRowId, rowId);
+      maxRowId = Math.max(maxRowId, rowId);
+    }
+    return new BulkRowIdRange(minRowId, maxRowId, strictlyIncreasingRowIds);
+  }
+
+  private static final class BulkRowIdRange {
+    private final long minRowId;
+    private final long maxRowId;
+    private final boolean strictlyIncreasing;
+
+    private BulkRowIdRange(long minRowId, long maxRowId,
+        boolean strictlyIncreasing) {
+      this.minRowId = minRowId;
+      this.maxRowId = maxRowId;
+      this.strictlyIncreasing = strictlyIncreasing;
     }
   }
 

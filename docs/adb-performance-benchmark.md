@@ -4474,3 +4474,63 @@ benchmark：
 - `point_lookup` 与 `table_count` 已接近 benchmark 毫秒计时下限，短跑吞吐容易被窗口长度放大；本轮应主要看 allocation 和回归测试。
 - `insert` 没有收益，说明当前写入主要成本不在空 meta/list 分配，而在实际 row-count delta、row/version key、RowValue 编码和 LDB 写入。
 - 下一阶段若继续做第 4 项，价值更高的是合并单事务内多行唯一性检查、扩大 append-only 批写路径，以及减少每行 row/index key 构造。
+
+## 第七十轮：多行 append-safe bulk insert 免 savepoint 计划
+
+本轮继续目标第 4 项。第六十九轮说明空集合分配不是 `insert` 主成本；复核
+`AdbTable.bulkInsertAppendRows(...)` 后发现，多行 bulk insert 已经支持整批
+`canSkipAppendUniqueChecks(...)`，但无二级索引且整批 append-safe 时仍会先创建 savepoint。
+单行 append-safe 在第六十六轮已经有免 savepoint fast path，因此可以将同一策略扩展到多行。
+
+兼容边界：
+
+1. 仅命中本地表、无二级索引、无 region commit coordinator、整批 rowId append-safe 的多行 bulk。
+2. 写入事务本地状态前，先完成 `prepareBulkRow(...)`、批内重复主键检查、整批 append-safe 判定、
+   `RowKey` 与 `RowValue` 构造。
+3. 命中后不执行二级索引逻辑，不需要失败回滚边界；未命中继续走原 savepoint 分支。
+4. 不改变磁盘格式、commit 路径、普通 `ADD_ROW`、二级索引表、乱序/重复主键、分布式写入语义。
+
+本轮计划：
+
+1. 在 `bulkInsertAppendRows(...)` 入口优先尝试多行免 savepoint fast path。
+2. 新增私有 `tryBulkInsertAppendRowsWithoutSavepoint(...)`，复用已有批内 rowId 扫描与整批 append 判定。
+3. 命中 fast path 后一次性登记整批 row 的本地 write-set，并只推进一次 append high-water。
+4. 新增多行 prepared insert 回归测试，覆盖连续两批 append-safe values 都能正确写入并命中 bulk 诊断。
+5. 用 `jdbc` insert 的 `statementBatchSize > 1` 与 `jdbc_bulk` insert 做短 benchmark，判断收益是否真实。
+
+实现结果：
+
+1. `bulkInsertAppendRows(...)` 在创建 savepoint 前先尝试
+   `tryBulkInsertAppendRowsWithoutSavepoint(...)`。
+2. 新 fast path 只在无二级索引、整批 append-safe 时命中；未命中继续走原 savepoint 分支。
+3. 命中前先完成 rowId 范围扫描、批内重复主键检查、整批 append 判定、`RowKey` 与 `RowValue` 构造；
+   写入后只登记本地 write-set 并推进一次 append high-water。
+4. 原 savepoint 分支复用 `prepareBulkRows(...)`，避免批内 rowId 判断逻辑分叉。
+5. 新增 `AdbTableProviderIntegrationTest.preparedMultiValuesInsertKeepsAppendFastPathAcrossBatches`，
+   覆盖连续两批多 values prepared insert。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertUsesAdbDriverBulkPath --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedMultiValuesInsertKeepsAppendFastPathAcrossBatches
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| mode | workload | statementBatchSize | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` | `insert` | 100 | 29126.21 | 31 | 58 | 69 | 3467 | `vexra-adb/build/adb-benchmark/multi-row-no-savepoint-20260623-122614/jdbc_insert_batch100.properties` |
+| `jdbc_bulk` | `insert` | 100 | 230769.23 | 4 | 6 | 7 | 2497 | `vexra-adb/build/adb-benchmark/multi-row-no-savepoint-20260623-122614/jdbc_bulk_insert_batch100.properties` |
+
+结论：
+
+- 多行 append-safe 免 savepoint 对批量入口有明确正向信号；`jdbc_bulk` 短跑吞吐高于第三十九轮
+  `103448.28 ops/s` 样本，allocation 也从约 `2564` 降到 `2497 bytes/op`。
+- 普通 JDBC 多 values + `transactionBatchSize=100` 样本为 `29126.21 ops/s`，与第三十七轮
+  `27272.73 ops/s` 同量级并略高，说明普通 SQL 多 values 路由也能受益。
+- 该优化只覆盖无二级索引的 append-only 多行批写；二级索引表、乱序/重复主键和分布式写入仍保守走原路径。
+- 下一步第 4 项的高价值方向是减少批写中的 `RowKey` / `RowValue` / `Value[]` 构造，或把 commit
+  端 row-count delta/meta 编码进一步批量化。
