@@ -10,6 +10,7 @@ public enum MetaType {
   TABLE_ROW_COUNT_DELTA(13),     // 表记录数统计(本次事务的变化数)
   TABLE_ROW_COUNT(14),     // 表记录数统计(累加到某次事务后的数)
   TABLE_EPOCH(15),
+  TABLE_SEGMENT_ROW_COUNT_DELTA(16), // 表 rowId 分段记录数统计(本次事务的变化数)
   INDEX_META(31),      // 索引定义
   INDEX_STATUS(32),
   INDEX_STATS(33),     // 索引统计

@@ -4628,3 +4628,75 @@ benchmark：
 - 本轮对默认 mixed 有正向信号，但短窗口吞吐仍受 point lookup、range count cursor/value copy 和 commit 波动影响。
   下一步若继续在 ADB 仓库内推进，应继续减少 mixed 外层固定成本；若要显著降低 allocation，仍需要 ldb raw/reusable cursor
   或 segment/block-level count 元数据。
+
+## 第七十三轮：可选 segment range count 元数据计划
+
+本轮继续目标第 5 项，推进一直挂起的 segment/block-level count 方向。前面多轮 JFR 和
+SQL diagnostics 已经确认：在没有 ldb raw/reusable cursor 的情况下，宽范围 `range count`
+仍会被逐 row cursor/key/value 边界限制。为了先在 ADB 仓库内形成可验证闭环，本轮先做
+“可选 segment row-count delta”雏形，而不是一次性引入完整 compaction / rebuild 子系统。
+
+兼容边界：
+
+1. 新增 META CF 中的 segment row-count delta key，只追加统计元数据，不改变现有 row/version key、
+   row-count 总量 key、commit timestamp 或事务协议。
+2. 默认关闭 segment range count。旧库没有 segment 元数据时不会改变查询结果；显式打开后，调用方需要保证表数据从开启后写入，
+   或后续通过 rebuild 工具补齐 segment 元数据。
+3. range count 只有在无本地 write-set、上下界都有值、并且查询范围包含完整 segment 时才尝试使用 segment 元数据；
+   左右边界不完整 segment 继续走现有 raw scan。
+4. 如果 segment 优化未命中，仍回退到 `countVisibleRowsWithoutLocalWrites(...)` 的现有 raw range count。
+5. 该阶段不做 segment base compaction；每次 row-count delta commit 同步写入对应 segment delta。后续可再做
+   segment base snapshot、rebuild 和 compaction。
+
+本轮计划：
+
+1. 增加 `SegmentRowCountDeltaKey` / `VersionSegmentRowCountDeltaKey`，记录表、epoch、segmentId 和 commitTs。
+2. `Transaction2` 在 row insert/delete 影响行数时，同步维护 segment row-count delta；update 不产生 delta。
+3. `TxnManager.commit(...)` 把 segment delta 与表级 row-count delta 一起写入 META CF。
+4. `countVisibleRowsWithoutLocalWrites(...)` 在可选开关开启时，对完整覆盖的 segment 使用元数据求和，
+   对左右边界段继续 raw scan。
+5. 增加单元测试覆盖：新提交数据的 segment range count 命中、旧快照不读到较新 segment delta、
+   delete delta 会被扣减，并通过 phase 证明命中 segment 路径。
+
+预期收益：
+
+- 对宽 range count，完整 segment 内不再扫描每一行的 version entry，而是扫描更窄的 segment delta 元数据。
+- 对默认 `rangeSize=32` 的短 benchmark，收益取决于 segment size 和对齐；该阶段主要验证机制和正确性。
+- 写入侧在开关开启时会多写 segment delta META，因此默认先关闭，等 rebuild/compaction 与更长 benchmark 验证后再考虑默认开启。
+
+实现结果：
+
+1. 新增 `MetaType.TABLE_SEGMENT_ROW_COUNT_DELTA`、`SegmentRowCountDeltaKey` 和
+   `VersionSegmentRowCountDeltaKey`，按 table/epoch/segmentId/commitTs 记录 segment delta。
+2. `Transaction2` 在 row insert/delete 改变行数时同步维护 segment delta；update 不产生 delta。
+3. `TxnManager.commit(...)` 在开关开启且存在 segment delta 时，把 segment delta 作为 META 写入同一个 commit write batch。
+4. `TxnManager.countVisibleRowsWithoutLocalWrites(...)` 在开关开启、范围有完整 segment 且无本地写时，
+   对最新快照使用进程内 segment count cache，对旧快照回退到 META delta 扫描；左右边界仍用 raw scan。
+5. restore / snapshot install 这类 store 内容世代变化会清理 segment cache，避免恢复后使用旧统计。
+6. 新增 `TxnManagerVisibleRowFastPathTest.shouldUseSegmentRangeCountForCommittedRows`，覆盖真实 commit
+   生成 segment delta、旧快照隔离、delete delta 扣减和 segment phase 命中。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | rangeSize | segment 开关 | ops/s | p99 us | alloc bytes/op | 关键 phase | 结果文件 |
+| --- | ---: | --- | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 512 | 关闭 | 5446.62 | 674 | 277028 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_disabled.properties` |
+| `range_scan` | 512 | 开启 | 4370.63 | 753 | 320793 | `ADB_RANGE_COUNT_SEGMENT_COUNT` + edge raw scan | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_enabled_v4.properties` |
+| `range_scan` | 4096 | 关闭 | 2288.33 | 1266 | 1360651 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_4096_disabled.properties` |
+| `range_scan` | 4096 | 开启 | 3738.32 | 627 | 376298 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_4096_enabled.properties` |
+
+结论：
+
+- segment 统计对真正宽 range 有明显收益：`rangeSize=4096` 吞吐提升约 63%，p99 降低约 50%，
+  allocation 降低约 72%。
+- `rangeSize=512` 没有收益，说明 segment 粒度、边界 raw scan 与小范围调用固定成本会抵消收益；
+  因此本阶段保持默认关闭是正确的。
+- 下一步如果继续推进第 5 项，应补 segment base compaction / rebuild，并让优化只在预计覆盖足够多完整 segment 时命中。

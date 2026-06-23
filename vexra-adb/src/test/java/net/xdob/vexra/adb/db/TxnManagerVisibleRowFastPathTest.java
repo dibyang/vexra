@@ -229,6 +229,56 @@ class TxnManagerVisibleRowFastPathTest {
   }
 
   /**
+   * 验证开启 segment range count 后，完整覆盖的 segment 会通过 META delta 计数。
+   *
+   * <p>该用例用真实提交路径生成 segment delta：旧快照应看不到后续 delete delta，
+   * 最新快照则应扣减对应 segment 的行数。左右不完整 segment 仍由 raw scan 处理。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldUseSegmentRangeCountForCommittedRows() throws Exception {
+    String property = "vexra.adb.rangeCount.segmentCount.enabled";
+    String previous = System.getProperty(property);
+    System.setProperty(property, "true");
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-segment").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+      TabId tabId = TabId.of(1, 0L);
+
+      Transaction2 writer = manager.beginTransaction();
+      for (long rowId = 1L; rowId <= 600L; rowId++) {
+        manager.put(writer, RowKey.of(tabId, rowId),
+            row("row-" + rowId, 0L));
+      }
+      manager.commit(writer);
+
+      Transaction2 oldReader = new Transaction2(100_001L, 1L);
+
+      Transaction2 deleter = manager.beginTransaction();
+      manager.delete(deleter, RowKey.of(tabId, 300L));
+      manager.commit(deleter);
+
+      assertEquals(600L, manager.countVisibleRows(oldReader,
+          RowPrefix.of(tabId), 1L, 600L));
+      assertEquals(599L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 600L));
+
+      AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
+      assertTrue(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+    } finally {
+      if (previous == null) {
+        System.clearProperty(property);
+      } else {
+        System.setProperty(property, previous);
+      }
+    }
+  }
+
+  /**
    * 验证 range scan lower bound 使用与 VersionRowKey 一致的 rowId 编码。
    *
    * <p>row version key 会对 rowId 做符号位翻转以保持 signed long 字典序。

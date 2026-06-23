@@ -5464,3 +5464,106 @@ Conclusion:
   and commit variance. The next in-repo step should keep reducing mixed outer
   fixed costs; materially lowering allocation still needs ldb raw/reusable
   cursor support or segment/block-level count metadata.
+
+## Round 73: Optional Segment Range-count Metadata Plan
+
+This round continues objective 5 by moving the long-standing
+segment/block-level count direction forward. Earlier JFR and SQL diagnostics
+rounds already showed that, without an ldb raw/reusable cursor, wide
+`range count` remains limited by per-row cursor/key/value boundaries. To create
+a verifiable in-repo step first, this round introduces an optional segment
+row-count delta prototype instead of a full compaction / rebuild subsystem.
+
+Compatibility boundary:
+
+1. Add segment row-count delta keys in the META column family. They are
+   additive statistics only; existing row/version keys, table row-count keys,
+   commit timestamps, and transaction protocol stay unchanged.
+2. Segment range count is disabled by default. Old databases without segment
+   metadata keep their existing query behavior. When enabled explicitly, callers
+   should ensure table data was written after enabling it, or later rebuild the
+   segment metadata.
+3. Range count tries segment metadata only for transactions without local
+   write-set rows, with both lower and upper bounds, and with at least one
+   fully covered segment. The incomplete left and right edge segments keep using
+   the existing raw scan.
+4. If the segment optimization does not hit, execution falls back to the
+   current `countVisibleRowsWithoutLocalWrites(...)` raw range count.
+5. This stage does not compact segment bases. Each row-count-changing commit
+   writes a matching segment delta. Segment base snapshots, rebuild, and
+   compaction can be added later.
+
+Plan:
+
+1. Add `SegmentRowCountDeltaKey` / `VersionSegmentRowCountDeltaKey`, encoding
+   table, epoch, segment id, and commit timestamp.
+2. Let `Transaction2` maintain segment row-count deltas when row insert/delete
+   changes the table row count; updates do not create a segment delta.
+3. Let `TxnManager.commit(...)` persist segment deltas together with table-level
+   row-count deltas in META.
+4. When the optional switch is enabled, let
+   `countVisibleRowsWithoutLocalWrites(...)` sum fully covered segments from
+   metadata and raw-scan only the left/right edge ranges.
+5. Add unit tests covering segment path hits for newly committed data, old
+   snapshot isolation from newer segment deltas, delete deltas, and the segment
+   diagnostic phase.
+
+Expected benefit:
+
+- For wide range count, fully covered segments no longer scan every row version
+  entry; they scan narrower segment delta metadata instead.
+- For the default short `rangeSize=32` benchmark, the benefit depends on
+  segment size and alignment. This stage mainly proves mechanism and
+  correctness.
+- Enabling the feature adds one segment-delta META write for row-count-changing
+  commits, so it stays off by default until rebuild/compaction and longer
+  benchmarks justify enabling it by default.
+
+Implementation result:
+
+1. Added `MetaType.TABLE_SEGMENT_ROW_COUNT_DELTA`,
+   `SegmentRowCountDeltaKey`, and `VersionSegmentRowCountDeltaKey`, encoding
+   table, epoch, segment id, and commit timestamp.
+2. `Transaction2` now maintains segment deltas when row insert/delete changes
+   row count. Updates do not create a delta.
+3. `TxnManager.commit(...)` writes segment deltas into META in the same commit
+   write batch when the optional switch is enabled.
+4. `TxnManager.countVisibleRowsWithoutLocalWrites(...)` uses segment metadata
+   only when the switch is enabled, the range has fully covered segments, and
+   there are no local writes. Latest snapshots use an in-process segment count
+   cache; older snapshots scan META deltas. Left and right edge ranges still use
+   raw scan.
+5. Store content-epoch invalidation, such as restore / snapshot install,
+   clears the segment cache to avoid stale statistics.
+6. Added
+   `TxnManagerVisibleRowFastPathTest.shouldUseSegmentRangeCountForCommittedRows`,
+   covering real commit-generated segment deltas, old snapshot isolation, delete
+   delta subtraction, and the segment phase hit.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | rangeSize | segment switch | ops/s | p99 us | alloc bytes/op | Key phase | Result file |
+| --- | ---: | --- | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 512 | off | 5446.62 | 674 | 277028 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_disabled.properties` |
+| `range_scan` | 512 | on | 4370.63 | 753 | 320793 | `ADB_RANGE_COUNT_SEGMENT_COUNT` plus edge raw scan | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_enabled_v4.properties` |
+| `range_scan` | 4096 | off | 2288.33 | 1266 | 1360651 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_4096_disabled.properties` |
+| `range_scan` | 4096 | on | 3738.32 | 627 | 376298 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-count-20260623/range_scan_4096_enabled.properties` |
+
+Conclusion:
+
+- Segment statistics clearly help truly wide ranges: at `rangeSize=4096`,
+  throughput improves by about 63%, p99 drops by about 50%, and allocation drops
+  by about 72%.
+- `rangeSize=512` does not benefit. Segment granularity, edge raw scans, and
+  fixed call overhead can offset the gain for medium ranges, so keeping the
+  feature disabled by default is the right boundary for this stage.
+- The next objective-5 step should add segment base compaction / rebuild and
+  only hit the optimization when enough fully covered segments are expected.

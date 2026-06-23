@@ -14,6 +14,8 @@ public class Transaction2 {
   private long txnId;
   private volatile long startTs;
   private final Map<RowCountDeltaKey,AtomicLong> rowCountDeltas = new ConcurrentHashMap<>();
+  private final Map<SegmentRowCountDeltaKey, AtomicLong>
+      segmentRowCountDeltas = new ConcurrentHashMap<>();
 
   private TxnState state = TxnState.PENDING;
   private final List<OLdEntry> undoLogs = new ArrayList<>();
@@ -91,6 +93,7 @@ public class Transaction2 {
     undoLogs.clear();
     savepoints.clear();
     rowCountDeltas.clear();
+    segmentRowCountDeltas.clear();
     tableEpochs.clear();
   }
 
@@ -112,6 +115,25 @@ public class Transaction2 {
 
   private AtomicLong getRowCountDelta2(RowCountDeltaKey key) {
     return rowCountDeltas.computeIfAbsent(key, k -> new AtomicLong(0));
+  }
+
+  private AtomicLong getSegmentRowCountDelta(
+      SegmentRowCountDeltaKey key) {
+    return segmentRowCountDeltas.computeIfAbsent(key,
+        k -> new AtomicLong(0));
+  }
+
+  private void addRowCountDelta(DataKey key, long delta) {
+    if (key == null || !key.isRow() || delta == 0L) {
+      return;
+    }
+    getRowCountDelta2(RowCountDeltaKey.of(key.getTabID()))
+        .addAndGet(delta);
+    if (TxnManager.rangeCountSegmentsEnabled()) {
+      long segmentId = TxnManager.segmentIdForRowId(key.getRowId());
+      getSegmentRowCountDelta(SegmentRowCountDeltaKey.of(key.getTabID(),
+          segmentId)).addAndGet(delta);
+    }
   }
 
   public void put(AdbWriteBatch batch, DataKey key, RowValue value) throws SQLException {
@@ -148,7 +170,7 @@ public class Transaction2 {
     entry.oldValue = oldValue;
     undoLogs.add(entry);
     if(key.isRow()&&(oldValue==null||oldValue.deleted)){
-      getRowCountDelta2(RowCountDeltaKey.of(key.getTabID())).incrementAndGet();
+      addRowCountDelta(key, 1L);
     }
   }
 
@@ -201,7 +223,7 @@ public class Transaction2 {
     entry.oldValue = oldValue;
     undoLogs.add(entry);
     if(key.isRow()&&(oldValue!=null&&!oldValue.deleted)){
-      getRowCountDelta2(RowCountDeltaKey.of(key.getTabID())).decrementAndGet();
+      addRowCountDelta(key, -1L);
     }
     return value;
   }
@@ -230,6 +252,14 @@ public class Transaction2 {
 
   Map<RowCountDeltaKey, AtomicLong> rowCountDeltasForCommit() {
     return rowCountDeltas;
+  }
+
+  boolean hasSegmentRowCountDeltas() {
+    return !segmentRowCountDeltas.isEmpty();
+  }
+
+  Map<SegmentRowCountDeltaKey, AtomicLong> segmentRowCountDeltasForCommit() {
+    return segmentRowCountDeltas;
   }
 
   boolean hasTableEpochs() {
@@ -289,7 +319,7 @@ public class Transaction2 {
             batch.delete(intentKey.toBytes());
             batch.delete(CF.TXN.getCfId(), txnRefKey.toBytes());
             if(old.key.isRow()&&currentVisible !=null&&!currentVisible .deleted){
-              getRowCountDelta2(RowCountDeltaKey.of(old.key.getTabID())).decrementAndGet();
+              addRowCountDelta(old.key, -1L);
             }
           }else{
             VersionKey intentKey = VersionKey.of(old.key, false, txnId);
@@ -297,7 +327,7 @@ public class Transaction2 {
             batch.put(intentKey.toBytes(), RowValue.encodeValue(old.oldValue));
             batch.put(CF.TXN.getCfId(), txnRefKey.toBytes(), new byte[0]);
             if(old.key.isRow()&&(currentVisible ==null||currentVisible .deleted)){
-              getRowCountDelta2(RowCountDeltaKey.of(old.key.getTabID())).incrementAndGet();
+              addRowCountDelta(old.key, 1L);
             }
           }
         }
