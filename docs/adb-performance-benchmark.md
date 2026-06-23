@@ -4534,3 +4534,41 @@ benchmark：
 - 该优化只覆盖无二级索引的 append-only 多行批写；二级索引表、乱序/重复主键和分布式写入仍保守走原路径。
 - 下一步第 4 项的高价值方向是减少批写中的 `RowKey` / `RowValue` / `Value[]` 构造，或把 commit
   端 row-count delta/meta 编码进一步批量化。
+
+## 第七十一轮：多行 append-safe 登记数组收窄计划
+
+本轮继续目标第 4 项，沿着第七十轮的多行 append-safe fast path 继续收窄对象。当前实现为了确保
+免 savepoint 路径在写入本地事务状态前完成所有可能失败的构造，会预先创建 `RowKey[]` 和
+`RowValue[]` 两个数组。复核命中条件后确认：该路径只在本地、无二级索引、无 region commit
+coordinator、整批 append-safe 时命中，真正登记 write-set 时不需要访问 store，也不应该抛出
+`SQLException`。
+
+本轮计划：
+
+1. 在 `TxnMap2` 增加仅供本地 append-safe fast path 使用的无 checked exception 登记入口。
+2. 多行 fast path 先预编码每行 payload，保证 `RowCodec.encode(row)` 这类可能失败的工作仍在写本地状态前完成。
+3. 写入阶段逐行构造 `RowKey` 与 `RowValue` 并直接登记本地 write-set，去掉 `RowKey[]` 和 `RowValue[]` 预构造数组。
+4. 保持 savepoint 分支、二级索引表、分布式写入、重复主键语义不变。
+
+实现结果：
+
+- `TxnMap2` 增加 `putEncodedAppendLocalAlreadyChecked`，只允许已完成 append-safe
+  检查的本地批写路径使用。
+- `AdbTable.tryBulkInsertAppendRowsWithoutSavepoint` 改为先预编码 payload，再逐行构造
+  `RowKey` / `RowValue` 并登记本地 write-set。
+- `rowValue(long, Row)` 拆出 `rowValue(long, byte[])`，避免预编码后再次编码。
+
+与第七十轮 benchmark 对比：
+
+| 模式 | 第七十轮 throughput ops/s | 本轮 throughput ops/s | 变化 | 第七十轮 p99 us | 本轮 p99 us | 第七十轮 alloc B/op | 本轮 alloc B/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` insert batch100 | 29126.21 | 30303.03 | +4.04% | 69 | 73 | 3467 | 3490 | `vexra-adb/build/adb-benchmark/multi-row-register-narrow-20260623-124544/jdbc_insert_batch100.properties` |
+| `jdbc_bulk` insert batch100 | 230769.23 | 272727.27 | +18.18% | 7 | 6 | 2497 | 2474 | `vexra-adb/build/adb-benchmark/multi-row-register-narrow-20260623-124544/jdbc_bulk_insert_batch100.properties` |
+
+结论：
+
+- 直接 bulk API 收益明显，说明收窄本地登记对象对第 4 项仍有价值。
+- 普通 SQL 多 VALUES 路径只提升约 4%，并且 alloc B/op 基本持平，说明 H2/JDBC/table-engine
+  外层边界仍是 SQL 写入吞吐的主要限制之一。
+- 下一步不应继续只压 `bulkInsertAppendRows` 内部的小对象，应转向 mixed 8 线程下的外层写入入口、
+  range count 入口和事务提交/可见性路径联动优化。

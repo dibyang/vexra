@@ -180,6 +180,21 @@ public class TxnMap2 {
   }
 
   /**
+   * 本地写入已经由调用方完成唯一性检查的 bulk append row。
+   *
+   * <p>该入口只允许本地 append-safe fast path 使用：调用方已经确认没有 region commit
+   * coordinator、没有二级索引失败面，并且在调用前完成了所有可能失败的行编码。方法只登记
+   * 事务本地 write-set / undo log / row-count delta，不访问底层 store。</p>
+   *
+   * @param dataKey row key
+   * @param value 已编码 row value
+   */
+  public void putEncodedAppendLocalAlreadyChecked(DataKey dataKey,
+      RowValue value) {
+    transaction.putLocal(dataKey, value, null);
+  }
+
+  /**
    * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
    *
    * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>

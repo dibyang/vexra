@@ -910,19 +910,15 @@ public class AdbTable extends TableBase {
       return null;
     }
 
-    RowKey[] rowKeys = new RowKey[rows.size()];
-    RowValue[] rowValues = new RowValue[rows.size()];
+    byte[][] payloads = new byte[rows.size()][];
+    for (int i = 0; i < rows.size(); i++) {
+      payloads[i] = RowCodec.encode(rows.get(i));
+    }
     for (int i = 0; i < rows.size(); i++) {
       Row row = rows.get(i);
-      rowKeys[i] = RowKey.of(tabId, row.getKey());
-      rowValues[i] = rowValue(txnId, row);
-    }
-    try {
-      for (int i = 0; i < rowKeys.length; i++) {
-        map.putEncodedAppendAlreadyChecked(rowKeys[i], rowValues[i], null);
-      }
-    } catch (SQLException e) {
-      throw convertException(e);
+      RowKey rowKey = RowKey.of(tabId, row.getKey());
+      map.putEncodedAppendLocalAlreadyChecked(rowKey,
+          rowValue(txnId, payloads[i]));
     }
     map.recordAppendHighWater(tabId, rowIds.maxRowId);
     return Integer.valueOf(rows.size());
@@ -1019,11 +1015,15 @@ public class AdbTable extends TableBase {
   }
 
   private static RowValue rowValue(long txnId, Row row) {
+    return rowValue(txnId, RowCodec.encode(row));
+  }
+
+  private static RowValue rowValue(long txnId, byte[] payload) {
     RowValue value = new RowValue();
     value.txnId = txnId;
     value.commitTs = 0L;
     value.deleted = false;
-    value.payload = RowCodec.encode(row);
+    value.payload = payload;
     return value;
   }
 

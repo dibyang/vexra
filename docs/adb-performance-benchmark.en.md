@@ -5337,3 +5337,53 @@ Conclusion:
 - The next high-value objective-4 work is reducing `RowKey` / `RowValue` /
   `Value[]` construction in batch writes, or batching row-count delta/meta
   encoding further on the commit side.
+
+## Round 71: Narrow Multi-row Append-safe Registration Arrays Plan
+
+This round continues objective 4 by narrowing objects in the round-70
+multi-row append-safe fast path. The current implementation pre-creates both
+`RowKey[]` and `RowValue[]` so all potentially failing construction happens
+before mutating transaction-local state. Reviewing the hit conditions confirms
+that this path only runs for local tables with no secondary index, no region
+commit coordinator, and append-safe batches. The final write-set registration
+does not access the store and should not throw `SQLException`.
+
+Plan:
+
+1. Add a no-checked-exception registration entrypoint in `TxnMap2` for the local
+   append-safe fast path only.
+2. Pre-encode each row payload first, so work such as `RowCodec.encode(row)`
+   still happens before local state mutation.
+3. During registration, construct `RowKey` and `RowValue` per row and write
+   directly into the local write-set, removing the pre-built `RowKey[]` and
+   `RowValue[]` arrays.
+4. Preserve the savepoint branch, secondary-index tables, distributed writes,
+   and duplicate-key semantics.
+
+Implementation result:
+
+- `TxnMap2` now exposes `putEncodedAppendLocalAlreadyChecked`, limited to the
+  local batch-write path after append-safe checks have already completed.
+- `AdbTable.tryBulkInsertAppendRowsWithoutSavepoint` pre-encodes payloads first,
+  then constructs `RowKey` / `RowValue` per row while registering the local
+  write-set entry.
+- `rowValue(long, Row)` now delegates to `rowValue(long, byte[])`, avoiding a
+  second encode after payload pre-encoding.
+
+Benchmark comparison with round 70:
+
+| Mode | Round 70 throughput ops/s | This round throughput ops/s | Change | Round 70 p99 us | This round p99 us | Round 70 alloc B/op | This round alloc B/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `jdbc` insert batch100 | 29126.21 | 30303.03 | +4.04% | 69 | 73 | 3467 | 3490 | `vexra-adb/build/adb-benchmark/multi-row-register-narrow-20260623-124544/jdbc_insert_batch100.properties` |
+| `jdbc_bulk` insert batch100 | 230769.23 | 272727.27 | +18.18% | 7 | 6 | 2497 | 2474 | `vexra-adb/build/adb-benchmark/multi-row-register-narrow-20260623-124544/jdbc_bulk_insert_batch100.properties` |
+
+Conclusion:
+
+- The direct bulk API benefits clearly, so narrowing local registration objects
+  is still useful for objective 4.
+- Ordinary SQL multi-VALUES improves by only about 4%, and alloc B/op is almost
+  unchanged. This indicates the H2/JDBC/table-engine outer boundary remains one
+  of the main throughput limits for SQL writes.
+- The next step should not keep spending effort only inside
+  `bulkInsertAppendRows`; it should move to the mixed 8-thread outer write
+  entrypoint, range-count entrypoint, and commit / visibility interactions.
