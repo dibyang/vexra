@@ -218,6 +218,22 @@ public class Transaction2 {
     return rowCountDeltas.keySet();
   }
 
+  boolean hasRowCountDeltas() {
+    return !rowCountDeltas.isEmpty();
+  }
+
+  Map<RowCountDeltaKey, AtomicLong> rowCountDeltasForCommit() {
+    return rowCountDeltas;
+  }
+
+  boolean hasTableEpochs() {
+    return !tableEpochs.isEmpty();
+  }
+
+  Map<Integer, Epoch> tableEpochsForCommit() {
+    return tableEpochs;
+  }
+
 
   public void afterCommitSuccess(long commitTs) {
     clearLocalState();

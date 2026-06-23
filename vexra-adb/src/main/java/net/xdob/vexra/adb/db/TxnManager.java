@@ -37,6 +37,8 @@ public class TxnManager {
   private static final int RAW_VERSION_OFFSET = 22;
   private static final byte[] INDEX_VALUE_PAYLOAD =
       RowCodec.encode(ValueNull.INSTANCE);
+  private static final List<String> LOCAL_REGION_IDS =
+      Collections.singletonList("local");
 
   private TxnIdGenerator txnIdGen;
   private CommitTSGenerator tsGen;
@@ -1422,9 +1424,9 @@ public class TxnManager {
   // -------------------- 鎻愪氦浜嬪姟 --------------------
   public void commit(Transaction2 txn) throws SQLException {
     final long commitTs;
-    final ArrayList<DataKey> writeKeys;
-    final LinkedHashMap<RowCountDeltaKey, Long> rowCountDeltas;
-    final LinkedHashMap<Integer, Long> tableEpochUpdates = new LinkedHashMap<>();
+    final Collection<DataKey> writeKeys;
+    final Map<RowCountDeltaKey, Long> rowCountDeltas;
+    final Map<Integer, Long> tableEpochUpdates;
 
     synchronized (commitMutex) {
       if (TxnState.COMMITTED.equals(txn.getState())) {
@@ -1441,7 +1443,9 @@ public class TxnManager {
       long prepareStarted = System.nanoTime();
       try {
         validate(txn);
-        writeKeys = new ArrayList<>(txn.getWriteSet().keySet());
+        Map<DataKey, RowValue> writeSet = txn.getWriteSet();
+        writeKeys = writeSet.isEmpty()
+            ? Collections.emptyList() : new ArrayList<>(writeSet.keySet());
         validateLocalProductionCommit(writeKeys);
         regionWriteGate.beforeCommit(txn, writeKeys);
         commitTs = nextCommitTs();
@@ -1451,43 +1455,14 @@ public class TxnManager {
             System.nanoTime() - prepareStarted);
       }
 
-      rowCountDeltas = new LinkedHashMap<>();
-      for (RowCountDeltaKey key : txn.getRowCountDeltaKeySet()) {
-        rowCountDeltas.put(key, txn.getRowCountDelta(key));
-      }
-
-      for (Map.Entry<Integer, Epoch> entry : txn.getTableEpochs().entrySet()) {
-        Integer tableId = entry.getKey();
-        Epoch epoch = entry.getValue();
-        if (tableId != null && epoch != null && epoch.intent) {
-          tableEpochUpdates.put(tableId, epoch.epoch);
-        }
-      }
+      rowCountDeltas = snapshotRowCountDeltas(txn);
+      tableEpochUpdates = snapshotTableEpochUpdates(txn);
     }
 
     try {
-      List<Meta> metas = new ArrayList<>();
       long rowCountMetaStarted = System.nanoTime();
-      for (Map.Entry<RowCountDeltaKey, Long> entry : rowCountDeltas.entrySet()) {
-        RowCountDeltaKey key = entry.getKey();
-        long rowCountDelta = entry.getValue();
-        if (rowCountDelta != 0){
-          VersionRowCountDeltaKey tableStatsKey =
-              VersionRowCountDeltaKey.of(key.getTabKey(), commitTs);
-
-          RowValue tableStats = new RowValue();
-          tableStats.deleted = false;
-          tableStats.payload = RowCodec.encode(ValueBigint.get(rowCountDelta));
-          tableStats.commitTs = commitTs;
-          metas.add(Meta.of(tableStatsKey.toBytes(), RowValue.encodeValue(tableStats)));
-          //System.out.println("tabId="+key.getTabKey()+"  rowCountDelta = " + rowCountDelta);
-        }
-      }
-
-      for (Map.Entry<Integer, Long> entry : tableEpochUpdates.entrySet()) {
-        TableEpochKey tableEpochKey = TableEpochKey.of(entry.getKey());
-        metas.add(Meta.of(tableEpochKey.toBytes(), Utils.encodeLong(entry.getValue())));
-      }
+      List<Meta> metas = buildCommitMetas(rowCountDeltas,
+          tableEpochUpdates, commitTs);
       recordSqlPhase("ADB_COMMIT_ROW_COUNT_META",
           System.nanoTime() - rowCountMetaStarted);
 
@@ -1545,8 +1520,7 @@ public class TxnManager {
     if (writeKeys.isEmpty() || regionCommitCoordinator != null) {
       return;
     }
-    txnRegionGuard.beforeCommit("local-commit", -1,
-        Collections.singletonList("local"));
+    txnRegionGuard.beforeCommit("local-commit", -1, LOCAL_REGION_IDS);
   }
 
   private void commitLocalOrRemote(Transaction2 txn, long commitTs,
@@ -1570,12 +1544,83 @@ public class TxnManager {
         batch.put(versionKey,
             RowValue.encodeValue(entry.getValue(), commitTs));
       }
-      if (metas != null) {
+      if (metas != null && !metas.isEmpty()) {
         for (Meta meta : metas) {
           batch.put(CF.META.getCfId(), meta.getKey(), meta.getValue());
         }
       }
     });
+  }
+
+  private static Map<RowCountDeltaKey, Long> snapshotRowCountDeltas(
+      Transaction2 txn) {
+    if (!txn.hasRowCountDeltas()) {
+      return Collections.emptyMap();
+    }
+    LinkedHashMap<RowCountDeltaKey, Long> result = null;
+    for (Map.Entry<RowCountDeltaKey, AtomicLong> entry
+        : txn.rowCountDeltasForCommit().entrySet()) {
+      RowCountDeltaKey key = entry.getKey();
+      AtomicLong value = entry.getValue();
+      long delta = value == null ? 0L : value.get();
+      if (key != null && delta != 0L) {
+        if (result == null) {
+          result = new LinkedHashMap<>();
+        }
+        result.put(key, delta);
+      }
+    }
+    return result == null ? Collections.emptyMap() : result;
+  }
+
+  private static Map<Integer, Long> snapshotTableEpochUpdates(
+      Transaction2 txn) {
+    if (!txn.hasTableEpochs()) {
+      return Collections.emptyMap();
+    }
+    LinkedHashMap<Integer, Long> result = null;
+    for (Map.Entry<Integer, Epoch> entry
+        : txn.tableEpochsForCommit().entrySet()) {
+      Integer tableId = entry.getKey();
+      Epoch epoch = entry.getValue();
+      if (tableId != null && epoch != null && epoch.intent) {
+        if (result == null) {
+          result = new LinkedHashMap<>();
+        }
+        result.put(tableId, epoch.epoch);
+      }
+    }
+    return result == null ? Collections.emptyMap() : result;
+  }
+
+  private static List<Meta> buildCommitMetas(
+      Map<RowCountDeltaKey, Long> rowCountDeltas,
+      Map<Integer, Long> tableEpochUpdates, long commitTs) {
+    if (rowCountDeltas.isEmpty() && tableEpochUpdates.isEmpty()) {
+      return Collections.emptyList();
+    }
+    List<Meta> metas = new ArrayList<>(
+        rowCountDeltas.size() + tableEpochUpdates.size());
+    for (Map.Entry<RowCountDeltaKey, Long> entry : rowCountDeltas.entrySet()) {
+      RowCountDeltaKey key = entry.getKey();
+      long rowCountDelta = entry.getValue();
+      VersionRowCountDeltaKey tableStatsKey =
+          VersionRowCountDeltaKey.of(key.getTabKey(), commitTs);
+
+      RowValue tableStats = new RowValue();
+      tableStats.deleted = false;
+      tableStats.payload = RowCodec.encode(ValueBigint.get(rowCountDelta));
+      tableStats.commitTs = commitTs;
+      metas.add(Meta.of(tableStatsKey.toBytes(),
+          RowValue.encodeValue(tableStats)));
+    }
+
+    for (Map.Entry<Integer, Long> entry : tableEpochUpdates.entrySet()) {
+      TableEpochKey tableEpochKey = TableEpochKey.of(entry.getKey());
+      metas.add(Meta.of(tableEpochKey.toBytes(),
+          Utils.encodeLong(entry.getValue())));
+    }
+    return metas;
   }
 
   private java.util.concurrent.CompletableFuture<Void> commitAsync(

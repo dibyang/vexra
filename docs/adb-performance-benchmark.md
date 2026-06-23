@@ -4412,3 +4412,65 @@ benchmark：
 - 该结果进一步确认：大头仍在 `VersionScanSource.value()` 字节拷贝、cursor 前进与 LDB/Rocks/Raft scan
   抽象边界。下一轮如果要继续显著优化 `range_scan/mixed`，应优先推进 ldb raw/reusable cursor；
   若继续只在 ADB 仓库内做，则应转向 `commit/write batch` 或 segment/block-level count 的设计实现。
+
+## 第六十九轮：commit/write batch 空集合分配收窄计划
+
+本轮继续目标第 4 项 `BULK_ADD_ROW / ADD_ROW`，聚焦提交阶段的固定小对象分配。第六十八轮后，
+range count 内部 metadata 对象已经收窄，但 `mixed` 中写入与 commit 仍然会经过事务提交边界。
+
+复核 `TxnManager.commit(...)` 后确认：
+
+1. 每次 commit 都会创建 `LinkedHashMap<RowCountDeltaKey, Long>`，即使事务没有 row-count delta。
+2. 每次 commit 都会创建 `LinkedHashMap<Integer, Long>`，即使没有 table epoch intent。
+3. 每次 commit 都会创建空 `ArrayList<Meta>`，即使没有任何 meta 写入。
+4. 本地生产 guard 每次写提交都会创建 `Collections.singletonList("local")`。
+5. 这些对象不改变持久化语义，但会放大只读事务、fast path 查询和短事务写入的固定成本。
+
+本轮计划：
+
+1. 为本地 guard 增加静态 `LOCAL_REGION_IDS`，避免每次提交创建 singleton list。
+2. 提交时根据 write-set 是否为空选择 `Collections.emptyList()` 或 key snapshot，减少只读提交对象。
+3. 延迟创建 row-count delta 和 table epoch update snapshot；无内容时复用 `Collections.emptyMap()`。
+4. 仅在确实存在 row-count/table-epoch meta 时创建 `ArrayList<Meta>`，并按预期大小初始化容量。
+5. 保持磁盘格式、commit timestamp、region coordinator 协议、row-count cache 刷新语义不变。
+
+预期收益：
+
+- 降低 `point_lookup`、`table_count`、`mixed` 中只读/轻写事务提交的固定分配。
+- 对纯 `insert` 的收益预计较小，因为 row-count delta 和 committed row 写入仍然是必要成本。
+- 该优化属于 commit/write batch 入口的小对象收窄，不替代后续唯一性检查合并、append-only 批写或 ldb cursor 优化。
+
+实现结果：
+
+1. `TxnManager` 增加静态 `LOCAL_REGION_IDS`，本地写提交 guard 不再每次创建 singleton list。
+2. `commit(...)` 对空 write-set 使用 `Collections.emptyList()`，非空时才创建 key snapshot。
+3. row-count delta 与 table epoch snapshot 改为懒创建；没有非 0 delta 或 epoch intent 时复用空 map。
+4. commit meta 列表改为仅在存在 meta 写入时创建；空 meta 写入时跳过 `CF.META` 循环。
+5. `Transaction2` 增加包内提交视图方法，避免提交内部为了读取 table epoch 创建 unmodifiable wrapper。
+6. 新增 `AdbTableProviderIntegrationTest.readOnlyCommitKeepsNextWriteAndFastReadVisible`，
+   覆盖只读事务 commit 后继续写入和 fast path 查询的事务边界。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.readOnlyCommitKeepsNextWriteAndFastReadVisible --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | 本轮前 ops/s | 本轮后 ops/s | 倍数 | 本轮前 p99 us | 本轮后 p99 us | 本轮前 alloc bytes/op | 本轮后 alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 746.83 | 605.69 | 0.81 | 3430 | 3962 | 40850 | 41092 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_insert.properties` |
+| `point_lookup` | 1 | 230769.23 | 214285.71 | 0.93 | 30 | 33 | 1040 | 1040 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_point_lookup.properties` |
+| `table_count` | 1 | 375000.00 | 375000.00 | 1.00 | 18 | 18 | 783 | 789 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_table_count.properties` |
+| `mixed` | 8 | 6410.26 | 7009.35 | 1.09 | 10180 | 8621 | 640658 | 590980 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_mixed.properties` |
+
+结论：
+
+- 本轮是提交边界的小对象清理，功能风险低，但短 benchmark 只证明 `mixed` 有轻微正向信号。
+- `point_lookup` 与 `table_count` 已接近 benchmark 毫秒计时下限，短跑吞吐容易被窗口长度放大；本轮应主要看 allocation 和回归测试。
+- `insert` 没有收益，说明当前写入主要成本不在空 meta/list 分配，而在实际 row-count delta、row/version key、RowValue 编码和 LDB 写入。
+- 下一阶段若继续做第 4 项，价值更高的是合并单事务内多行唯一性检查、扩大 append-only 批写路径，以及减少每行 row/index key 构造。

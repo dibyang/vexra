@@ -389,6 +389,39 @@ class AdbTableProviderIntegrationTest {
     }
 
     @Test
+    void readOnlyCommitKeepsNextWriteAndFastReadVisible() throws Exception {
+        AdbSqlDiagnosticsRegistry.clear();
+        Class.forName(AdbDriver.class.getName());
+        String databasePath = tempDir.resolve("adb-readonly-commit-empty-meta")
+                .toAbsolutePath().toString().replace('\\', '/');
+        String url = "jdbc:adb:ldb:" + databasePath + ";DB_CLOSE_DELAY=0";
+        try {
+            try (Connection connection = DriverManager.getConnection(url);
+                 Statement statement = connection.createStatement()) {
+                statement.execute("CREATE TABLE TEST(ID BIGINT PRIMARY KEY, NAME VARCHAR)");
+                connection.setAutoCommit(false);
+                statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (1, 'a')");
+                connection.commit();
+
+                try (PreparedStatement select = connection.prepareStatement(
+                        "SELECT NAME FROM TEST WHERE ID = ?")) {
+                    Assertions.assertEquals("a", preparedName(select, 1L));
+                    connection.commit();
+
+                    statement.executeUpdate("INSERT INTO TEST(ID, NAME) VALUES (2, 'b')");
+                    connection.commit();
+
+                    Assertions.assertEquals("b", preparedName(select, 2L));
+                    Assertions.assertEquals(2L, countRows(statement));
+                }
+            }
+        } finally {
+            DbStoreEngine.close(databasePath);
+            AdbSqlDiagnosticsRegistry.clear();
+        }
+    }
+
+    @Test
     void preparedPrimaryKeyLookupUsesAdbDriverFastPath() throws Exception {
         AdbSqlDiagnosticsRegistry.clear();
         Class.forName(AdbDriver.class.getName());

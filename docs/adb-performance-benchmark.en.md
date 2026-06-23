@@ -5162,3 +5162,95 @@ Conclusion:
   boundary. The next high-impact `range_scan/mixed` optimization should move on
   ldb raw/reusable cursors; if staying only in the ADB repository, shift to
   `commit/write batch` or segment/block-level count design and implementation.
+
+## Round 69: Commit/Write Batch Empty-Collection Allocation Plan
+
+This round continues objective 4, `BULK_ADD_ROW / ADD_ROW`, focusing on fixed
+small-object allocation in the commit phase. After round 68, range-count
+metadata allocation has been narrowed, but `mixed` still crosses the write and
+commit boundary for inserted rows.
+
+Reviewing `TxnManager.commit(...)` shows:
+
+1. Each commit creates a `LinkedHashMap<RowCountDeltaKey, Long>`, even when the
+   transaction has no row-count delta.
+2. Each commit creates a `LinkedHashMap<Integer, Long>`, even when there is no
+   table epoch intent.
+3. Each commit creates an empty `ArrayList<Meta>`, even when no meta write is
+   needed.
+4. The local production guard creates `Collections.singletonList("local")` for
+   every local write commit.
+5. These objects do not change persistence semantics, but they amplify fixed
+   cost for read-only transactions, fast-path queries, and short write
+   transactions.
+
+Plan:
+
+1. Add a static `LOCAL_REGION_IDS` for the local guard, avoiding a singleton
+   list allocation per commit.
+2. Choose `Collections.emptyList()` or a write-key snapshot based on whether the
+   write-set is empty.
+3. Lazily create row-count delta and table-epoch update snapshots; reuse
+   `Collections.emptyMap()` when empty.
+4. Create `ArrayList<Meta>` only when row-count/table-epoch meta entries exist,
+   with expected capacity.
+5. Preserve disk format, commit timestamps, region coordinator protocol, and
+   row-count cache refresh semantics.
+
+Expected benefit:
+
+- Lower fixed allocation for read-only/light-write commits in `point_lookup`,
+  `table_count`, and `mixed`.
+- Pure `insert` benefit is expected to be smaller because row-count delta and
+  committed row writes remain necessary.
+- This is a commit/write-batch entrance cleanup. It does not replace later work
+  on uniqueness-check merging, append-only batch writes, or ldb cursor
+  optimization.
+
+Implementation result:
+
+1. `TxnManager` now has a static `LOCAL_REGION_IDS`, so the local write-commit
+   guard no longer creates a singleton list per commit.
+2. `commit(...)` uses `Collections.emptyList()` for an empty write-set and only
+   creates a key snapshot for non-empty write transactions.
+3. Row-count delta and table-epoch snapshots are now lazy; when there is no
+   non-zero delta or epoch intent, the code reuses empty maps.
+4. The commit meta list is created only when meta writes exist; empty meta
+   commits skip the `CF.META` loop.
+5. `Transaction2` now exposes package-private commit-view methods, avoiding an
+   unmodifiable wrapper allocation when commit reads table epochs internally.
+6. Added
+   `AdbTableProviderIntegrationTest.readOnlyCommitKeepsNextWriteAndFastReadVisible`
+   to cover a read-only commit followed by another write and fast-path read.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.readOnlyCommitKeepsNextWriteAndFastReadVisible --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.preparedFastPathSeesNewTransactionAfterCommit
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | Before ops/s | After ops/s | Ratio | Before p99 us | After p99 us | Before alloc bytes/op | After alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 746.83 | 605.69 | 0.81 | 3430 | 3962 | 40850 | 41092 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_insert.properties` |
+| `point_lookup` | 1 | 230769.23 | 214285.71 | 0.93 | 30 | 33 | 1040 | 1040 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_point_lookup.properties` |
+| `table_count` | 1 | 375000.00 | 375000.00 | 1.00 | 18 | 18 | 783 | 789 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_table_count.properties` |
+| `mixed` | 8 | 6410.26 | 7009.35 | 1.09 | 10180 | 8621 | 640658 | 590980 | `vexra-adb/build/adb-benchmark/commit-empty-meta-20260623-121549/adb_mixed.properties` |
+
+Conclusion:
+
+- This round is a low-risk cleanup of small objects at the commit boundary. The
+  short benchmark only proves a modest positive signal for `mixed`.
+- `point_lookup` and `table_count` are close to the millisecond timing floor of
+  this benchmark shape, so short-run throughput is easy to amplify; allocation
+  and regression tests are the more useful evidence here.
+- `insert` did not benefit, which means the write path is dominated by actual
+  row-count delta work, row/version key construction, `RowValue` encoding, and
+  LDB writes rather than empty meta/list allocation.
+- If continuing objective 4 next, the higher-value work is merging uniqueness
+  checks within a multi-row transaction, expanding append-only batch writes,
+  and reducing per-row row/index key construction.
