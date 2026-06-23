@@ -3713,3 +3713,37 @@ H2 delegate setter；fast path 命中时 delegate 实际不会执行。
 - 下一步应继续围绕 fast path 外层边界推进：要么进一步减少 PreparedStatement proxy
   invocation 成本，要么处理 `AdbSimpleResultSet`/count ResultSet 的调用成本；但从 JFR
   allocation 角度看，ResultSet 仍不是主要分配大头。
+
+## 第五十七轮：region snapshot 安装后的 trusted cache 失效边界
+
+本轮继续推进目标第 3 项 `TxnMap2.getVisible / visible row` 路径优化的安全前置条件。
+此前 benchmark 已经证明 `-Dvexra.adb.rowCache.trustCommitted=true` 对点查和 mixed 有明显收益，
+因为它能让 committed row cache 命中后跳过底层 committed version 存在性校验。但该模式不能直接默认开启：
+如果同一进程内发生 restore 或 region snapshot 安装，而旧的 `TxnManager` 缓存没有失效，后续点查可能返回
+snapshot 安装前的旧值。
+
+本轮改动：
+
+1. `AdbRegionSnapshotInstaller` 新增可选 `TxnManager` 构造参数。
+2. region snapshot restore 成功后，如果安装器持有 `TxnManager`，会调用
+   `invalidateStoreDerivedCaches()`，同时清理 committed row cache、row-count cache 和 rowId hint。
+3. 保留原 `AdbRegionSnapshotInstaller(DbStore, String)` 构造函数，兼容只需要安装 snapshot、不持有事务管理器的调用方。
+4. 新增 `AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall`，
+   先让目标 store 在 trusted cache 下缓存旧值，再安装 source checkpoint snapshot，最后验证同一个
+   `TxnManager` 能读到 snapshot 中的新值。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInstallSnapshotIntoTargetStoreAndReadCommittedData --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill --rerun-tasks
+```
+
+验证结果：通过。
+
+结论：
+
+- 本轮不改变默认 `trustCommittedRowCache=false`，因此常规 benchmark 吞吐不会因为该提交直接变化。
+- 它补齐了 runtime restore 之外的另一个重要 store 替换边界，使 trusted committed cache 从“纯压测开关”
+  继续向“可控失效的局部优化开关”推进。
+- 若要把该收益安全默认化，仍需要覆盖直接 `DbStore.restore(...)` 调用方、生产 region snapshot installer
+  的构造注入，以及外部 store 内容替换通知；否则默认跳过物理版本校验仍有 stale cache 风险。

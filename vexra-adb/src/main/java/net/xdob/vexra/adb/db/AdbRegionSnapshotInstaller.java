@@ -15,6 +15,7 @@ import java.util.Objects;
  */
 public final class AdbRegionSnapshotInstaller {
   private final DbStore store;
+  private final TxnManager txnManager;
   private final String localReplicaId;
 
   /**
@@ -24,7 +25,24 @@ public final class AdbRegionSnapshotInstaller {
    * @param localReplicaId 当前节点副本标识
    */
   public AdbRegionSnapshotInstaller(DbStore store, String localReplicaId) {
+    this(store, null, localReplicaId);
+  }
+
+  /**
+   * 创建带事务缓存失效能力的 ADB region snapshot 安装器。
+   *
+   * <p>snapshot 安装会整体替换底层 store 的可见内容。如果同一进程内已有
+   * {@link TxnManager} 使用 trusted committed row cache，restore 成功后必须让这些
+   * 从 store 派生的缓存失效，避免后续点查继续返回安装 snapshot 前的旧行。</p>
+   *
+   * @param store ADB store
+   * @param txnManager 需要随 snapshot 安装失效缓存的事务管理器；允许为 null
+   * @param localReplicaId 当前节点副本标识
+   */
+  public AdbRegionSnapshotInstaller(DbStore store, TxnManager txnManager,
+      String localReplicaId) {
     this.store = Objects.requireNonNull(store, "store == null");
+    this.txnManager = txnManager;
     this.localReplicaId = normalize(localReplicaId, "localReplicaId");
   }
 
@@ -43,6 +61,9 @@ public final class AdbRegionSnapshotInstaller {
           + localReplicaId + ", regionId=" + plan.getRegionId());
     }
     store.restore(Objects.requireNonNull(snapshotDir, "snapshotDir == null"));
+    if (txnManager != null) {
+      txnManager.invalidateStoreDerivedCaches();
+    }
   }
 
   private static String normalize(String value, String fieldName) {

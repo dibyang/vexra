@@ -4301,3 +4301,50 @@ Conclusion:
   further reduce PreparedStatement proxy invocation cost, or address
   `AdbSimpleResultSet` / count ResultSet call overhead. From the JFR allocation
   perspective, ResultSet is still not a major allocation source.
+
+## Round 57: Trusted Cache Invalidation After Region Snapshot Install
+
+This round continues the safety prerequisites for objective item 3,
+`TxnMap2.getVisible / visible row` optimization. Earlier benchmarks showed that
+`-Dvexra.adb.rowCache.trustCommitted=true` can clearly improve point-read and
+mixed throughput, because a committed row cache hit can skip the physical
+committed-version existence check. This mode still cannot simply become the
+default: if a restore or region snapshot install replaces store contents in the
+same process and the existing `TxnManager` cache is not invalidated, later point
+lookups may return values from before the snapshot install.
+
+Changes:
+
+1. `AdbRegionSnapshotInstaller` now has an optional constructor parameter for
+   `TxnManager`.
+2. After a successful region snapshot restore, the installer calls
+   `invalidateStoreDerivedCaches()` when a `TxnManager` was supplied, clearing
+   committed row cache, row-count cache, and rowId hints.
+3. The existing `AdbRegionSnapshotInstaller(DbStore, String)` constructor is
+   preserved for callers that only need snapshot installation and do not own a
+   transaction manager.
+4. A new
+   `AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall`
+   case first caches an old value in the target store under trusted cache mode,
+   then installs a source checkpoint snapshot and verifies that the same
+   `TxnManager` reads the snapshot value.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInstallSnapshotIntoTargetStoreAndReadCommittedData --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill --rerun-tasks
+```
+
+Result: passed.
+
+Conclusion:
+
+- This round does not change the default `trustCommittedRowCache=false`, so
+  normal benchmark throughput does not directly change because of this commit.
+- It closes another important store-replacement boundary outside runtime
+  restore, moving trusted committed cache from a pure benchmark switch toward a
+  locally optimizable mode with controlled invalidation.
+- Safely making this benefit the default still requires covering direct
+  `DbStore.restore(...)` callers, production region snapshot installer
+  injection, and external store replacement notifications; otherwise skipping
+  physical version validation by default still risks stale cache reads.

@@ -110,6 +110,46 @@ class AdbRegionTopologyManagerTest {
   }
 
   /**
+   * 验证 region snapshot 安装后会让同进程事务缓存失效，避免 trusted cache 返回旧 store 内容。
+   */
+  @Test
+  void shouldInvalidateTrustedTxnCacheAfterSnapshotInstall()
+      throws Exception {
+    File sourceDir = new File(tempDir, "source-trusted-cache");
+    File targetDir = new File(tempDir, "target-trusted-cache");
+    File snapshotDir = new File(tempDir, "snapshot-trusted-cache");
+    RowKey key = rowKey(9);
+    try (LdbStore source = new LdbStore(sourceDir.getAbsolutePath());
+         LdbStore target = new LdbStore(targetDir.getAbsolutePath())) {
+      TxnManager sourceManager = new TxnManager(source);
+      Transaction2 sourceTxn = sourceManager.beginTransaction();
+      sourceManager.put(sourceTxn, key, rowValue("snapshot-value"));
+      sourceManager.commit(sourceTxn);
+      source.checkpoint(snapshotDir.getAbsolutePath());
+
+      TxnManager targetManager = new TxnManager(target, true);
+      Transaction2 targetTxn = targetManager.beginTransaction();
+      targetManager.put(targetTxn, key, rowValue("stale-target-value"));
+      targetManager.commit(targetTxn);
+      RowValue cached = targetManager.getVisible(
+          targetManager.beginTransaction(), key);
+      assertNotNull(cached);
+      assertEquals("stale-target-value",
+          RowCodec.decode(cached.payload).getString());
+
+      AdbRegionSnapshotInstaller installer =
+          new AdbRegionSnapshotInstaller(target, targetManager, "node-b");
+      installer.install(new RegionSnapshotInstallPlan("r1", 1, 10,
+          Collections.singletonList("node-b")), snapshotDir.getAbsolutePath());
+
+      RowValue value = targetManager.getVisible(
+          targetManager.beginTransaction(), key);
+      assertNotNull(value);
+      assertEquals("snapshot-value", RowCodec.decode(value.payload).getString());
+    }
+  }
+
+  /**
    * 验证非目标副本不能安装该 region snapshot。
    */
   @Test
