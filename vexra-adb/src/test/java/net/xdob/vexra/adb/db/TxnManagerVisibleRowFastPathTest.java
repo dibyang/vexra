@@ -213,6 +213,40 @@ class TxnManagerVisibleRowFastPathTest {
     }
   }
 
+  /**
+   * 验证 LDB 直接 restore 后会通过 store 内容世代号清理默认 trusted cache。
+   *
+   * <p>该用例覆盖绕过 runtime bridge 和 region snapshot installer 的直接
+   * {@link LdbStore#restore(String)} 调用：同一个 TxnManager 在 restore 前缓存了较新的
+   * committed row，restore 后下一次读取必须发现 store epoch 变化并回到 checkpoint 内容。</p>
+   */
+  @Test
+  void shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore()
+      throws Exception {
+    File checkpointDir = new File(tempDir, "direct-restore-checkpoint");
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "direct-restore-cache").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      RowKey key = RowKey.of(TabId.of(1, 0L), 1L);
+
+      Transaction2 beforeTxn = manager.beginTransaction();
+      manager.put(beforeTxn, key, row("checkpoint-value", 0L));
+      manager.commit(beforeTxn);
+      store.checkpoint(checkpointDir.getAbsolutePath());
+
+      Transaction2 afterTxn = manager.beginTransaction();
+      manager.put(afterTxn, key, row("stale-cache-value", 0L));
+      manager.commit(afterTxn);
+      assertEquals("stale-cache-value", read(manager,
+          manager.beginTransaction(), key));
+
+      store.restore(checkpointDir.getAbsolutePath());
+
+      assertEquals("checkpoint-value", read(manager,
+          manager.beginTransaction(), key));
+    }
+  }
+
   private static void putCommitted(LdbStore store, RowKey key, long commitTs,
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)

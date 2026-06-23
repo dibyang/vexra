@@ -52,6 +52,27 @@ public interface DbStore extends AutoCloseable {
 
   void restore(String sourceDir) throws IOException;
 
+  /**
+   * 返回 store 内容世代号。
+   *
+   * <p>该值只用于进程内派生缓存失效。普通写入不需要改变世代号；当 restore、snapshot
+   * install 等操作整体替换底层可见内容时，支持该能力的 store 应递增世代号。</p>
+   *
+   * @return 当前内容世代号
+   */
+  default long contentEpoch() {
+    return 0L;
+  }
+
+  /**
+   * 当前 store 是否能在整体内容替换后推进内容世代号。
+   *
+   * @return 支持内容世代号时返回 true
+   */
+  default boolean supportsContentEpoch() {
+    return false;
+  }
+
   void writeBatch(WriteBatchConsumer consumer) throws SQLException;
 
   default CompletableFuture<Void> writeBatchAsync(WriteBatchConsumer consumer) throws SQLException{

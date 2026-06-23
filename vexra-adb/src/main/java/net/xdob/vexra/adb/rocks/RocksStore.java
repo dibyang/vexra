@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * RocksStore - 每个 database 一个实例
@@ -36,6 +37,7 @@ public class RocksStore implements DbStore {
   protected final ColumnFamilyHandle defaultCFHandle;
   protected final ColumnFamilyHandle txnCFHandle;
   protected final ColumnFamilyHandle metaCFHandle;
+  private final AtomicLong contentEpoch = new AtomicLong();
   static {
     RocksDB.loadLibrary();
   }
@@ -373,6 +375,26 @@ public class RocksStore implements DbStore {
   // Snapshot / backup
   // =========================
 
+  /**
+   * 返回 Rocks store 当前内容世代号。
+   *
+   * @return restore 成功后递增的内容世代号
+   */
+  @Override
+  public long contentEpoch() {
+    return contentEpoch.get();
+  }
+
+  /**
+   * 声明 Rocks store 支持内容世代号。
+   *
+   * @return 始终返回 true
+   */
+  @Override
+  public boolean supportsContentEpoch() {
+    return true;
+  }
+
   @Override
   public void checkpoint(String targetDir) throws IOException {
     try (Checkpoint cp = Checkpoint.create(db)) {
@@ -392,6 +414,7 @@ public class RocksStore implements DbStore {
       deleteDir(target);
     }
     source.renameTo(target);
+    contentEpoch.incrementAndGet();
   }
 
   private void deleteDir(File dir) {

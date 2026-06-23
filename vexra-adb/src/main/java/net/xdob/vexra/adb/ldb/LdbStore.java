@@ -22,6 +22,7 @@ import java.nio.file.StandardOpenOption;
 import java.sql.SQLException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -52,6 +53,7 @@ public class LdbStore implements DbStore {
   private final ReentrantReadWriteLock lifecycleLock = new ReentrantReadWriteLock();
   private final Lock readLock = lifecycleLock.readLock();
   private final Lock writeLock = lifecycleLock.writeLock();
+  private final AtomicLong contentEpoch = new AtomicLong();
   // commitAsync 最好不要用 ForkJoinPool.commonPool，给它单独一个线程池更稳
   private final ExecutorService restoreAwareExecutor = Executors.newSingleThreadExecutor();
 
@@ -421,6 +423,26 @@ public class LdbStore implements DbStore {
     }
   }
 
+  /**
+   * 返回 LDB 当前内容世代号。
+   *
+   * @return restore 成功切槽后递增的内容世代号
+   */
+  @Override
+  public long contentEpoch() {
+    return contentEpoch.get();
+  }
+
+  /**
+   * 声明 LDB store 支持内容世代号。
+   *
+   * @return 始终返回 true
+   */
+  @Override
+  public boolean supportsContentEpoch() {
+    return true;
+  }
+
   @Override
   public void checkpoint(String targetDir) throws IOException {
     readLock.lock();
@@ -491,6 +513,7 @@ public class LdbStore implements DbStore {
 
       // 5) 切换完成后再关闭旧 DB
       closeDbQuietly(oldDb);
+      contentEpoch.incrementAndGet();
 
       // 注意：旧槽位不删除，保留到下一次 restore 再覆盖
     } catch (Exception e) {

@@ -3849,3 +3849,80 @@ benchmark：
 - 唯一保留的提交是上一轮发现的诊断测试断言修正：`preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` 现在允许外层 direct value cache 命中时绕过内部 committed cache hit/validate phase。
 - 第 2 项专用 ResultSet 仍不应贸然推进：前序 JFR 已显示 `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 不是稳态 allocation 大头。
 - 下一步更值得做的是继续围绕 `AdbPreparedStatementProxy` / JDBC 外层调用边界做 JFR 采样，或在 ldb 层推进 range cursor/raw-view、segment/block-level count 这类能实际降低 `range_scan/mixed` allocation 的能力。
+
+## 第六十轮：JFR 复核与 committed cache 内容世代失效
+
+本轮先按目标第 1 项复跑完整 `mixed` 8 线程 JFR，确认对象分配大头，而不是继续盲猜
+`ResultSet` / `Proxy`。JFR 命令：
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -RangeSize 32 -Mode jdbc -TableEngine adb -SqlDiagnostics false -OutputDir vexra-adb/build/adb-benchmark/jfr-round60-current
+```
+
+JFR 文件：
+
+- `vexra-adb/build/adb-benchmark/jfr-round60-current/adb-mixed-20260623-093401.jfr`
+- `vexra-adb/build/adb-benchmark/jfr-round60-current/hotspots/adb-focus.txt`
+
+关键分配结论：
+
+| 关注点 | 分配采样 | 结论 |
+| --- | ---: | --- |
+| `AdbPreparedStatementProxy` | `251616 bytes / 4920 events` | 主要来自底层 ldb cursor/block 迭代和 key/value 字节对象 |
+| `TxnMap2.getVisible` | `134712 bytes / 3157 events` | 主要来自 committed version seek/scan 相关 ldb 对象 |
+| `TxnManager.commit` | `39304 bytes / 1095 events` | 写 batch 路径仍有对象成本，但不是本轮最大项 |
+| `java.lang.reflect.Proxy` | `33032 bytes / 3 events` | 主要是首次代理类生成，不是稳态热点 |
+| `AdbSimpleResultSet` | `152 bytes / 5 events` | 不是 allocation 大头 |
+
+因此本轮继续推迟目标第 2 项的专用 `ResultSet` 实现，转向目标第 3 项：
+`TxnMap2.getVisible / visible row` 的 committed cache 验证成本。
+
+本轮改动：
+
+1. `DbStore` 新增 `contentEpoch()` 与 `supportsContentEpoch()` 默认接口，用于标识 store
+   内容整体替换的世代号。
+2. `LdbStore` 与 `RocksStore` 在 restore 成功后递增 `contentEpoch`。
+3. `TxnManager` 默认只在支持 content epoch 的 store 上信任 committed row cache，跳过每次
+   cache hit 后的 `store.get(versionKey)` 物理版本校验。
+4. `TxnManager` 在读路径、row-count cache 和 append rowId hint 使用前检查 store content epoch；
+   如果发现直接 `DbStore.restore(...)` 绕过了 runtime bridge 或 region snapshot installer，
+   会清理 committed row cache、row-count cache 和 rowId hint。
+5. 保留兼容开关：`-Dvexra.adb.rowCache.validateCommitted=true` 可强制恢复每次 cache hit
+   都校验 committed version 的保守行为；显式
+   `-Dvexra.adb.rowCache.trustCommitted=false` 也可关闭默认 trusted cache。
+
+新增测试：
+
+- `TxnManagerVisibleRowFastPathTest.shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore`
+  覆盖默认 trusted cache 下直接调用 `LdbStore.restore(...)` 后，同一个 `TxnManager`
+  不能返回 restore 前的旧缓存。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldKeepSnapshotVisibleWhenNewerCommittedVersionExists --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall
+```
+
+验证结果：通过。
+
+benchmark 对照命令使用同样参数：`rows=5000`、`warmup=300`、`operations=3000`、
+`rangeSize=32`、`sqlDiagnostics=false`。默认 trusted cache 与强制物理校验对照：
+
+| workload | cache 模式 | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `point_lookup` | 默认 trusted + content epoch | 2189.78 | 2225 | 10410 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/point_default.properties` |
+| `point_lookup` | 强制物理校验 | 2309.47 | 2166 | 10733 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/point_validate.properties` |
+| `mixed` 8 线程 | 默认 trusted + content epoch | 2617.80 | 8595 | 389603 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/mixed_default.properties` |
+| `mixed` 8 线程 | 强制物理校验 | 2529.51 | 9119 | 390760 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/mixed_validate.properties` |
+
+结论：
+
+- 本轮 JFR 明确不支持把专用 `ResultSet` 作为下一优先级；`AdbSimpleResultSet` 和
+  `java.lang.reflect.Proxy` 不是稳态 allocation 大头。
+- 默认 trusted cache 在 `mixed` 8 线程下相对强制物理校验提升约 `+3.5%`，p99 从
+  `9119us` 降到 `8595us`，allocation 从 `390760 B/op` 降到 `389603 B/op`。
+- 单线程 `point_lookup` 本轮样本默认 trusted cache 低于强制校验，说明该优化主要收益在
+  mixed 的缓存命中和读写交织场景，不能作为点查单项的稳定收益。
+- 下一步仍应优先处理 JFR 指向的 ldb cursor/block 分配：要么向 `vexra-ldb` 推 raw-view /
+  lower-allocation cursor 能力，要么在 ADB range count / visible row 路径进一步减少
+  `VersionScanSource.key()` / `value()` 造成的数组和 Slice 分配。

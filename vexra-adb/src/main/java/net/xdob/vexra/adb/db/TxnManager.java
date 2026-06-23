@@ -19,11 +19,16 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TxnManager {
 
   /**
-   * committed row cache 默认校验底层 committed version 仍然存在，保护 restore 后读取不返回旧缓存。
-   * 如需在纯本地压测中评估最短点查路径，可通过系统属性显式信任本进程提交后刷入的缓存项。
+   * committed row cache 默认只在支持内容世代号的 store 上跳过物理版本校验。
+   *
+   * <p>restore 或 snapshot install 会推进 store 内容世代号并触发缓存失效；如果调用方需要
+   * 恢复旧的每次命中都校验 committed version 行为，可以设置
+   * {@code vexra.adb.rowCache.validateCommitted=true}。</p>
    */
-  private static final boolean DEFAULT_TRUST_COMMITTED_ROW_CACHE =
-      Boolean.getBoolean("vexra.adb.rowCache.trustCommitted");
+  private static final String TRUST_COMMITTED_ROW_CACHE_PROPERTY =
+      "vexra.adb.rowCache.trustCommitted";
+  private static final String VALIDATE_COMMITTED_ROW_CACHE_PROPERTY =
+      "vexra.adb.rowCache.validateCommitted";
   private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
   private static final int RAW_ROW_KEY_PREFIX_LENGTH = 21;
   private static final int RAW_VERSION_ROW_KEY_LENGTH = 30;
@@ -49,6 +54,7 @@ public class TxnManager {
   private final Map<TabId, Object> rowCountLoadLocks =
       new ConcurrentHashMap<>();
   private final boolean trustCommittedRowCache;
+  private volatile long observedStoreContentEpoch;
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -61,14 +67,36 @@ public class TxnManager {
   private volatile boolean detailedSqlDiagnostics;
 
   public TxnManager(DbStore store) {
-    this(store, DEFAULT_TRUST_COMMITTED_ROW_CACHE);
+    this(store, defaultTrustCommittedRowCache(store));
   }
 
   TxnManager(DbStore store, boolean trustCommittedRowCache) {
     this.store = store;
     this.trustCommittedRowCache = trustCommittedRowCache;
+    this.observedStoreContentEpoch = store.contentEpoch();
     this.txnIdGen = new TxnIdGenerator(store);
     this.tsGen = new CommitTSGenerator(store);
+  }
+
+  /**
+   * 判断默认 committed row cache 是否可以跳过物理版本校验。
+   *
+   * <p>显式 {@code vexra.adb.rowCache.validateCommitted=true} 会强制保守校验；显式
+   * {@code vexra.adb.rowCache.trustCommitted} 会按调用方配置执行。未显式配置时，只有能在
+   * restore 后推进内容世代号的 store 才默认启用 trusted cache。</p>
+   *
+   * @param store 当前事务管理器绑定的 store
+   * @return 默认是否信任 committed row cache
+   */
+  private static boolean defaultTrustCommittedRowCache(DbStore store) {
+    if (Boolean.getBoolean(VALIDATE_COMMITTED_ROW_CACHE_PROPERTY)) {
+      return false;
+    }
+    String configured = System.getProperty(TRUST_COMMITTED_ROW_CACHE_PROPERTY);
+    if (configured != null) {
+      return Boolean.parseBoolean(configured);
+    }
+    return store != null && store.supportsContentEpoch();
   }
 
   public DbStore getStore() {
@@ -86,6 +114,7 @@ public class TxnManager {
     committedRowCache.clear();
     rowCountCache.clear();
     maxRowIdHints.clear();
+    observedStoreContentEpoch = store.contentEpoch();
   }
 
   public LockManager getLockManager() {
@@ -410,6 +439,7 @@ public class TxnManager {
   }
 
   private long getCachedBaseRowCount(TabId tId) throws SQLException {
+    invalidateStoreDerivedCachesIfNeeded();
     long started = System.nanoTime();
     AtomicLong cached = rowCountCache.get(tId);
     if (cached != null) {
@@ -603,6 +633,7 @@ public class TxnManager {
    * @return true 表示该 rowId 一定大于当前进程已知 committed 上界
    */
   public boolean canSkipAppendUniqueCheck(TabId tabId, long rowId) {
+    invalidateStoreDerivedCachesIfNeeded();
     if (tabId == null) {
       return false;
     }
@@ -867,6 +898,7 @@ public class TxnManager {
   }
 
   public RowValue getVisible(Transaction2 txn, DataKey rowKey) throws SQLException {
+    invalidateStoreDerivedCachesIfNeeded();
     if (detailedSqlDiagnostics()) {
       return getVisibleDetailed(txn, rowKey);
     }
@@ -907,6 +939,7 @@ public class TxnManager {
    */
   public VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
       int columnId) throws SQLException {
+    invalidateStoreDerivedCachesIfNeeded();
     if (detailedSqlDiagnostics()) {
       RowValue rowValue = getVisibleDetailed(txn, rowKey);
       return visibleColumnFromRow(rowValue, columnId);
@@ -1216,6 +1249,29 @@ public class TxnManager {
         ? VersionRowKey.committedBytes((RowKey) rowKey, commitTs)
         : VersionKey.of(rowKey, true, commitTs).toBytes();
     return store.get(versionKey) != null;
+  }
+
+  /**
+   * 检查底层 store 内容世代号并按需清理派生缓存。
+   *
+   * <p>该方法用于覆盖直接 {@code DbStore.restore(...)} 等绕过运维桥接层的内容替换路径。
+   * 支持 content epoch 的 store 在 restore 成功后递增世代号；事务管理器下一次读、
+   * row-count 或 append hint 使用前会发现变化并清空旧缓存。</p>
+   */
+  private void invalidateStoreDerivedCachesIfNeeded() {
+    long currentEpoch = store.contentEpoch();
+    if (currentEpoch == observedStoreContentEpoch) {
+      return;
+    }
+    synchronized (this) {
+      currentEpoch = store.contentEpoch();
+      if (currentEpoch != observedStoreContentEpoch) {
+        committedRowCache.clear();
+        rowCountCache.clear();
+        maxRowIdHints.clear();
+        observedStoreContentEpoch = currentEpoch;
+      }
+    }
   }
 
   /**

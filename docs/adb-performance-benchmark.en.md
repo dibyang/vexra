@@ -4472,3 +4472,89 @@ Conclusion:
   `AdbPreparedStatementProxy` / JDBC outer invocation boundaries, or an ldb-side
   range cursor/raw-view and segment/block-level count capability that can
   materially reduce `range_scan/mixed` allocation.
+
+## Round 60: JFR Recheck and Committed Cache Content Epoch Invalidation
+
+This round first completed objective item 1 by rerunning a full 8-thread
+`mixed` JFR profile instead of guessing around `ResultSet` / `Proxy`. Command:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\scripts\adb-benchmark-jfr.ps1 -Workload mixed -Rows 5000 -WarmupOperations 300 -Operations 3000 -Threads 8 -RangeSize 32 -Mode jdbc -TableEngine adb -SqlDiagnostics false -OutputDir vexra-adb/build/adb-benchmark/jfr-round60-current
+```
+
+JFR files:
+
+- `vexra-adb/build/adb-benchmark/jfr-round60-current/adb-mixed-20260623-093401.jfr`
+- `vexra-adb/build/adb-benchmark/jfr-round60-current/hotspots/adb-focus.txt`
+
+Key allocation evidence:
+
+| Focus | Allocation sample | Conclusion |
+| --- | ---: | --- |
+| `AdbPreparedStatementProxy` | `251616 bytes / 4920 events` | Mostly ldb cursor/block iteration and key/value byte objects |
+| `TxnMap2.getVisible` | `134712 bytes / 3157 events` | Mostly committed-version seek/scan ldb objects |
+| `TxnManager.commit` | `39304 bytes / 1095 events` | Write-batch path still has object cost, but is not the top item in this round |
+| `java.lang.reflect.Proxy` | `33032 bytes / 3 events` | Mostly first proxy-class generation, not a steady-state hotspot |
+| `AdbSimpleResultSet` | `152 bytes / 5 events` | Not an allocation hotspot |
+
+So objective item 2 remains deferred. This round instead continues objective
+item 3, reducing the committed-cache validation cost in
+`TxnMap2.getVisible / visible row` paths.
+
+Changes:
+
+1. `DbStore` now exposes default `contentEpoch()` and
+   `supportsContentEpoch()` methods for whole-store content replacement.
+2. `LdbStore` and `RocksStore` increment `contentEpoch` after successful
+   restore.
+3. `TxnManager` now defaults to trusting committed row cache only when the store
+   supports content epochs, skipping the per-cache-hit `store.get(versionKey)`
+   physical version validation.
+4. Before using read paths, row-count cache, or append rowId hints,
+   `TxnManager` checks the store content epoch. If a direct
+   `DbStore.restore(...)` bypassed the runtime bridge or region snapshot
+   installer, it clears committed row cache, row-count cache, and rowId hints.
+5. Compatibility switches remain available:
+   `-Dvexra.adb.rowCache.validateCommitted=true` forces the old conservative
+   validation behavior, and explicit
+   `-Dvexra.adb.rowCache.trustCommitted=false` disables default trusted cache.
+
+New test:
+
+- `TxnManagerVisibleRowFastPathTest.shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore`
+  covers direct `LdbStore.restore(...)` under the default trusted-cache mode and
+  verifies that the same `TxnManager` does not return pre-restore cached data.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldKeepSnapshotVisibleWhenNewerCommittedVersionExists --tests net.xdob.vexra.adb.db.AdbRuntimeOperationsBridgeTest.shouldRunFullBackupAndRestoreDrill --tests net.xdob.vexra.adb.db.AdbRegionTopologyManagerTest.shouldInvalidateTrustedTxnCacheAfterSnapshotInstall
+```
+
+Result: passed.
+
+Benchmark comparison used the same shape: `rows=5000`, `warmup=300`,
+`operations=3000`, `rangeSize=32`, and `sqlDiagnostics=false`.
+
+| workload | cache mode | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | --- |
+| `point_lookup` | default trusted + content epoch | 2189.78 | 2225 | 10410 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/point_default.properties` |
+| `point_lookup` | forced physical validation | 2309.47 | 2166 | 10733 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/point_validate.properties` |
+| `mixed`, 8 threads | default trusted + content epoch | 2617.80 | 8595 | 389603 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/mixed_default.properties` |
+| `mixed`, 8 threads | forced physical validation | 2529.51 | 9119 | 390760 | `vexra-adb/build/adb-benchmark/cache-epoch-20260623-095032/mixed_validate.properties` |
+
+Conclusion:
+
+- The JFR evidence does not justify making dedicated `ResultSet` the next
+  priority. `AdbSimpleResultSet` and `java.lang.reflect.Proxy` are not
+  steady-state allocation dominants.
+- On 8-thread `mixed`, default trusted cache improved throughput by about
+  `+3.5%` over forced physical validation, reduced p99 from `9119us` to
+  `8595us`, and reduced allocation from `390760 B/op` to `389603 B/op`.
+- The single-thread `point_lookup` sample was lower with default trusted cache
+  than with forced validation in this run, so the benefit should be read as a
+  mixed-workload improvement rather than a stable point-lookup win.
+- The next priority should stay on the ldb cursor/block allocation indicated by
+  JFR: either request raw-view / lower-allocation cursor support from
+  `vexra-ldb`, or further reduce `VersionScanSource.key()` / `value()` array
+  and Slice allocation in ADB range-count / visible-row paths.
