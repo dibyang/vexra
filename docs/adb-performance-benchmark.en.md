@@ -4422,3 +4422,53 @@ Conclusion:
   (`2901.35` vs `2857.14 ops/s`). This does not prove the new cache is the cause
   of the mixed drop. Mixed still needs continued work on write entry, range
   count, and transaction-boundary costs.
+
+## Round 59: Mixed Detailed Diagnostics and Rejected Experiments
+
+This round continues the five-item performance objective, but does not keep
+negative-throughput production code. It first reran an 8-thread mixed detailed
+diagnostic sample:
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_detail_after_value_cache_20260623-091500.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_detail_after_value_cache-20260623-091500/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+Diagnostic sample result:
+
+| workload | threads | ops | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detailed | 8 | 1000 | 3174.60 | 7108 | 138334 | `vexra-adb/build/adb-benchmark/adb_mixed_detail_after_value_cache_20260623-091500.properties` |
+
+Main phases:
+
+| phase | count | avg us | total us | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 700 | 2167 | 1517000 | Highest-frequency mixed read entry |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 200 | 2180 | 436000 | Range-count outer entry is still high |
+| `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` | 100 | 2600 | 260000 | Write entry is still high |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 700 | 109 | 76875 | Visible internals are no longer the millisecond-scale cause |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 594 | 91 | 54502 | Store seek/scan can still be split further |
+| `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | 200 | 88 | 17709 | Raw range counting is not the largest remaining cost |
+
+Rejected experiments:
+
+| Experiment | Evidence | Decision |
+| --- | --- | --- |
+| Skip savepoint for single-row append-safe bulk insert | `insert` reached `729.04 ops/s`, but `mixed` repeated at `2669.04` and `2739.73 ops/s`, below the retained baseline | Helps pure insert only; rejected for mixed |
+| Row-level change-version direct value cache | `point_lookup` stayed high at `2732.24 ops/s`, but `mixed` was `2762.43 ops/s`; detailed diagnostics showed only `28/700` `ADB_POINT_LOOKUP_VALUE_CACHE_HIT` events | Benchmark point keys mostly do not repeat, so hits do not offset commit-side version maintenance; rejected |
+| Skip point-lookup phase timing when SQL diagnostics are disabled | `point_lookup` repeated at `1192.84` and `2207.51 ops/s`, below Round 58's `2744.74 ops/s` | Branch/call shape did not produce stable positive throughput; rejected |
+
+Conclusion:
+
+- No new production optimization was retained in this round.
+- The only retained commit is the diagnostic-test assertion fix from the prior
+  turn: `preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` now accepts
+  the outer direct value cache hit path as a valid substitute for internal
+  committed-cache hit/validate phases.
+- Objective item 2 should still stay deferred: prior JFR evidence shows
+  `AdbSimpleResultSet` / `java.lang.reflect.Proxy` are not steady allocation
+  dominants.
+- The next higher-value direction is another JFR pass around
+  `AdbPreparedStatementProxy` / JDBC outer invocation boundaries, or an ldb-side
+  range cursor/raw-view and segment/block-level count capability that can
+  materially reduce `range_scan/mixed` allocation.

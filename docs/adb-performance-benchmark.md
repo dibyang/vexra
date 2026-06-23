@@ -3809,3 +3809,43 @@ benchmark：
 - `mixed` 本轮样本低于第五十六轮 `3205.13 ops/s`，但自适应与显式禁用直接值缓存的结果接近
   (`2901.35` vs `2857.14 ops/s`)，暂不能证明该优化是 mixed 回落主因。mixed 仍需继续针对写入入口、
   range count 和事务边界做后续优化。
+
+## 第五十九轮：mixed 详细诊断与未采纳实验
+
+本轮继续推进 5 项性能优化目标，但不保留负收益生产代码。先复跑 mixed 8 线程详细诊断样本：
+
+```powershell
+.\gradlew.bat :vexra-adb:adbBenchmark -PadbBenchmarkMode=jdbc -PadbBenchmarkWorkload=mixed -PadbBenchmarkRows=5000 -PadbBenchmarkWarmupOperations=300 -PadbBenchmarkOperations=1000 -PadbBenchmarkRangeSize=32 -PadbBenchmarkThreads=8 -PadbBenchmarkTransactionBatchSize=100 -PadbBenchmarkStatementBatchSize=0 -PadbBenchmarkSqlDiagnostics=true -PadbBenchmarkDetailedDiagnostics=true -PadbBenchmarkTableEngine=adb -PadbBenchmarkOutput=vexra-adb/build/adb-benchmark/adb_mixed_detail_after_value_cache_20260623-091500.properties -PadbBenchmarkUrl=jdbc:adb:ldb:D:/work/java2/vexra/vexra-adb/build/adb-benchmark/db/adb_mixed_detail_after_value_cache-20260623-091500/adb-benchmark;DB_CLOSE_DELAY=0
+```
+
+诊断样本结果：
+
+| workload | threads | ops | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` detailed | 8 | 1000 | 3174.60 | 7108 | 138334 | `vexra-adb/build/adb-benchmark/adb_mixed_detail_after_value_cache_20260623-091500.properties` |
+
+主要 phase：
+
+| phase | count | avg us | total us | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| `ADB_TABLE_POINT_LOOKUP_FAST ADB_BENCH` | 700 | 2167 | 1517000 | mixed 最高频读入口 |
+| `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH` | 200 | 2180 | 436000 | range count 外层仍高 |
+| `ADB_TABLE_BULK_ADD_ROW ADB_BENCH` | 100 | 2600 | 260000 | 写入入口仍高 |
+| `ADB_POINT_LOOKUP_VISIBLE_ROW` | 700 | 109 | 76875 | visible 内部已不是毫秒级主因 |
+| `ADB_VISIBLE_COMMITTED_STORE_SCAN` | 594 | 91 | 54502 | store seek/scan 仍可继续拆 |
+| `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | 200 | 88 | 17709 | range 内部 raw count 不是最大头 |
+
+本轮尝试但未保留的实验：
+
+| 实验 | 验证结果 | 结论 |
+| --- | --- | --- |
+| 单行 append-safe bulk insert 跳过 savepoint | `insert` 提升到 `729.04 ops/s`，但 `mixed` 两轮为 `2669.04`、`2739.73 ops/s`，低于保留基线 | 只利好纯 insert，不适合 mixed，已撤回 |
+| row 级 change version 直接值缓存 | `point_lookup` 为 `2732.24 ops/s`，但 `mixed` 为 `2762.43 ops/s`；详细诊断中 `ADB_POINT_LOOKUP_VALUE_CACHE_HIT` 仅 `28/700` | benchmark 点查 key 基本不重复，命中不足以抵消提交端版本维护成本，已撤回 |
+| 无 SQL diagnostics 时跳过 point lookup phase 计时 | `point_lookup` 两轮为 `1192.84`、`2207.51 ops/s`，低于第五十八轮 `2744.74 ops/s` | 分支/调用形态没有稳定正收益，已撤回 |
+
+结论：
+
+- 本轮没有保留新的生产优化代码。
+- 唯一保留的提交是上一轮发现的诊断测试断言修正：`preparedPointLookupRecordsVisibleRowDiagnosticBreakdown` 现在允许外层 direct value cache 命中时绕过内部 committed cache hit/validate phase。
+- 第 2 项专用 ResultSet 仍不应贸然推进：前序 JFR 已显示 `AdbSimpleResultSet` / `java.lang.reflect.Proxy` 不是稳态 allocation 大头。
+- 下一步更值得做的是继续围绕 `AdbPreparedStatementProxy` / JDBC 外层调用边界做 JFR 采样，或在 ldb 层推进 range cursor/raw-view、segment/block-level count 这类能实际降低 `range_scan/mixed` allocation 的能力。
