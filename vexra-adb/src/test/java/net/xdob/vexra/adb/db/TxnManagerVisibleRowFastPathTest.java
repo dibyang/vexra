@@ -108,6 +108,32 @@ class TxnManagerVisibleRowFastPathTest {
   }
 
   /**
+   * 验证 raw range count 遇到同一逻辑行的 intent 版本后会继续读取 committed 版本。
+   *
+   * <p>VersionRowKey 中 intent 标记会排在 committed 标记之前。该场景要求 raw-key
+   * helper 每次推进 cursor 后刷新当前 key，否则会一直拿旧 intent key 做判断，
+   * 最终把后续范围全部跳过。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldContinueRawRangeCountAfterIntentVersion() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-intent-visible").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+
+      putIntent(store, RowKey.of(tabId, 1L), 99L, "pending-1");
+      putCommitted(store, RowKey.of(tabId, 1L), 10L, "old-1");
+      putCommitted(store, RowKey.of(tabId, 2L), 10L, "old-2");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      assertEquals(2L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
+          1L, 2L));
+    }
+  }
+
+  /**
    * 验证带本地写的 range count 路径也会跳过晚于快照的 committed 版本。
    *
    * @throws Exception store 或事务操作失败时抛出
@@ -251,6 +277,12 @@ class TxnManagerVisibleRowFastPathTest {
       String value) throws Exception {
     store.writeBatch(batch -> batch.put(VersionKey.of(key, true, commitTs)
         .toBytes(), RowValue.encodeValue(row(value, commitTs))));
+  }
+
+  private static void putIntent(LdbStore store, RowKey key, long txnId,
+      String value) throws Exception {
+    store.writeBatch(batch -> batch.put(VersionKey.of(key, false, txnId)
+        .toBytes(), RowValue.encodeValue(row(value, 0L))));
   }
 
   private static void putCommittedRow(LdbStore store, RowKey key,

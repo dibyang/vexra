@@ -4558,3 +4558,62 @@ Conclusion:
   JFR: either request raw-view / lower-allocation cursor support from
   `vexra-ldb`, or further reduce `VersionScanSource.key()` / `value()` array
   and Slice allocation in ADB range-count / visible-row paths.
+
+## Round 61: Raw Range-Count Intent Advancement Fix
+
+This round continues the overlap between objective 3 (`TxnMap2.getVisible` /
+visible-row parsing) and objective 5 (range-count outer entry). After reviewing
+the current ADB code and the `vexra-ldb:0.10.0` API, the boundary is clear:
+
+1. ADB `VersionScanSource` still exposes only `byte[] key()` / `byte[] value()`.
+2. `vexra-ldb` `SnapshotCursor` also exposes only `byte[] key()` /
+   `byte[] value()`, and `DbSnapshotCursor.positionToVisible(...)` copies the
+   current key/value internally.
+3. ADB therefore cannot fully remove the cursor/block/key-value allocation seen
+   in JFR from this side alone. Larger gains still require a `vexra-ldb`
+   raw-view / reusable-entry cursor, or ADB segment/block-level count metadata.
+
+Within the part that ADB can fix directly, this round found and fixed one raw
+range-count intent-advancement issue. When
+`resolveVisibleCountableInCurrentRawLogicalRow(...)` saw an intent version for
+the current logical row, it called `scan.advance()` but did not refresh the local
+`rawKey`. Because `VersionRowKey` sorts the intent marker before the committed
+marker, the helper could keep evaluating the stale intent key until the cursor
+became invalid, skipping the following committed version and later rows.
+
+Changes:
+
+1. Refresh the local raw key immediately after advancing through an intent
+   version.
+2. Add
+   `TxnManagerVisibleRowFastPathTest.shouldContinueRawRangeCountAfterIntentVersion`,
+   which constructs a row with both an intent and a committed version plus a
+   following committed row, then verifies raw range count returns the correct
+   count.
+
+Validation command:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldContinueRawRangeCountAfterIntentVersion
+```
+
+Full validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 2238.81 | 1112 | 93675 | `vexra-adb/build/adb-benchmark/range_count_intent_fix_20260623.properties` |
+| `mixed` | 8 | 2247.19 | 10567 | 388470 | `vexra-adb/build/adb-benchmark/mixed_intent_fix_20260623.properties` |
+
+Conclusion: this change mainly fixes correctness and abnormal scan amplification
+when intents are present. The common no-intent benchmark path does not show a
+large throughput gain, but it also does not show an obvious functional
+regression. Further allocation reduction still requires a `vexra-ldb`
+raw/reusable cursor or ADB segment/block-level count metadata.

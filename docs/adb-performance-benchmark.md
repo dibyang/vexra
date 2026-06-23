@@ -3926,3 +3926,53 @@ benchmark 对照命令使用同样参数：`rows=5000`、`warmup=300`、`operati
 - 下一步仍应优先处理 JFR 指向的 ldb cursor/block 分配：要么向 `vexra-ldb` 推 raw-view /
   lower-allocation cursor 能力，要么在 ADB range count / visible row 路径进一步减少
   `VersionScanSource.key()` / `value()` 造成的数组和 Slice 分配。
+
+## 第六十一轮：raw range count intent 推进修正
+
+本轮继续推进目标第 3 项和第 5 项的交叉路径：`TxnMap2.getVisible / visible row`
+与 range count 外层入口。复核当前代码和 `vexra-ldb:0.10.0` API 后确认：
+
+1. ADB 的 `VersionScanSource` 仍只能暴露 `byte[] key()` / `byte[] value()`。
+2. `vexra-ldb` 的 `SnapshotCursor` 同样只提供 `byte[] key()` / `byte[] value()`；
+   `DbSnapshotCursor.positionToVisible(...)` 内部会复制当前 key/value。
+3. 因此本轮不能在 ADB 侧彻底消除 JFR 中看到的 cursor/block/key-value 分配，
+   后续大收益仍需要 `vexra-ldb` 提供 raw-view / reusable-entry cursor，或由 ADB
+   增加 segment/block-level count 元数据。
+
+在 ADB 可直接修正的范围内，本轮发现并修复一个 raw range count 的 intent 推进问题：
+`resolveVisibleCountableInCurrentRawLogicalRow(...)` 遇到同一逻辑行的 intent 版本时，
+调用 `scan.advance()` 后没有刷新局部 `rawKey`。由于 `VersionRowKey` 中 intent 标记
+排在 committed 标记之前，该问题会让 helper 持续用旧 intent key 做判断，直到 cursor
+无效，导致带 intent 的范围计数跳过后续 committed 版本和后续行。
+
+本轮改动：
+
+1. intent 分支 `advance()` 后立即刷新当前 raw key。
+2. 新增 `TxnManagerVisibleRowFastPathTest.shouldContinueRawRangeCountAfterIntentVersion`，
+   构造同一行同时存在 intent 与 committed 版本、下一行也存在 committed 版本的场景，
+   验证 raw range count 返回正确计数。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest.shouldContinueRawRangeCountAfterIntentVersion
+```
+
+完整验证：
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 2238.81 | 1112 | 93675 | `vexra-adb/build/adb-benchmark/range_count_intent_fix_20260623.properties` |
+| `mixed` | 8 | 2247.19 | 10567 | 388470 | `vexra-adb/build/adb-benchmark/mixed_intent_fix_20260623.properties` |
+
+结论：该改动主要修复带 intent 的 correctness 与异常扫描放大；常规无 intent benchmark
+没有证明吞吐会大幅提升，也没有出现明显功能回归。下一步若继续压低 allocation，仍需要
+`vexra-ldb` raw/reusable cursor 或 ADB segment/block-level count 元数据。

@@ -1653,6 +1653,7 @@ public class TxnManager {
       }
       if (!isRawCommittedVersion(rawKey)) {
         scan.advance();
+        rawKey = scan.isValid() ? scan.key() : null;
         continue;
       }
 
