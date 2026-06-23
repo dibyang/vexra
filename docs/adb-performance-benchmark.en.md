@@ -5643,3 +5643,86 @@ Conclusion:
 - The next objective-5 step should evolve the fixed full-segment threshold into
   a cost model and add segment base compaction / rebuild to reduce META delta
   chains.
+
+## Round 75: Segment Range-count Base Compaction Plan
+
+This round continues objective 5. Round 73 made wide range count avoid most row
+version scans through segment deltas, and round 74 prevented medium-range
+mis-hits. The remaining issue is that segment statistics are still delta-only:
+each row-count-changing write adds one segment delta. For databases that enable
+this feature and keep writing, cold starts, cache misses, or old-snapshot reads
+may still scan long segment delta chains.
+
+Compatibility boundary:
+
+1. Add a `TABLE_SEGMENT_ROW_COUNT` base snapshot key alongside the existing
+   `TABLE_SEGMENT_ROW_COUNT_DELTA` keys. The round-73 delta key encoding stays
+   unchanged.
+2. Base snapshots are read-after optimization. Failing to write a base snapshot
+   must not affect the current range count result.
+3. Add `vexra.adb.rangeCount.segmentCount.compactDeltaThreshold`, defaulting to
+   256. Setting it to 0 or a negative value disables segment base compaction.
+4. Latest snapshots that hit the in-memory cache do not force compaction.
+   Cache misses, cold starts, and old snapshots compute base + delta and may
+   opportunistically write a base snapshot when the threshold is reached.
+5. Old databases without base snapshots keep computing from 0 plus deltas, so
+   correctness is preserved.
+
+Plan:
+
+1. Add `SegmentRowCountKey` / `VersionSegmentRowCountKey` for segment base
+   snapshots.
+2. Extend segment count reads from "scan deltas only" to "choose the latest
+   base not newer than startTs, then add following deltas".
+3. When one segment accumulates at least the threshold number of deltas in a
+   read, write a `VersionSegmentRowCountKey` base snapshot.
+4. Add a low-threshold test that triggers segment base compaction, verifies the
+   count result, and checks the `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT` phase.
+
+Implementation result:
+
+1. Added `MetaType.TABLE_SEGMENT_ROW_COUNT`, `SegmentRowCountKey`, and
+   `VersionSegmentRowCountKey` for segment row-count base snapshots.
+2. `TxnManager` now supports
+   `vexra.adb.rangeCount.segmentCount.compactDeltaThreshold`, defaulting to
+   256. Setting it to 0 or a negative value disables read-after compaction.
+3. Segment count cold reads and old-snapshot reads now use base + delta:
+   choose the latest base not newer than the read snapshot, then scan deltas
+   after that base. Old databases without base snapshots still compute from
+   0 plus deltas.
+4. Latest-snapshot segment cache hits still do not force compaction. Cache
+   misses, cold starts, and old-snapshot reads write a
+   `VersionSegmentRowCountKey` best-effort when the threshold is reached,
+   without deleting old deltas.
+5. Added
+   `TxnManagerVisibleRowFastPathTest.shouldCompactSegmentRowCountBaseAfterDeltaThreshold`,
+   proving that the first cold read records
+   `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT`, while the next cold read reuses the
+   base snapshot and does not compact again.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test --rerun-tasks
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | rangeSize | segment switch | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | Key phase | Result file |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 4096 | on, compact threshold 16 | 3973.51 | 220 | 397 | 641 | 389683 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-base-20260623/range_scan_4096_enabled_compact.properties` |
+
+Conclusion:
+
+- The wide-range hot path still hits segment count. Throughput and p99 remain
+  in the same range as round 74, with no obvious regression.
+- The main benchmark window did not record
+  `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT`, which is expected: the preload writes
+  leave the in-process segment cache warm. The low-threshold JUnit cold-read
+  test covers the read-after compaction scenario.
+- The remaining higher-value objective-5 work is segment rebuild / cost-model
+  selection and further reducing the fixed outer cost of
+  `ADB_TABLE_RANGE_COUNT_FAST`.

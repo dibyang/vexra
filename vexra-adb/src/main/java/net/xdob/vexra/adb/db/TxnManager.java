@@ -33,6 +33,8 @@ public class TxnManager {
       "vexra.adb.rangeCount.segmentCount.enabled";
   private static final String RANGE_COUNT_SEGMENT_MIN_SEGMENTS_PROPERTY =
       "vexra.adb.rangeCount.segmentCount.minSegments";
+  private static final String RANGE_COUNT_SEGMENT_COMPACT_DELTA_THRESHOLD_PROPERTY =
+      "vexra.adb.rangeCount.segmentCount.compactDeltaThreshold";
   private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
   private static final int DEFAULT_RANGE_COUNT_SEGMENT_MIN_SEGMENTS = 4;
   private static final int RANGE_COUNT_SEGMENT_SIZE = 256;
@@ -605,6 +607,20 @@ public class TxnManager {
         DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD);
   }
 
+  /**
+   * 返回 segment row-count base snapshot 的读后压实阈值。
+   *
+   * <p>该阈值只控制可选 segment range count 元数据链的读后优化；默认复用表级
+   * row-count 压实阈值。配置为 0 或负数时关闭压实，但仍可读取已有 base。</p>
+   *
+   * @return 触发压实所需的最小 delta 数量
+   */
+  private static int rangeCountSegmentCompactDeltaThreshold() {
+    return Integer.getInteger(
+        RANGE_COUNT_SEGMENT_COMPACT_DELTA_THRESHOLD_PROPERTY,
+        DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD);
+  }
+
 
   public RowValue delete(Transaction2 txn, DataKey key) throws SQLException {
     RowValue result = getVisible(txn, key);
@@ -1027,22 +1043,31 @@ public class TxnManager {
 
   private long getVisibleSegmentRowCount(TabId tabId, long firstSegmentId,
       long lastSegmentId, long startTs) {
-    if (startTs >= latestCommittedTs) {
-      long count = 0L;
-      long segmentId = firstSegmentId;
-      while (true) {
+    long count = 0L;
+    long segmentId = firstSegmentId;
+    while (true) {
+      if (startTs >= latestCommittedTs) {
         count += getLatestSegmentRowCount(tabId, segmentId);
-        if (segmentId == lastSegmentId) {
-          return count;
-        }
-        segmentId++;
+      } else {
+        count += getSegmentRowCount(tabId, segmentId, startTs);
       }
+      if (segmentId == lastSegmentId) {
+        return count;
+      }
+      segmentId++;
     }
-
-    return scanSegmentRowCountDeltas(tabId, firstSegmentId, lastSegmentId,
-        startTs);
   }
 
+  /**
+   * 读取最新快照下某个 segment 的行数，并在进程内缓存命中时避免访问 META CF。
+   *
+   * <p>缓存未命中时走 base + delta 读取路径，使冷启动或 cache miss 可以顺便触发
+   * segment base snapshot 压实。缓存命中不强制压实，避免在线热路径引入额外写入。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param segmentId rowId 分段编号
+   * @return 最新可见行数
+   */
   private long getLatestSegmentRowCount(TabId tabId, long segmentId) {
     SegmentRowCountDeltaKey key = SegmentRowCountDeltaKey.of(tabId,
         segmentId);
@@ -1050,52 +1075,149 @@ public class TxnManager {
     if (cached != null) {
       return cached.get();
     }
-    long loaded = scanSegmentRowCountDeltas(tabId, segmentId, Long.MAX_VALUE);
+    long loaded = getSegmentRowCount(tabId, segmentId, Long.MAX_VALUE);
     AtomicLong raced = segmentRowCountCache.putIfAbsent(key,
         new AtomicLong(loaded));
     return raced == null ? loaded : raced.get();
   }
 
-  private long scanSegmentRowCountDeltas(TabId tabId, long segmentId,
+  /**
+   * 按指定快照读取单个 segment 的行数。
+   *
+   * <p>该方法先读取不晚于 {@code startTs} 的最新 base snapshot，再只叠加 base
+   * 之后且不晚于快照的 delta。达到阈值时会 best-effort 写入新的 base snapshot；
+   * 写入失败不会影响本次计数结果。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param segmentId rowId 分段编号
+   * @param startTs 读事务快照时间戳
+   * @return 该 segment 在快照下的可见行数
+   */
+  private long getSegmentRowCount(TabId tabId, long segmentId,
       long startTs) {
-    return scanSegmentRowCountDeltas(tabId, segmentId, segmentId, startTs);
-  }
+    SegmentRowCountBase base = getVisibleBaseSegmentRowCount(tabId,
+        segmentId, startTs);
+    byte[] prefix = SegmentRowCountDeltaKey.of(tabId, segmentId).toBytes();
+    byte[] start = VersionSegmentRowCountDeltaKey.of(tabId, segmentId,
+        base.commitTs).toBytes();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+    long count = base.rowCount;
+    int deltaCount = 0;
+    long latestDeltaCommitTs = base.commitTs;
 
-  private long scanSegmentRowCountDeltas(TabId tabId, long firstSegmentId,
-      long lastSegmentId, long startTs) {
-    byte[] start = SegmentRowCountDeltaKey.of(tabId, firstSegmentId)
-        .toBytes();
-    byte[] end = KeyCodec.prefixEnd(SegmentRowCountDeltaKey.of(tabId,
-        lastSegmentId).toBytes());
-    long count = 0L;
-
-    try (VersionScanSource scan = store.openVersionScanSource(
-        CF.META.getCfId(), ScanDirection.FORWARD)) {
+    try (VersionScanSource scan = store.openVersionScanSource(CF.META.getCfId(),
+        ScanDirection.FORWARD)) {
       scan.seekToRangeStart(start, end);
-      while (scan.isValid()) {
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
         byte[] key = scan.key();
-        if (compareUnsigned(key, end) >= 0) {
-          break;
-        }
         VersionSegmentRowCountDeltaKey deltaKey =
             VersionSegmentRowCountDeltaKey.fromBytes(key);
         if (deltaKey.getCommitTs() > startTs) {
+          break;
+        }
+        if (deltaKey.getCommitTs() <= base.commitTs) {
           scan.advance();
           continue;
         }
         RowValue value = RowValue.decodeValue(scan.value());
-        if (value != null && value.payload != null
+        if (value != null && !value.deleted && value.payload != null
             && value.payload.length > 0) {
           count += RowCodec.decode(value.payload).getLong();
         }
+        deltaCount++;
+        latestDeltaCommitTs = Math.max(latestDeltaCommitTs,
+            deltaKey.getCommitTs());
         scan.advance();
       }
+      compactSegmentRowCountBaseIfNeeded(tabId, segmentId, count,
+          latestDeltaCommitTs, deltaCount);
     } catch (RuntimeException e) {
       throw e;
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
     return count;
+  }
+
+  /**
+   * 查找不晚于读快照的最新 segment row-count base。
+   *
+   * <p>base key 使用倒序 commitTs 编码，因此扫描到第一条不晚于 {@code startTs}
+   * 的记录即可返回。旧库没有 base 时返回 0/0，让调用方退回 0 + delta 的兼容语义。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param segmentId rowId 分段编号
+   * @param startTs 读事务快照时间戳
+   * @return base 行数和对应提交时间戳
+   */
+  private SegmentRowCountBase getVisibleBaseSegmentRowCount(TabId tabId,
+      long segmentId, long startTs) {
+    byte[] prefix = SegmentRowCountKey.of(tabId, segmentId).toBytes();
+    byte[] end = KeyCodec.prefixEnd(prefix);
+
+    try (VersionScanSource scan = store.openVersionScanSource(CF.META.getCfId(),
+        ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, end);
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+        VersionSegmentRowCountKey versionKey =
+            VersionSegmentRowCountKey.fromBytes(scan.key());
+        if (versionKey.getCommitTs() > startTs) {
+          scan.advance();
+          continue;
+        }
+        RowValue value = RowValue.decodeValue(scan.value());
+        if (value == null || value.deleted || value.payload == null
+            || value.payload.length == 0) {
+          return new SegmentRowCountBase(0L, versionKey.getCommitTs());
+        }
+        return new SegmentRowCountBase(
+            RowCodec.decode(value.payload).getLong(),
+            versionKey.getCommitTs());
+      }
+      return SegmentRowCountBase.EMPTY;
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  /**
+   * 在 segment delta 链超过阈值后写入新的 base snapshot。
+   *
+   * <p>该方法只追加新 base，不删除旧 delta，避免并发提交或旧快照读取场景下误删元数据。
+   * 它是读后优化：失败会被忽略，只通过 SQL phase 诊断暴露耗时。</p>
+   *
+   * @param tabId 表 id 与 epoch
+   * @param segmentId rowId 分段编号
+   * @param rowCount 已计算出的快照行数
+   * @param compactCommitTs base 覆盖到的提交时间戳
+   * @param deltaCount 本次读取叠加的 delta 数量
+   */
+  private void compactSegmentRowCountBaseIfNeeded(TabId tabId, long segmentId,
+      long rowCount, long compactCommitTs, int deltaCount) {
+    int threshold = rangeCountSegmentCompactDeltaThreshold();
+    if (threshold <= 0
+        || deltaCount < threshold
+        || compactCommitTs <= 0L) {
+      return;
+    }
+    long started = System.nanoTime();
+    try {
+      VersionSegmentRowCountKey snapshotKey =
+          VersionSegmentRowCountKey.of(tabId, segmentId, compactCommitTs);
+      RowValue snapshot = new RowValue();
+      snapshot.deleted = false;
+      snapshot.commitTs = compactCommitTs;
+      snapshot.payload = RowCodec.encode(ValueBigint.get(rowCount));
+      store.writeBatch(batch -> batch.put(CF.META.getCfId(),
+          snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
+    } catch (SQLException ignored) {
+      // segment base snapshot 是读后优化，失败不能影响本次 range count 结果。
+    } finally {
+      recordSqlPhase("ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT",
+          System.nanoTime() - started);
+    }
   }
 
   private static Map<Long, RowValue> localRowWritesInRange(Transaction2 txn,
@@ -2247,6 +2369,18 @@ public class TxnManager {
       this.firstSegmentStart = firstSegmentStart;
       this.lastSegmentEnd = lastSegmentEnd;
       this.fullSegmentCount = fullSegmentCount;
+    }
+  }
+
+  private static final class SegmentRowCountBase {
+    private static final SegmentRowCountBase EMPTY =
+        new SegmentRowCountBase(0L, 0L);
+    private final long rowCount;
+    private final long commitTs;
+
+    private SegmentRowCountBase(long rowCount, long commitTs) {
+      this.rowCount = rowCount;
+      this.commitTs = commitTs;
     }
   }
 

@@ -324,6 +324,73 @@ class TxnManagerVisibleRowFastPathTest {
   }
 
   /**
+   * 验证 segment range count 在 delta 链超过阈值后会写入并复用 base snapshot。
+   *
+   * <p>第一次冷读会从 segment delta 计算行数并触发读后压实；第二次冷读清空进程缓存后
+   * 应从 base snapshot 开始，不再重复触发压实。该用例覆盖旧 delta 保留不删除时的
+   * 读后优化语义。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldCompactSegmentRowCountBaseAfterDeltaThreshold()
+      throws Exception {
+    String enabledProperty = "vexra.adb.rangeCount.segmentCount.enabled";
+    String thresholdProperty =
+        "vexra.adb.rangeCount.segmentCount.compactDeltaThreshold";
+    String previousEnabled = System.getProperty(enabledProperty);
+    String previousThreshold = System.getProperty(thresholdProperty);
+    System.setProperty(enabledProperty, "true");
+    System.setProperty(thresholdProperty, "2");
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-segment-base").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+      TabId tabId = TabId.of(1, 0L);
+
+      for (long rowId = 300L; rowId <= 302L; rowId++) {
+        Transaction2 writer = manager.beginTransaction();
+        manager.put(writer, RowKey.of(tabId, rowId),
+            row("row-" + rowId, 0L));
+        manager.commit(writer);
+      }
+
+      manager.invalidateStoreDerivedCaches();
+      assertEquals(3L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 1500L));
+      AdbSqlDiagnosticSnapshot firstSnapshot = recorder.snapshot();
+      assertTrue(firstSnapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+      AdbSqlPhaseStats compactStats = firstSnapshot.getPhaseStats().get(
+          "ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT");
+      assertNotNull(compactStats);
+      assertEquals(1L, compactStats.getCount());
+
+      recorder.clear();
+      manager.invalidateStoreDerivedCaches();
+      assertEquals(3L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 1500L));
+      AdbSqlDiagnosticSnapshot secondSnapshot = recorder.snapshot();
+      assertTrue(secondSnapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+      assertFalse(secondSnapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT"));
+    } finally {
+      if (previousEnabled == null) {
+        System.clearProperty(enabledProperty);
+      } else {
+        System.setProperty(enabledProperty, previousEnabled);
+      }
+      if (previousThreshold == null) {
+        System.clearProperty(thresholdProperty);
+      } else {
+        System.setProperty(thresholdProperty, previousThreshold);
+      }
+    }
+  }
+
+  /**
    * 验证 range scan lower bound 使用与 VersionRowKey 一致的 rowId 编码。
    *
    * <p>row version key 会对 rowId 做符号位翻转以保持 signed long 字典序。

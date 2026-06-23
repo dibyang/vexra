@@ -4754,3 +4754,65 @@ benchmark：
   `2288.33 ops/s` 仍有明显提升，p99 和 allocation 也保持低位。
 - 下一步若继续推进第 5 项，应把阈值从固定完整 segment 数升级为成本模型，并补 segment base
   compaction / rebuild，减少 META delta 长链。
+
+## 第七十五轮：segment range count base compaction 计划
+
+本轮继续目标第 5 项。第七十三轮的 segment delta 已经让宽 range 能绕开大部分 row version 扫描，
+第七十四轮又避免了中等范围误命中；但 segment 统计目前仍是“每次 row-count 变化写一条
+segment delta”。对于开启该能力并持续写入的库，冷启动、cache miss 或旧快照读取仍可能扫描很长的
+segment delta 链。
+
+兼容边界：
+
+1. 新增 `TABLE_SEGMENT_ROW_COUNT` base snapshot key，与现有 `TABLE_SEGMENT_ROW_COUNT_DELTA`
+   并存；不修改第七十三轮 delta key 编码。
+2. base snapshot 是读后优化，写入失败不能影响本次 range count 结果。
+3. 默认阈值复用表级 row-count compaction 的思路，新增
+   `vexra.adb.rangeCount.segmentCount.compactDeltaThreshold`，默认 256；设置为 0 或负数可关闭。
+4. 最新快照命中内存 cache 时不强制 compaction；cache miss、冷启动或旧快照通过 base + delta
+   计算并按阈值 opportunistic 写 base。
+5. 旧库没有 base snapshot 时从 0 + delta 计算，仍保持正确性。
+
+本轮计划：
+
+1. 增加 `SegmentRowCountKey` / `VersionSegmentRowCountKey`，用于 segment base snapshot。
+2. 将 segment 计数读取从“只扫 delta”扩展为“选取不晚于 startTs 的最新 base，再叠加之后的 delta”。
+3. 当某个 segment 本次叠加 delta 数达到阈值时，写入 `VersionSegmentRowCountKey` base snapshot。
+4. 补充测试：低阈值下触发 segment base compaction，计数正确，并记录
+   `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT` phase。
+
+实现结果：
+
+1. 新增 `MetaType.TABLE_SEGMENT_ROW_COUNT`、`SegmentRowCountKey` 和
+   `VersionSegmentRowCountKey`，用于保存 segment row-count base snapshot。
+2. `TxnManager` 新增 `vexra.adb.rangeCount.segmentCount.compactDeltaThreshold`，
+   默认 256；设置为 0 或负数可关闭读后压实。
+3. segment 计数冷读和旧快照读取改为 base + delta：先取不晚于读快照的最新 base，
+   再扫描 base 之后的 delta；旧库没有 base 时仍从 0 + delta 计算。
+4. 最新快照的 segment cache 命中仍不触发压实；cache miss、冷启动或旧快照读取达到阈值时，
+   best-effort 写入 `VersionSegmentRowCountKey`，不删除旧 delta。
+5. 新增 `TxnManagerVisibleRowFastPathTest.shouldCompactSegmentRowCountBaseAfterDeltaThreshold`，
+   验证第一次冷读触发 `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT`，第二次冷读复用 base 后不再重复压实。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test --rerun-tasks
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | rangeSize | segment 开关 | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | 关键 phase | 结果文件 |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 4096 | 开启，compact threshold 16 | 3973.51 | 220 | 397 | 641 | 389683 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-base-20260623/range_scan_4096_enabled_compact.properties` |
+
+结论：
+
+- 宽 range 热路径仍命中 segment count，吞吐和 p99 与第七十四轮同量级，没有出现明显回退。
+- 本轮 benchmark 主窗口没有触发 `ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT`，这是预期行为：
+  预置数据写入后进程内 segment cache 是热的；读后压实场景由低阈值 JUnit 冷读测试覆盖。
+- 第 5 项剩余更高价值工作是 segment rebuild / 成本模型，以及进一步缩小
+  `ADB_TABLE_RANGE_COUNT_FAST` 外层固定成本。
