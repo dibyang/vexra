@@ -5387,3 +5387,80 @@ Conclusion:
 - The next step should not keep spending effort only inside
   `bulkInsertAppendRows`; it should move to the mixed 8-thread outer write
   entrypoint, range-count entrypoint, and commit / visibility interactions.
+
+## Round 72: Range-count Local-write Bounds Plan
+
+This round continues objectives 3 and 5 by focusing on the combined cost of
+range count and local writes in the 8-thread mixed workload. In the default
+`mixed` workload, inserts use row ids outside the baseline data range, while
+range-count queries still target `1..rows`. In such transactions, any non-empty
+write-set currently makes range count scan the write-set and build
+`localRowWritesInRange(...)`, even when those local writes cannot affect the
+current range.
+
+Compatibility boundary:
+
+1. `Transaction2` keeps an in-memory min/max row-id bound per table for local
+   row writes. This is only an optimization hint.
+2. Savepoint rollback does not shrink the bound. The bound may therefore become
+   conservative, which can only reduce optimization hits and cannot undercount
+   rows.
+3. `TxnManager.countVisibleRows(...)` skips local-write map construction only
+   when the bound proves there is no overlap with the query range, then uses the
+   no-local-write raw range-count path.
+4. Disk format, commit protocol, row-count delta semantics, transaction
+   rollback semantics, and range counts with in-range local writes remain
+   unchanged.
+
+Plan:
+
+1. Record local row-write bounds in `Transaction2.putLocal/deleteLocal`, and
+   clear them with transaction-local state.
+2. Check the non-overlap bound in `TxnManager.countVisibleRows(...)` before
+   building `localRowWritesInRange(...)`.
+3. Add a unit test with an out-of-range local write, verifying the count result
+   and the `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` phase instead of `_RAW_LOCAL`.
+4. Run `mixed` 8-thread and `range_count_local_write` benchmarks to measure the
+   default mixed case and the explicit in-range local-write case.
+
+Implementation result:
+
+1. `Transaction2` now keeps per-table `LocalRowWriteBounds`. `putLocal` and
+   `deleteLocal` record the min/max row id for local row writes, and
+   `clearLocalState()` clears the bounds.
+2. `mayHaveLocalRowWriteInRange(...)` returns `false` only when the bound proves
+   non-overlap. After savepoint rollback the bound may remain conservative.
+3. `TxnManager.countVisibleRows(...)` checks the bound before building the local
+   write map, and directly uses `countVisibleRowsWithoutLocalWrites(...)` when
+   the range cannot overlap local row writes.
+4. Added
+   `TxnManagerVisibleRowFastPathTest.shouldSkipLocalWriteRangePathWhenBoundsDoNotOverlap`,
+   verifying the count result and the `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` phase.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | Key phase | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `mixed` | 8 | 11494.25 | 202 | 2147 | 7966 | 377740 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` 600 calls, avg 497 us | `vexra-adb/build/adb-benchmark/local-write-bounds-20260623-130050/adb_mixed_threads8.properties` |
+| `range_count_local_write` | 1 | 3685.50 | 224 | 373 | 1916 | 331191 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` 3000 calls, avg 232 us | `vexra-adb/build/adb-benchmark/local-write-bounds-20260623-130050/adb_range_count_local_write.properties` |
+
+Conclusion:
+
+- In the default `mixed` workload, out-of-range append writes no longer force
+  range count into the local-write overlay path. All 600 range-count calls hit
+  the no-local-write raw path.
+- The explicit `range_count_local_write` workload still hits `_RAW_LOCAL`, so
+  in-range local-write semantics are not skipped.
+- This round shows a positive signal for default mixed, but the short-window
+  throughput is still affected by point lookup, range-count cursor/value copy,
+  and commit variance. The next in-repo step should keep reducing mixed outer
+  fixed costs; materially lowering allocation still needs ldb raw/reusable
+  cursor support or segment/block-level count metadata.

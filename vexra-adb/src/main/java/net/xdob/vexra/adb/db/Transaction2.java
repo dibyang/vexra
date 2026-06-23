@@ -25,6 +25,9 @@ public class Transaction2 {
   // key -> 褰撳墠浜嬪姟鏈€缁堝噯澶囨彁浜ょ殑鍊?
   private final Map<DataKey, RowValue> writeSet = new LinkedHashMap<>();
 
+  private final Map<TabId, LocalRowWriteBounds> localRowWriteBounds =
+      new HashMap<>();
+
   private final ConcurrentHashMap<Integer, Epoch> tableEpochs = new ConcurrentHashMap<>();
 
   public Transaction2(long txnId, long startTs) {
@@ -84,6 +87,7 @@ public class Transaction2 {
   void clearLocalState() {
     readVersions.clear();
     writeSet.clear();
+    localRowWriteBounds.clear();
     undoLogs.clear();
     savepoints.clear();
     rowCountDeltas.clear();
@@ -138,6 +142,7 @@ public class Transaction2 {
     value.txnId = txnId;
     value.deleted = false;
     this.recordWrite(key, value);
+    recordLocalRowWriteBound(key);
     OLdEntry entry = new OLdEntry();
     entry.key = key;
     entry.oldValue = oldValue;
@@ -190,6 +195,7 @@ public class Transaction2 {
     value.deleted = true;
     value.payload = null;
     this.recordWrite(key, value);
+    recordLocalRowWriteBound(key);
     OLdEntry entry = new OLdEntry();
     entry.key = key;
     entry.oldValue = oldValue;
@@ -296,6 +302,61 @@ public class Transaction2 {
           }
         }
       }
+    }
+  }
+
+  /**
+   * 判断当前事务在指定表和 rowId 范围内是否可能存在本地 row 写入。
+   *
+   * <p>该信息只作为 range count 的保守优化 hint。savepoint 回滚不会收缩边界，
+   * 因此返回 {@code true} 只表示可能有交集；返回 {@code false} 才表示可以确定跳过
+   * 本地 write-set 路径。</p>
+   *
+   * @param tabId 表标识
+   * @param minRowId 查询下界，{@code null} 表示无下界
+   * @param maxRowId 查询上界，{@code null} 表示无上界
+   * @return 是否可能存在落在范围内的本地 row 写入
+   */
+  boolean mayHaveLocalRowWriteInRange(TabId tabId, Long minRowId,
+      Long maxRowId) {
+    if (writeSet.isEmpty()) {
+      return false;
+    }
+    LocalRowWriteBounds bounds = localRowWriteBounds.get(tabId);
+    return bounds != null && bounds.intersects(minRowId, maxRowId);
+  }
+
+  private void recordLocalRowWriteBound(DataKey key) {
+    if (key == null || !key.isRow()) {
+      return;
+    }
+    LocalRowWriteBounds bounds = localRowWriteBounds.computeIfAbsent(
+        key.getTabID(), ignored -> new LocalRowWriteBounds());
+    bounds.record(key.getRowId());
+  }
+
+  private static final class LocalRowWriteBounds {
+
+    private long min = Long.MAX_VALUE;
+    private long max = Long.MIN_VALUE;
+
+    private void record(long rowId) {
+      if (rowId < min) {
+        min = rowId;
+      }
+      if (rowId > max) {
+        max = rowId;
+      }
+    }
+
+    private boolean intersects(Long minRowId, Long maxRowId) {
+      if (min == Long.MAX_VALUE) {
+        return false;
+      }
+      if (maxRowId != null && maxRowId.longValue() < min) {
+        return false;
+      }
+      return minRowId == null || minRowId.longValue() <= max;
     }
   }
 

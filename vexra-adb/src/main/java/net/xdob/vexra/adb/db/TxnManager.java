@@ -771,6 +771,10 @@ public class TxnManager {
         tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
 
     byte[] tablePrefix = prefixKey.toBytes();
+    if (!txn.mayHaveLocalRowWriteInRange(prefixKey.getTabID(), min, max)) {
+      return countVisibleRowsWithoutLocalWrites(txn, prefixKey, tablePrefix,
+          min, max);
+    }
     Map<Long, RowValue> localRowWrites = localRowWritesInRange(txn,
         prefixKey.getTabID(), min, max);
     if (localRowWrites.isEmpty()) {

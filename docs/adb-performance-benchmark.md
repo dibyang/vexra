@@ -4572,3 +4572,59 @@ coordinator、整批 append-safe 时命中，真正登记 write-set 时不需要
   外层边界仍是 SQL 写入吞吐的主要限制之一。
 - 下一步不应继续只压 `bulkInsertAppendRows` 内部的小对象，应转向 mixed 8 线程下的外层写入入口、
   range count 入口和事务提交/可见性路径联动优化。
+
+## 第七十二轮：range count 本地写范围边界计划
+
+本轮继续目标第 3/5 项，聚焦 mixed 8 线程下 range count 与本地写路径的组合成本。默认
+`mixed` workload 中 insert 写入的 rowId 位于基准数据范围之外，而 range count 查询仍落在
+`1..rows`。在这种事务里，只要 write-set 非空，当前 range count 就会先扫描 write-set 并构造
+`localRowWritesInRange(...)` 结果，即使这些本地写不可能影响当前范围。
+
+兼容边界：
+
+1. 在 `Transaction2` 内维护每个表的本地 row 写入 rowId 最小/最大边界，只作为内存级 hint。
+2. savepoint 回滚不收缩边界；边界可以保守变宽，因此最多导致少命中优化，不会导致漏计。
+3. 只有当边界能确定与查询范围不相交时，`TxnManager.countVisibleRows(...)` 才跳过本地写 map
+   构造并直接走无本地写 raw range count。
+4. 不改变磁盘格式、commit 协议、row-count delta、事务回滚语义或带范围内本地写的计数结果。
+
+本轮计划：
+
+1. `Transaction2` 在 `putLocal/deleteLocal` 时记录本地 row 写入边界，并在事务清理时清空。
+2. `TxnManager.countVisibleRows(...)` 在构造 `localRowWritesInRange(...)` 前先做边界不相交判断。
+3. 新增单元测试覆盖范围外本地写：计数结果正确，并通过 phase 证明命中
+   `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` 而不是 `_RAW_LOCAL`。
+4. 使用 `mixed` 8 线程和 `range_count_local_write` benchmark 观察该优化对默认 mixed 与范围内本地写专项场景的影响。
+
+实现结果：
+
+1. `Transaction2` 增加每表 `LocalRowWriteBounds`，`putLocal/deleteLocal` 记录本地 row 写入的
+   最小/最大 rowId，`clearLocalState()` 清空边界。
+2. `mayHaveLocalRowWriteInRange(...)` 只在边界确定不相交时返回 `false`；savepoint 回滚后边界可能保守变宽。
+3. `TxnManager.countVisibleRows(...)` 在本地写 map 构造前使用该判断，不相交时直接走
+   `countVisibleRowsWithoutLocalWrites(...)`。
+4. 新增 `TxnManagerVisibleRowFastPathTest.shouldSkipLocalWriteRangePathWhenBoundsDoNotOverlap`，
+   验证范围外本地写计数正确，并且 phase 命中 `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | 关键 phase | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `mixed` | 8 | 11494.25 | 202 | 2147 | 7966 | 377740 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` 600 次，平均 497 us | `vexra-adb/build/adb-benchmark/local-write-bounds-20260623-130050/adb_mixed_threads8.properties` |
+| `range_count_local_write` | 1 | 3685.50 | 224 | 373 | 1916 | 331191 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` 3000 次，平均 232 us | `vexra-adb/build/adb-benchmark/local-write-bounds-20260623-130050/adb_range_count_local_write.properties` |
+
+结论：
+
+- 默认 `mixed` 中范围外 append 写不再把 range count 拉入本地写覆盖路径，600 次 range count 全部命中无本地写 raw path。
+- `range_count_local_write` 专项仍命中 `_RAW_LOCAL`，说明范围内本地写语义没有被跳过。
+- 本轮对默认 mixed 有正向信号，但短窗口吞吐仍受 point lookup、range count cursor/value copy 和 commit 波动影响。
+  下一步若继续在 ADB 仓库内推进，应继续减少 mixed 外层固定成本；若要显著降低 allocation，仍需要 ldb raw/reusable cursor
+  或 segment/block-level count 元数据。

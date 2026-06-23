@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -186,6 +187,44 @@ class TxnManagerVisibleRowFastPathTest {
 
       assertEquals(3L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
           1L, 4L));
+    }
+  }
+
+  /**
+   * 验证范围外本地写不会把 range count 拉入本地写覆盖路径。
+   *
+   * <p>mixed workload 中追加写通常落在基准数据范围之外，而 range count 仍查询旧数据范围。
+   * 该场景可以安全复用无本地写 raw path，避免每次 range count 都扫描 write-set 并构造空的
+   * local row map。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldSkipLocalWriteRangePathWhenBoundsDoNotOverlap()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-local-outside").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+      TabId tabId = TabId.of(1, 0L);
+
+      putCommitted(store, RowKey.of(tabId, 1L), 10L, "old-1");
+      putCommitted(store, RowKey.of(tabId, 2L), 10L, "old-2");
+      putCommitted(store, RowKey.of(tabId, 3L), 10L, "old-3");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      manager.put(reader, RowKey.of(tabId, 10_000L), row("local-far", 0L));
+
+      assertFalse(reader.mayHaveLocalRowWriteInRange(tabId, 1L, 3L));
+      assertEquals(3L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
+          1L, 3L));
+
+      AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
+      assertTrue(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW"));
+      assertFalse(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL"));
     }
   }
 
