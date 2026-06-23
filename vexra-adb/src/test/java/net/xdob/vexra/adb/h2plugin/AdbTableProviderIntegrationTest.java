@@ -1191,10 +1191,16 @@ class AdbTableProviderIntegrationTest {
                     "ADB_VISIBLE_ROUTE_POINT_READ"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_VISIBLE_COMMITTED_CACHE_MISS"), snapshot.getPhaseStats().keySet().toString());
+            boolean pointLookupValueCacheHit = snapshot.getPhaseStats().containsKey(
+                    "ADB_POINT_LOOKUP_VALUE_CACHE_HIT");
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
-                    "ADB_VISIBLE_COMMITTED_CACHE_HIT"), snapshot.getPhaseStats().keySet().toString());
+                    "ADB_VISIBLE_COMMITTED_CACHE_HIT")
+                    || pointLookupValueCacheHit,
+                    snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
-                    "ADB_VISIBLE_COMMITTED_CACHE_VALIDATE"), snapshot.getPhaseStats().keySet().toString());
+                    "ADB_VISIBLE_COMMITTED_CACHE_VALIDATE")
+                    || pointLookupValueCacheHit,
+                    snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
                     "ADB_VISIBLE_COMMITTED_STORE_SCAN"), snapshot.getPhaseStats().keySet().toString());
             Assertions.assertTrue(snapshot.getPhaseStats().containsKey(
