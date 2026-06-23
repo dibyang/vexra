@@ -177,26 +177,20 @@ final class AdbPreparedInsertPlan {
 
   private List<Row> rows(SessionLocal session, AdbTable table,
       Object[] parameters) {
-    return rows(session, table, new ParameterAccessor() {
-      @Override
-      public Object get(int parameter) {
-        return parameters[parameter];
-      }
-    });
+    Column[] tableColumns = tableColumns(table);
+    Column[] insertColumns = insertColumns(table);
+    List<Row> rows = new ArrayList<>(rowCount);
+    int parameter = 1;
+    for (int r = 0; r < rowCount; r++) {
+      rows.add(row(session, table, parameters, tableColumns, insertColumns,
+          parameter));
+      parameter += insertColumns.length;
+    }
+    return rows;
   }
 
   private List<Row> rows(SessionLocal session, AdbTable table,
       final List<Object> parameters) {
-    return rows(session, table, new ParameterAccessor() {
-      @Override
-      public Object get(int parameter) {
-        return parameters.get(parameter - 1);
-      }
-    });
-  }
-
-  private List<Row> rows(SessionLocal session, AdbTable table,
-      ParameterAccessor parameters) {
     Column[] tableColumns = tableColumns(table);
     Column[] insertColumns = insertColumns(table);
     List<Row> rows = new ArrayList<>(rowCount);
@@ -211,26 +205,12 @@ final class AdbPreparedInsertPlan {
 
   private Row row(SessionLocal session, AdbTable table,
       Object[] parameters) {
-    return row(session, table, new ParameterAccessor() {
-      @Override
-      public Object get(int parameter) {
-        return parameters[parameter];
-      }
-    });
+    return row(session, table, parameters, tableColumns(table),
+        insertColumns(table), 1);
   }
 
   private Row row(SessionLocal session, AdbTable table,
       final List<Object> parameters) {
-    return row(session, table, new ParameterAccessor() {
-      @Override
-      public Object get(int parameter) {
-        return parameters.get(parameter - 1);
-      }
-    });
-  }
-
-  private Row row(SessionLocal session, AdbTable table,
-      ParameterAccessor parameters) {
     return row(session, table, parameters, tableColumns(table),
         insertColumns(table), 1);
   }
@@ -242,13 +222,35 @@ final class AdbPreparedInsertPlan {
    * Row 对象，保持与 h2db insert conversion 一致。</p>
    */
   private Row row(SessionLocal session, AdbTable table,
-      ParameterAccessor parameters, Column[] tableColumns,
+      Object[] parameters, Column[] tableColumns,
       Column[] insertColumns, int firstParameter) {
     Value[] values = new Value[tableColumns.length];
     java.util.Arrays.fill(values, ValueNull.INSTANCE);
     int parameter = firstParameter;
     for (Column column : insertColumns) {
-      Value value = toValue(session, parameters.get(parameter++));
+      Value value = toValue(session, parameters[parameter++]);
+      values[column.getColumnId()] = column.convert(session, value);
+    }
+    DefaultRow row = new DefaultRow(values);
+    table.convertInsertRow(session, row, null);
+    return row;
+  }
+
+  /**
+   * 构造一行待写入的 H2 Row。
+   *
+   * <p>literal Statement fast path 使用 {@link List} 保存已解析参数；这里直接按
+   * JDBC 参数的 1-based 编号读取列表下标，避免为每次执行创建临时 accessor 对象。</p>
+   */
+  private Row row(SessionLocal session, AdbTable table,
+      List<Object> parameters, Column[] tableColumns,
+      Column[] insertColumns, int firstParameter) {
+    Value[] values = new Value[tableColumns.length];
+    java.util.Arrays.fill(values, ValueNull.INSTANCE);
+    int parameter = firstParameter;
+    for (Column column : insertColumns) {
+      Value value = toValue(session, parameters.get(parameter - 1));
+      parameter++;
       values[column.getColumnId()] = column.convert(session, value);
     }
     DefaultRow row = new DefaultRow(values);
@@ -575,10 +577,6 @@ final class AdbPreparedInsertPlan {
       return value.substring(1, value.length() - 1);
     }
     return value.toUpperCase(Locale.ROOT);
-  }
-
-  private interface ParameterAccessor {
-    Object get(int parameter);
   }
 
   private static final class InsertHead {

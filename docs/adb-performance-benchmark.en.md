@@ -4685,3 +4685,54 @@ Conclusion:
 - The `insert` throughput sample was much lower than surrounding runs and is
   likely dominated by file-store flush / environment variance; use only its
   allocation number as a reference.
+
+## Round 63: Prepared Insert Parameter Access De-objectification Plan
+
+This round continues objective 4 (`BULK_ADD_ROW / ADD_ROW`). Reviewing
+`AdbPreparedInsertPlan` showed that prepared/literal insert still creates an
+anonymous `ParameterAccessor` object on each execution and then reads
+parameters through that interface:
+
+1. The `Object[] parameters` path creates one anonymous accessor per
+   `executeUpdate()`.
+2. The literal `List<Object>` path creates one anonymous accessor as well.
+3. The object only serves parameter reads inside the current fast-path
+   execution and is discarded afterwards. Row conversion, uniqueness checks,
+   savepoint handling, and commit semantics do not depend on this abstraction.
+
+Changes:
+
+1. Add direct `row(...)` / `rows(...)` construction paths for `Object[]` and
+   `List<Object>`.
+2. Remove the per-execution anonymous `ParameterAccessor` allocation and use
+   simple array/list indexing instead.
+3. Keep `Column.convert(...)`, `DefaultRow`, `convertInsertRow(...)`, and the
+   bulk-write boundary unchanged.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 520.56 | 4730 | 34734 | `vexra-adb/build/adb-benchmark/insert_insert_param_direct_20260623.properties` |
+| `point_lookup` | 1 | 1074.11 | 5990 | 8578 | `vexra-adb/build/adb-benchmark/point_lookup_insert_param_direct_20260623.properties` |
+| `mixed` | 8 | 2180.23 | 11189 | 389966 | `vexra-adb/build/adb-benchmark/mixed_insert_param_direct_20260623.properties` |
+
+Conclusion:
+
+- The change preserves SQL semantics and removes the anonymous
+  `ParameterAccessor` allocated on each prepared/literal insert fast-path
+  execution.
+- This round did not prove an allocation reduction: `point_lookup` stayed at
+  `8578 B/op`, and `mixed` moved from `387656 B/op` to `389966 B/op`.
+- Keep this as object-boundary cleanup and maintenance groundwork, but do not
+  count it as a main `mixed` throughput win. The next higher-value work still
+  points to ldb raw/reusable cursors, segment/block-level count, or coarser
+  write batching.

@@ -4029,3 +4029,45 @@ benchmark：
 - `mixed` allocation 相比第六十一轮样本 `388470 B/op` 小幅降到 `387656 B/op`，但吞吐短跑没有
   正向证据。本轮应视为对象分配收窄，而不是 mixed 吞吐主优化。
 - `insert` 本轮吞吐明显偏低，判断受文件库 flush / 环境波动影响较大；只把 allocation 作为参考。
+
+## 第六十三轮：prepared insert 参数访问去对象化计划
+
+本轮继续目标第 4 项 `BULK_ADD_ROW / ADD_ROW`。复核 `AdbPreparedInsertPlan`
+后发现，当前 prepared/literal insert 每次执行都会创建匿名 `ParameterAccessor`
+对象，再通过接口回调读取参数：
+
+1. `Object[] parameters` 路径为每次 `executeUpdate()` 创建一个匿名 accessor。
+2. literal `List<Object>` 路径同样创建一个匿名 accessor。
+3. 该对象只服务本次 fast path 内部读取参数，执行完成后立即丢弃；行转换、唯一性检查、
+   savepoint 和 commit 语义均不依赖这个抽象。
+
+本轮改动：
+
+1. 为 `Object[]` 和 `List<Object>` 分别提供直接 `row(...)` / `rows(...)` 构造路径。
+2. 删除每次执行创建的匿名 `ParameterAccessor`，用简单数组/列表下标读取参数。
+3. 保持 `Column.convert(...)`、`DefaultRow`、`convertInsertRow(...)` 和 bulk 写入边界不变。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `insert` | 1 | 520.56 | 4730 | 34734 | `vexra-adb/build/adb-benchmark/insert_insert_param_direct_20260623.properties` |
+| `point_lookup` | 1 | 1074.11 | 5990 | 8578 | `vexra-adb/build/adb-benchmark/point_lookup_insert_param_direct_20260623.properties` |
+| `mixed` | 8 | 2180.23 | 11189 | 389966 | `vexra-adb/build/adb-benchmark/mixed_insert_param_direct_20260623.properties` |
+
+结论：
+
+- 该改动不改变 SQL 语义，消除了 prepared/literal insert fast path 中每次执行创建的匿名
+  `ParameterAccessor`。
+- 本轮基准没有证明 allocation 下降：`point_lookup` 与第六十二轮同为 `8578 B/op`，
+  `mixed` 从 `387656 B/op` 波动到 `389966 B/op`。
+- 因此本轮作为代码路径去对象化和后续维护基础保留，但不计为 mixed 吞吐主收益。后续仍应回到
+  ldb cursor raw/reusable entry、segment/block-level count，或更粗粒度写入批处理。
