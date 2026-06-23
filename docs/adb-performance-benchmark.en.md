@@ -4820,3 +4820,82 @@ Conclusion:
   `389 KB/op`. The next highest-value work still points to ldb raw/reusable
   cursors, segment/block-level count, or a dedicated benchmark workload for
   "local-write-covered range count" to quantify this path directly.
+
+## Round 65: Local-write-covered Range Count Benchmark Workload Plan
+
+This round continues the validation loop for objectives 3 and 5. Round 64
+changed "range count with local writes" from an object-heavy scan to a raw-key
+scan, but the default `mixed` workload inserts rowIds around
+`rows + 2_000_000 + index` while range-count queries still target `1..rows`.
+Therefore default `mixed` rarely hits the new branch and cannot directly
+quantify the improvement.
+
+Planned workload: `range_count_local_write`.
+
+1. Each operation first inserts an uncommitted row inside the queried range.
+2. It then executes `SELECT COUNT(*) FROM table WHERE ID BETWEEN ? AND ?`
+   covering that row.
+3. With `transactionBatchSize > 1`, the count sees the local write-set override
+   in the same transaction and should consistently hit
+   `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL`.
+4. The workload is diagnostic only and does not change production SQL, MVCC,
+   commit, locking, or on-disk formats.
+5. The same workload can run against a regular h2db table as a JDBC baseline
+   for local write plus range count.
+
+Expected value:
+
+- Provide a repeatable benchmark for the round-64 raw local range-count path.
+- Separate this local optimization from the default range-scan bottleneck that
+  still requires ldb raw/reusable cursors or segment-level count metadata.
+
+Implementation result:
+
+1. Added the `range_count_local_write` workload to `AdbBenchmarkMain`.
+2. In JDBC mode, each operation first executes a prepared insert for an
+   uncommitted row and then executes a prepared range count covering that rowId.
+3. Store mode provides a same-name local baseline by writing one new key and
+   scanning that key range.
+4. Updated the Chinese and English user-guide workload tables.
+
+New test:
+
+- `AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl`
+  covers the command-line entry, properties output, and
+  `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` diagnostic hit.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| engine | workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| ADB | `range_count_local_write` | 1 | 618.81 | 4894 | 347213 | `vexra-adb/build/adb-benchmark/adb_range_count_local_write_20260623-110409.properties` |
+| H2 | `range_count_local_write` | 1 | 24000.00 | 693 | 5430 | `vexra-adb/build/adb-benchmark/h2_range_count_local_write_20260623-110409.properties` |
+
+Diagnostic excerpt:
+
+- `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL`: 3000 calls, `279 us` average.
+- `ADB_RANGE_COUNT_VISIBLE_COUNT`: 3000 calls, `286 us` average.
+- `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH`: 3000 calls, `908 us` average.
+- `ADB_TABLE_BULK_ADD_ROW ADB_BENCH`: 3000 calls, `669 us` average.
+
+Conclusion:
+
+- The new workload consistently hits the round-64 raw local range-count path and
+  can be used to regress the local-write-covered scenario.
+- ADB is still much slower than H2 in this diagnostic workload and allocates
+  about `347 KB/op`; the bottleneck is not inside raw local count itself, but in
+  the write entry, the range-count outer path, and the LDB scan/cursor
+  allocation chain.
+- If the next round stays inside the ADB repository, prioritize single-row
+  `BULK_ADD_ROW` and the range-count outer path. A major `range_scan/mixed`
+  allocation reduction still requires ldb raw/reusable cursors or
+  segment-level count metadata design.

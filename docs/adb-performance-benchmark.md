@@ -4140,3 +4140,69 @@ benchmark：
 - 默认 `range_scan` / `mixed` allocation 仍在 `94 KB/op` / `389 KB/op` 附近，
   下一轮主要价值仍在 ldb raw/reusable cursor、segment/block-level count，或调整 benchmark
   增加“本地写覆盖范围 count”专项 workload 来量化该路径收益。
+
+## 第六十五轮：本地写覆盖 range count 专项 workload 计划
+
+本轮继续目标第 3/5 项的验证闭环。第六十四轮已经把“range count 遇到本地写”从对象化扫描
+收窄到 raw-key 扫描，但默认 `mixed` workload 的插入 rowId 位于 `rows + 2_000_000 + index`
+附近，而 range count 查询仍落在 `1..rows`，因此默认 `mixed` 很少命中新分支，无法直接量化收益。
+
+本轮计划新增 `range_count_local_write` benchmark workload：
+
+1. 每次操作先插入一个尚未提交且落在查询范围内的 row。
+2. 随后执行覆盖该 row 的 `SELECT COUNT(*) FROM table WHERE ID BETWEEN ? AND ?`。
+3. 在 `transactionBatchSize > 1` 时，count 会在同一事务内看到本地 write-set 覆盖，从而稳定命中
+   `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL`。
+4. workload 只用于性能诊断，不改变生产 SQL、MVCC、提交、锁或磁盘格式。
+5. 该 workload 同时可跑 h2db 普通表，用于对比本地写入 + 范围 count 的 JDBC 基线。
+
+预期价值：
+
+- 给第六十四轮的 raw local range count 路径提供可重复 benchmark。
+- 将默认 `mixed` 中无法稳定命中的局部优化，与仍需 ldb raw/reusable cursor 或 segment count
+  的默认范围扫描瓶颈区分开。
+
+实现结果：
+
+1. `AdbBenchmarkMain` 新增 `range_count_local_write` workload。
+2. JDBC 模式下每次操作先执行一条 prepared insert，插入尚未提交的新 row，再执行覆盖该
+   rowId 的 prepared range count。
+3. store 模式下提供同名本地基线：写入同一个新 key 后扫描该 key 范围。
+4. 用户手册中英文 workload 表已补充该诊断 workload。
+
+新增测试：
+
+- `AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl`
+  覆盖命令行入口、properties 输出和 `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL` 诊断命中。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| engine | workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| ADB | `range_count_local_write` | 1 | 618.81 | 4894 | 347213 | `vexra-adb/build/adb-benchmark/adb_range_count_local_write_20260623-110409.properties` |
+| H2 | `range_count_local_write` | 1 | 24000.00 | 693 | 5430 | `vexra-adb/build/adb-benchmark/h2_range_count_local_write_20260623-110409.properties` |
+
+诊断摘录：
+
+- `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL`: 3000 次，平均 `279 us`。
+- `ADB_RANGE_COUNT_VISIBLE_COUNT`: 3000 次，平均 `286 us`。
+- `ADB_TABLE_RANGE_COUNT_FAST ADB_BENCH`: 3000 次，平均 `908 us`。
+- `ADB_TABLE_BULK_ADD_ROW ADB_BENCH`: 3000 次，平均 `669 us`。
+
+结论：
+
+- 新 workload 已稳定命中第六十四轮 raw local range count 路径，后续可以用它回归本地写覆盖场景。
+- 当前专项 workload 下 ADB 仍显著慢于 H2，且分配约 `347 KB/op`；瓶颈不在 raw local count
+  内部，而在写入入口、range count 外层和 LDB scan/cursor 分配链路。
+- 下一轮如果继续做 ADB 仓库内优化，优先看 `BULK_ADD_ROW` 单行插入入口和 range count
+  外层；若要显著降低 `range_scan/mixed` allocation，仍需要 ldb raw/reusable cursor 或
+  segment-level count 元数据设计。

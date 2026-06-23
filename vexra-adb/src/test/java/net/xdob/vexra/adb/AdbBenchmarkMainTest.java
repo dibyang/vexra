@@ -347,6 +347,31 @@ class AdbBenchmarkMainTest {
     assertEquals(0L, result.getFailedOperations());
   }
 
+  @Test
+  void shouldRunLocalWriteRangeCountBenchmarkAgainstLdbUrl() throws Exception {
+    Path output = tempDir.resolve("local-range-count.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("local-range-count")
+        .resolve("adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--url", url,
+        "--workload", "range_count_local_write",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "5",
+        "--rangeSize", "4",
+        "--transactionBatchSize", "5",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("range_count_local_write", result.getWorkload());
+    assertEquals(5L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertTrue(containsPropertyValue(properties,
+        "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL"));
+  }
+
   /**
    * 验证不支持的 workload 会被拒绝。
    */

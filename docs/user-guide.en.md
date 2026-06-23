@@ -314,6 +314,7 @@ Available workloads:
 | `primary_find` | Diagnostic point lookup that uses ordinary Statement and the H2 primary-index path |
 | `table_count` | Full-table `COUNT(*)` using ADB row-count metadata |
 | `range_scan` | Primary-key range count scan |
+| `range_count_local_write` | Insert one row inside the range and then run `COUNT(*)` over that row in the transaction; diagnostic workload for local-write-covered range count |
 | `mixed` | About 10% writes, 70% point lookups, and 20% range scans |
 
 Test SQL Server or the remote distributed path:

@@ -156,7 +156,8 @@ public final class AdbBenchmarkMain {
    * 执行一次 JDBC benchmark。
    *
    * @param url JDBC URL，默认和推荐为 `jdbc:adb:ldb:*`
-   * @param workload workload 名称：`insert`、`point_lookup`、`point_lookup_all`、`primary_find`、`table_count`、`range_scan` 或 `mixed`
+   * @param workload workload 名称：`insert`、`point_lookup`、`point_lookup_all`、`primary_find`、`table_count`、
+   *                 `range_scan`、`range_count_local_write` 或 `mixed`
    * @param rows 读类 workload 的预置行数
    * @param warmupOperations 预热操作数
    * @param operations 正式统计操作数
@@ -744,6 +745,9 @@ public final class AdbBenchmarkMain {
     } else if ("range_scan".equals(workload)) {
       long start = (index % rows) + 1L;
       statements.rangeScan(start, Math.min(rows, start + rangeSize - 1L));
+    } else if ("range_count_local_write".equals(workload)) {
+      long id = rows + (countedRun ? 3_000_000L : 300_000L) + index;
+      statements.rangeCountWithLocalWrite(id, "local-range-" + id);
     } else {
       int mode = index % 10;
       if (mode == 0) {
@@ -842,6 +846,10 @@ public final class AdbBenchmarkMain {
     } else if ("range_scan".equals(workload)) {
       scanStoreRange(store, (index % rows) + 1,
           Math.min(rows, (index % rows) + rangeSize));
+    } else if ("range_count_local_write".equals(workload)) {
+      int id = rows + (countedRun ? 3_000_000 : 300_000) + index;
+      store.put(storeKey(id), storeValue(id));
+      scanStoreRange(store, id, id);
     } else {
       int mode = index % 10;
       if (mode == 0) {
@@ -1057,7 +1065,9 @@ public final class AdbBenchmarkMain {
         && !"point_lookup_all".equals(workload)
         && !"primary_find".equals(workload)
         && !"table_count".equals(workload)
-        && !"range_scan".equals(workload) && !"mixed".equals(workload)) {
+        && !"range_scan".equals(workload)
+        && !"range_count_local_write".equals(workload)
+        && !"mixed".equals(workload)) {
       throw new IllegalArgumentException("Unsupported workload: " + workload);
     }
   }
@@ -1243,6 +1253,12 @@ public final class AdbBenchmarkMain {
           ignored.getLong(1);
         }
       }
+    }
+
+    private void rangeCountWithLocalWrite(long id, String name)
+        throws Exception {
+      insert(id, name);
+      rangeScan(id, id);
     }
 
     @Override

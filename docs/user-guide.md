@@ -311,6 +311,7 @@ vexra-adb/build/adb-benchmark/adb-benchmark.properties
 | `primary_find` | 通过普通 Statement 触发 H2 primary index 路径的诊断点查 |
 | `table_count` | 使用 ADB row-count 元数据的全表 `COUNT(*)` |
 | `range_scan` | 主键范围计数扫描 |
+| `range_count_local_write` | 事务内先插入范围内一行，再执行覆盖该行的 `COUNT(*)`，用于诊断本地写覆盖 range count |
 | `mixed` | 约 10% 写入、70% 点查、20% 范围扫描 |
 
 测试 SQL Server 或远端分布式路径：
