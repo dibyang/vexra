@@ -4700,3 +4700,57 @@ benchmark：
 - `rangeSize=512` 没有收益，说明 segment 粒度、边界 raw scan 与小范围调用固定成本会抵消收益；
   因此本阶段保持默认关闭是正确的。
 - 下一步如果继续推进第 5 项，应补 segment base compaction / rebuild，并让优化只在预计覆盖足够多完整 segment 时命中。
+
+## 第七十四轮：segment range count 命中阈值计划
+
+第七十三轮证明 segment 统计对真正宽 range 有价值，但也暴露了一个生产可用性问题：
+显式开启 `vexra.adb.rangeCount.segmentCount.enabled=true` 后，`rangeSize=512` 这类中等范围会因为
+完整 segment 数量太少、左右边界仍需 raw scan、以及 segment key/cache 固定成本而慢于纯 raw scan。
+
+兼容边界：
+
+1. 不新增磁盘格式，不修改第七十三轮新增的 segment delta key 编码。
+2. segment range count 仍默认关闭；本轮只收紧显式开启后的命中条件。
+3. 新增最少完整 segment 数阈值，低于阈值时直接回退现有 raw range count。
+4. 阈值只影响无本地写、上下界明确且已有完整 segment 的优化路径；本地写、旧库、无界范围仍按原逻辑回退。
+
+本轮计划：
+
+1. 增加 `vexra.adb.rangeCount.segmentCount.minSegments` 系统属性，默认值先设为 4。
+2. `fullyCoveredSegments(...)` 返回完整 segment 数，`countVisibleRowsWithoutLocalWritesBySegments(...)`
+   低于阈值时不命中 segment path。
+3. 增加单元测试覆盖显式开启 segment 后，小范围不足阈值仍命中 raw phase，不误进 segment phase。
+4. 复跑 `rangeSize=512` 与 `rangeSize=4096`：前者应回退 raw，后者仍应命中 segment。
+
+实现结果：
+
+1. `TxnManager` 增加 `vexra.adb.rangeCount.segmentCount.minSegments`，默认最少 4 个完整 segment。
+2. `SegmentSpan` 记录完整 segment 数；低于阈值时直接返回 `null` 并回退 raw range count。
+3. 新增 `TxnManagerVisibleRowFastPathTest.shouldSkipSegmentRangeCountBelowFullSegmentThreshold`，
+   验证显式开启 segment 后，`1..512` 这类不足阈值的范围仍命中
+   `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW`，不记录 `ADB_RANGE_COUNT_SEGMENT_COUNT`。
+4. 原 segment 命中测试扩大到 `1..1500`，确保它仍覆盖超过阈值后的 segment path。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | rangeSize | segment 开关 | ops/s | p99 us | alloc bytes/op | 关键 phase | 结果文件 |
+| --- | ---: | --- | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 512 | 开启 | 5175.98 | 678 | 277059 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-threshold-20260623/range_scan_512_enabled.properties` |
+| `range_scan` | 4096 | 开启 | 4357.30 | 591 | 376251 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-threshold-20260623/range_scan_4096_enabled.properties` |
+
+结论：
+
+- 阈值生效后，中等范围显式开启 segment 也会回退 raw path，避免第七十三轮 `rangeSize=512`
+  的误命中回退。
+- 宽范围仍保留收益：`rangeSize=4096` 继续命中 segment，较第七十三轮关闭组
+  `2288.33 ops/s` 仍有明显提升，p99 和 allocation 也保持低位。
+- 下一步若继续推进第 5 项，应把阈值从固定完整 segment 数升级为成本模型，并补 segment base
+  compaction / rebuild，减少 META delta 长链。

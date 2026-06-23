@@ -5567,3 +5567,79 @@ Conclusion:
   feature disabled by default is the right boundary for this stage.
 - The next objective-5 step should add segment base compaction / rebuild and
   only hit the optimization when enough fully covered segments are expected.
+
+## Round 74: Segment Range-count Hit-threshold Plan
+
+Round 73 proved that segment statistics help truly wide ranges, but it also
+exposed a production-safety issue. After explicitly enabling
+`vexra.adb.rangeCount.segmentCount.enabled=true`, medium ranges such as
+`rangeSize=512` can be slower than pure raw scan because too few full segments
+are covered, left/right edges still need raw scan, and segment key/cache work
+adds fixed overhead.
+
+Compatibility boundary:
+
+1. No new disk format is added, and the round-73 segment delta key encoding
+   remains unchanged.
+2. Segment range count stays disabled by default. This round only tightens the
+   hit conditions after the feature is explicitly enabled.
+3. Add a minimum fully covered segment count threshold. Below the threshold,
+   execution falls back directly to the existing raw range count.
+4. The threshold only affects the no-local-write, bounded-range optimization
+   path that already has full segments. Local writes, old databases, and
+   unbounded ranges keep the existing fallback behavior.
+
+Plan:
+
+1. Add the `vexra.adb.rangeCount.segmentCount.minSegments` system property,
+   with default value 4.
+2. Let `fullyCoveredSegments(...)` expose the full segment count, and let
+   `countVisibleRowsWithoutLocalWritesBySegments(...)` skip segment path below
+   the threshold.
+3. Add a unit test proving that, with segment counting explicitly enabled, a
+   small range below threshold still hits the raw phase and not the segment
+   phase.
+4. Re-run `rangeSize=512` and `rangeSize=4096`: the former should fall back to
+   raw, while the latter should still hit segment count.
+
+Implementation result:
+
+1. `TxnManager` now exposes
+   `vexra.adb.rangeCount.segmentCount.minSegments`, defaulting to at least 4
+   fully covered segments.
+2. `SegmentSpan` records the full segment count. Below the threshold, the
+   segment path returns `null` and falls back to raw range count.
+3. Added
+   `TxnManagerVisibleRowFastPathTest.shouldSkipSegmentRangeCountBelowFullSegmentThreshold`,
+   proving that with segment counting explicitly enabled, a `1..512` range
+   below the threshold still records `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` and
+   not `ADB_RANGE_COUNT_SEGMENT_COUNT`.
+4. Expanded the original segment-hit test to `1..1500`, keeping coverage for
+   the segment path after the threshold check.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | rangeSize | segment switch | ops/s | p99 us | alloc bytes/op | Key phase | Result file |
+| --- | ---: | --- | ---: | ---: | ---: | --- | --- |
+| `range_scan` | 512 | on | 5175.98 | 678 | 277059 | `ADB_RANGE_COUNT_VISIBLE_COUNT_RAW` | `vexra-adb/build/adb-benchmark/segment-threshold-20260623/range_scan_512_enabled.properties` |
+| `range_scan` | 4096 | on | 4357.30 | 591 | 376251 | `ADB_RANGE_COUNT_SEGMENT_COUNT` | `vexra-adb/build/adb-benchmark/segment-threshold-20260623/range_scan_4096_enabled.properties` |
+
+Conclusion:
+
+- After the threshold, medium ranges fall back to the raw path even when
+  segment counting is explicitly enabled, avoiding the round-73 `rangeSize=512`
+  mis-hit regression.
+- Wide ranges keep the benefit: `rangeSize=4096` still hits segment count and
+  remains clearly above the round-73 disabled sample of `2288.33 ops/s`, with
+  low p99 and allocation.
+- The next objective-5 step should evolve the fixed full-segment threshold into
+  a cost model and add segment base compaction / rebuild to reduce META delta
+  chains.

@@ -31,7 +31,10 @@ public class TxnManager {
       "vexra.adb.rowCache.validateCommitted";
   private static final String RANGE_COUNT_SEGMENT_ENABLED_PROPERTY =
       "vexra.adb.rangeCount.segmentCount.enabled";
+  private static final String RANGE_COUNT_SEGMENT_MIN_SEGMENTS_PROPERTY =
+      "vexra.adb.rangeCount.segmentCount.minSegments";
   private static final int DEFAULT_ROW_COUNT_COMPACT_DELTA_THRESHOLD = 256;
+  private static final int DEFAULT_RANGE_COUNT_SEGMENT_MIN_SEGMENTS = 4;
   private static final int RANGE_COUNT_SEGMENT_SIZE = 256;
   private static final int RAW_ROW_KEY_PREFIX_LENGTH = 21;
   private static final int RAW_VERSION_ROW_KEY_LENGTH = 30;
@@ -951,7 +954,8 @@ public class TxnManager {
       return null;
     }
     SegmentSpan span = fullyCoveredSegments(min, max);
-    if (span == null) {
+    if (span == null
+        || span.fullSegmentCount < rangeCountSegmentMinSegments()) {
       return null;
     }
 
@@ -2179,6 +2183,12 @@ public class TxnManager {
     return Math.floorDiv(rowId, RANGE_COUNT_SEGMENT_SIZE);
   }
 
+  private static int rangeCountSegmentMinSegments() {
+    return Math.max(1, Integer.getInteger(
+        RANGE_COUNT_SEGMENT_MIN_SEGMENTS_PROPERTY,
+        DEFAULT_RANGE_COUNT_SEGMENT_MIN_SEGMENTS));
+  }
+
   private static SegmentSpan fullyCoveredSegments(long minRowId,
       long maxRowId) {
     long firstSegmentId = segmentIdForRowId(minRowId);
@@ -2198,8 +2208,9 @@ public class TxnManager {
     if (firstSegmentId > lastSegmentId) {
       return null;
     }
+    long fullSegmentCount = lastSegmentId - firstSegmentId + 1L;
     return new SegmentSpan(firstSegmentId, lastSegmentId,
-        firstSegmentStart, lastSegmentEnd);
+        firstSegmentStart, lastSegmentEnd, fullSegmentCount);
   }
 
   private static long segmentStart(long segmentId) {
@@ -2226,13 +2237,16 @@ public class TxnManager {
     private final long lastSegmentId;
     private final long firstSegmentStart;
     private final long lastSegmentEnd;
+    private final long fullSegmentCount;
 
     private SegmentSpan(long firstSegmentId, long lastSegmentId,
-        long firstSegmentStart, long lastSegmentEnd) {
+        long firstSegmentStart, long lastSegmentEnd,
+        long fullSegmentCount) {
       this.firstSegmentId = firstSegmentId;
       this.lastSegmentId = lastSegmentId;
       this.firstSegmentStart = firstSegmentStart;
       this.lastSegmentEnd = lastSegmentEnd;
+      this.fullSegmentCount = fullSegmentCount;
     }
   }
 

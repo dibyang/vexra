@@ -249,7 +249,7 @@ class TxnManagerVisibleRowFastPathTest {
       TabId tabId = TabId.of(1, 0L);
 
       Transaction2 writer = manager.beginTransaction();
-      for (long rowId = 1L; rowId <= 600L; rowId++) {
+      for (long rowId = 1L; rowId <= 1500L; rowId++) {
         manager.put(writer, RowKey.of(tabId, rowId),
             row("row-" + rowId, 0L));
       }
@@ -258,13 +258,13 @@ class TxnManagerVisibleRowFastPathTest {
       Transaction2 oldReader = new Transaction2(100_001L, 1L);
 
       Transaction2 deleter = manager.beginTransaction();
-      manager.delete(deleter, RowKey.of(tabId, 300L));
+      manager.delete(deleter, RowKey.of(tabId, 600L));
       manager.commit(deleter);
 
-      assertEquals(600L, manager.countVisibleRows(oldReader,
-          RowPrefix.of(tabId), 1L, 600L));
-      assertEquals(599L, manager.countVisibleRows(manager.beginTransaction(),
-          RowPrefix.of(tabId), 1L, 600L));
+      assertEquals(1500L, manager.countVisibleRows(oldReader,
+          RowPrefix.of(tabId), 1L, 1500L));
+      assertEquals(1499L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 1500L));
 
       AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
       assertTrue(snapshot.getPhaseStats().containsKey(
@@ -274,6 +274,51 @@ class TxnManagerVisibleRowFastPathTest {
         System.clearProperty(property);
       } else {
         System.setProperty(property, previous);
+      }
+    }
+  }
+
+  /**
+   * 验证 segment range count 显式开启后，小范围仍会按阈值回退 raw scan。
+   *
+   * <p>第七十三轮 benchmark 证明完整 segment 太少时 segment path 会慢于 raw path。
+   * 该用例防止后续改动重新让中等范围误命中 segment 统计。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldSkipSegmentRangeCountBelowFullSegmentThreshold()
+      throws Exception {
+    String enabledProperty = "vexra.adb.rangeCount.segmentCount.enabled";
+    String previousEnabled = System.getProperty(enabledProperty);
+    System.setProperty(enabledProperty, "true");
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-segment-threshold").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+      TabId tabId = TabId.of(1, 0L);
+
+      Transaction2 writer = manager.beginTransaction();
+      for (long rowId = 1L; rowId <= 600L; rowId++) {
+        manager.put(writer, RowKey.of(tabId, rowId),
+            row("row-" + rowId, 0L));
+      }
+      manager.commit(writer);
+
+      assertEquals(512L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 512L));
+
+      AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
+      assertTrue(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW"));
+      assertFalse(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+    } finally {
+      if (previousEnabled == null) {
+        System.clearProperty(enabledProperty);
+      } else {
+        System.setProperty(enabledProperty, previousEnabled);
       }
     }
   }
