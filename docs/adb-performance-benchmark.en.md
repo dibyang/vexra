@@ -4736,3 +4736,87 @@ Conclusion:
   count it as a main `mixed` throughput win. The next higher-value work still
   points to ldb raw/reusable cursors, segment/block-level count, or coarser
   write batching.
+
+## Round 64: Local-write-aware Raw Range Count Plan
+
+This round continues objective 3 (`TxnMap2.getVisible / visible row parsing`)
+and objective 5 (outer `range count` entry optimization). The latest ADB/H2
+comparison shows that ADB is already much faster than H2 for `point_lookup`,
+`range_scan`, and `table_count`, but 8-thread `mixed` still reaches only about
+0.10x of H2, with ADB allocating about `388 KB` per operation.
+
+Reviewing `TxnManager.countVisibleRows(...)` shows that transactions without
+local writes already use the raw-key range-count path. However, once the
+current transaction has any row write in the target range, the method falls
+back to the object-heavy scan path:
+
+1. Build a `VersionKey` for every store row.
+2. Convert it to a `DataKey` through `VersionKey.toDataKey()`.
+3. Rebuild the logical row prefix with `DataKey.toBytes()`.
+4. Track store-covered local writes in a `Set<DataKey>`.
+
+That path is highly relevant to the `mixed` combination of in-transaction writes
+plus range counts. Planned changes:
+
+1. Scan the transaction write-set once and extract local row writes for the
+   target table and rowId range into a small `rowId -> RowValue` map.
+2. Keep the store scan on existing raw-key helpers: parse rowId directly from
+   VersionRowKey bytes, skip a logical row, check committed versions, and decode
+   only RowValue metadata.
+3. When a store rowId has a local write, skip the store logical row and count
+   according to the local write override.
+4. After the scan, add only local rowIds not covered by the store scan, avoiding
+   per-row `DataKey` sets and key rebuilding.
+5. Preserve MVCC, deletes, versions newer than the snapshot, intent skipping,
+   and local-write override semantics.
+
+Compatibility and rollback:
+
+- No on-disk key/value format change.
+- No change to transaction commit, locks, secondary indexes, or row-count
+  metadata.
+- If the raw-key preconditions do not hold, the old object path can remain as a
+  fallback; this round should first reuse the existing raw-key offsets and
+  `resolveVisibleCountableInCurrentRawLogicalRow(...)`.
+
+Implementation result:
+
+1. Added `localRowWritesInRange(...)` to first collect current-transaction local
+   writes for the target table and rowId range into a `rowId -> RowValue` map.
+2. Added `countVisibleRowsWithLocalWritesRaw(...)`. Range counts with local
+   writes now first try a raw-key scan; rows overridden by the local write-set
+   are counted from the local value, and store-covered local rowIds are tracked
+   with a `Set<Long>`.
+3. Kept `countVisibleRowsWithLocalWritesObject(...)` as a compatibility
+   fallback when a non-raw row version key is encountered.
+4. Added
+   `TxnManagerVisibleRowFastPathTest.shouldCountRangeWithLocalWriteOverridesOnRawPath`
+   to cover local delete, local update, local insert, and store committed rows
+   in the same range count.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 1109.06 | 2109 | 93763 | `vexra-adb/build/adb-benchmark/range_count_raw_local_20260623-105227.properties` |
+| `mixed` | 8 | 2622.38 | 8363 | 388740 | `vexra-adb/build/adb-benchmark/mixed_raw_local_20260623-105227.properties` |
+
+Conclusion:
+
+- This round removes per-store-row `VersionKey/DataKey` construction from the
+  "range count with local writes" path, but the default `mixed` workload inserts
+  high IDs outside the range-count query range, so it does not consistently hit
+  the new branch.
+- Default `range_scan` / `mixed` allocation remains around `94 KB/op` /
+  `389 KB/op`. The next highest-value work still points to ldb raw/reusable
+  cursors, segment/block-level count, or a dedicated benchmark workload for
+  "local-write-covered range count" to quantify this path directly.

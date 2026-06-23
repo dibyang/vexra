@@ -4071,3 +4071,72 @@ benchmark：
   `mixed` 从 `387656 B/op` 波动到 `389966 B/op`。
 - 因此本轮作为代码路径去对象化和后续维护基础保留，但不计为 mixed 吞吐主收益。后续仍应回到
   ldb cursor raw/reusable entry、segment/block-level count，或更粗粒度写入批处理。
+
+## 第六十四轮：本地写感知的 raw range count 计划
+
+本轮继续目标第 3 项 `TxnMap2.getVisible / visible row 解析路径` 和第 5 项
+`range count 外层入口优化`。最新 ADB/H2 对比显示，ADB 在 `point_lookup`、
+`range_scan` 和 `table_count` 上已经明显快于 H2，但 8 线程 `mixed` 仍只有 H2
+约 0.10 倍，并且 ADB `mixed` 每操作分配约 `388 KB`。
+
+复核 `TxnManager.countVisibleRows(...)` 后确认：无本地写事务已经走 raw-key range
+count；但只要当前事务 write-set 中存在范围内行写入，就会退回对象化扫描路径：
+
+1. 每个 store row 构造 `VersionKey`。
+2. 通过 `VersionKey.toDataKey()` 构造 `DataKey`。
+3. 通过 `DataKey.toBytes()` 构造逻辑行前缀。
+4. 用 `Set<DataKey>` 记录已经被 store scan 覆盖的本地写。
+
+该路径与 `mixed` 中“事务内写入 + 范围 count”组合高度相关。本轮改动计划：
+
+1. 只扫描当前事务 write-set 一次，提取目标表和目标 rowId 范围内的本地行写入，构建
+   `rowId -> RowValue` 小映射。
+2. store 扫描继续使用 raw-key helper：直接从 VersionRowKey 字节解析 rowId、跳过同一逻辑行、
+   判断 committed version 和解码 RowValue metadata。
+3. 对命中本地写的 rowId，跳过 store 中同一逻辑行并按本地写覆盖结果计数。
+4. 扫描结束后只补充未被 store 覆盖的本地 rowId，避免 `DataKey` 集合和每行 key 重建。
+5. 保持 MVCC、删除行、晚于快照版本、intent 跳过和本地写覆盖语义不变。
+
+兼容性与回滚：
+
+- 不改变磁盘 key/value 格式。
+- 不改变事务提交、锁、二级索引或 row-count 元数据。
+- 如果发现 raw-key 前提不满足，仍可保留原对象化 helper 作为回退；本轮首选复用已有
+  raw-key offset 常量和 `resolveVisibleCountableInCurrentRawLogicalRow(...)`。
+
+实现结果：
+
+1. 新增 `localRowWritesInRange(...)`，先把当前事务中目标表、目标 rowId 范围内的本地写
+   收敛成 `rowId -> RowValue`。
+2. 新增 `countVisibleRowsWithLocalWritesRaw(...)`，带本地写的 range count 先尝试 raw-key
+   扫描；命中本地写时按 write-set 覆盖结果计数，并用 `Set<Long>` 记录 store scan
+   已覆盖的本地 rowId。
+3. 保留对象化分支 `countVisibleRowsWithLocalWritesObject(...)`，当遇到非 raw row version key
+   时回退，保证兼容边界。
+4. 新增 `TxnManagerVisibleRowFastPathTest.shouldCountRangeWithLocalWriteOverridesOnRawPath`，
+   覆盖本地 delete、本地 update、本地 insert 与 store committed 行混合的 range count。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | threads | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | 1 | 1109.06 | 2109 | 93763 | `vexra-adb/build/adb-benchmark/range_count_raw_local_20260623-105227.properties` |
+| `mixed` | 8 | 2622.38 | 8363 | 388740 | `vexra-adb/build/adb-benchmark/mixed_raw_local_20260623-105227.properties` |
+
+结论：
+
+- 本轮消除了“本地写命中 range count”场景中按 store row 构造 `VersionKey/DataKey`
+  的对象化扫描，但默认 `mixed` workload 的 insert ID 位于 range count 查询范围之外，
+  因此不会稳定命中该新分支。
+- 默认 `range_scan` / `mixed` allocation 仍在 `94 KB/op` / `389 KB/op` 附近，
+  下一轮主要价值仍在 ldb raw/reusable cursor、segment/block-level count，或调整 benchmark
+  增加“本地写覆盖范围 count”专项 workload 来量化该路径收益。

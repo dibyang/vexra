@@ -161,6 +161,35 @@ class TxnManagerVisibleRowFastPathTest {
   }
 
   /**
+   * 验证带本地写的 raw range count 会按当前事务覆盖 store 中的旧行。
+   *
+   * <p>该场景同时覆盖本地 delete、本地 update 和尚未落盘的本地 insert：
+   * 计数必须以 write-set 为准，而不是把 store 中的旧 committed 版本重复计入。</p>
+   *
+   * @throws Exception store 或事务操作失败时抛出
+   */
+  @Test
+  void shouldCountRangeWithLocalWriteOverridesOnRawPath() throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-local-raw").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+
+      putCommitted(store, RowKey.of(tabId, 1L), 10L, "old-1");
+      putCommitted(store, RowKey.of(tabId, 2L), 10L, "old-2");
+      putCommitted(store, RowKey.of(tabId, 3L), 10L, "old-3");
+
+      Transaction2 reader = new Transaction2(1L, 15L);
+      manager.delete(reader, RowKey.of(tabId, 1L));
+      manager.put(reader, RowKey.of(tabId, 2L), row("local-2", 0L));
+      manager.put(reader, RowKey.of(tabId, 4L), row("local-4", 0L));
+
+      assertEquals(3L, manager.countVisibleRows(reader, RowPrefix.of(tabId),
+          1L, 4L));
+    }
+  }
+
+  /**
    * 验证 range scan lower bound 使用与 VersionRowKey 一致的 rowId 编码。
    *
    * <p>row version key 会对 rowId 做符号位翻转以保持 signed long 字典序。

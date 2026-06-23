@@ -769,12 +769,24 @@ public class TxnManager {
         tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
 
     byte[] tablePrefix = prefixKey.toBytes();
-    if (txn.getWriteSet().isEmpty()
-        || !hasLocalRowWriteInRange(txn, prefixKey.getTabID(), min, max)) {
+    Map<Long, RowValue> localRowWrites = localRowWritesInRange(txn,
+        prefixKey.getTabID(), min, max);
+    if (localRowWrites.isEmpty()) {
       return countVisibleRowsWithoutLocalWrites(txn, prefixKey, tablePrefix,
           min, max);
     }
 
+    Long rawCount = countVisibleRowsWithLocalWritesRaw(txn, prefixKey,
+        tablePrefix, min, max, localRowWrites);
+    if (rawCount != null) {
+      return rawCount;
+    }
+    return countVisibleRowsWithLocalWritesObject(txn, prefixKey, tablePrefix,
+        min, max);
+  }
+
+  private long countVisibleRowsWithLocalWritesObject(Transaction2 txn,
+      PrefixKey prefixKey, byte[] tablePrefix, Long min, Long max) {
     Set<DataKey> localRowsCoveredByStoreScan = new HashSet<>();
     long count = 0L;
 
@@ -820,6 +832,66 @@ public class TxnManager {
     }
 
     return count + countLocalRowsMissingFromStore(txn, tablePrefix, min, max,
+        localRowsCoveredByStoreScan);
+  }
+
+  private Long countVisibleRowsWithLocalWritesRaw(Transaction2 txn,
+      PrefixKey prefixKey, byte[] tablePrefix, Long min, Long max,
+      Map<Long, RowValue> localRowWrites) {
+    long started = System.nanoTime();
+    Set<Long> localRowsCoveredByStoreScan = new HashSet<>();
+    long count = 0L;
+
+    try {
+      try (VersionScanSource scan =
+          store.openVersionScanSource(ScanDirection.FORWARD)) {
+        scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
+            tableScanEndKey(prefixKey, max));
+
+        while (scan.isValid()) {
+          byte[] rawKey = scan.key();
+          if (!TableScanCursor.startsWith(rawKey, tablePrefix)) {
+            break;
+          }
+          if (!isRawVersionRowKey(rawKey)) {
+            return null;
+          }
+          long rowId = rawRowId(rawKey);
+
+          if (!inRowIdRange(rowId, min, max)) {
+            if (max != null && rowId > max) {
+              break;
+            }
+            skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+            continue;
+          }
+
+          RowValue local = localRowWrites.get(rowId);
+          if (local != null) {
+            localRowsCoveredByStoreScan.add(rowId);
+            skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+            if (isCountable(local)) {
+              count++;
+            }
+            continue;
+          }
+
+          if (resolveVisibleCountableInCurrentRawLogicalRow(scan, rawKey,
+              txn.getStartTs())) {
+            count++;
+          }
+        }
+      }
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    } finally {
+      recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT_RAW_LOCAL",
+          System.nanoTime() - started);
+    }
+
+    return count + countLocalRowsMissingFromStore(localRowWrites,
         localRowsCoveredByStoreScan);
   }
 
@@ -869,19 +941,24 @@ public class TxnManager {
     return count;
   }
 
-  private static boolean hasLocalRowWriteInRange(Transaction2 txn, TabId tabId,
-      Long minRowId, Long maxRowId) {
-    for (DataKey key : txn.getWriteSet().keySet()) {
+  private static Map<Long, RowValue> localRowWritesInRange(Transaction2 txn,
+      TabId tabId, Long minRowId, Long maxRowId) {
+    if (txn.getWriteSet().isEmpty()) {
+      return Collections.emptyMap();
+    }
+    Map<Long, RowValue> localRows = new HashMap<>();
+    for (Map.Entry<DataKey, RowValue> entry : txn.getWriteSet().entrySet()) {
+      DataKey key = entry.getKey();
       if (key == null || !key.isRow() || !tabId.equals(key.getTabID())) {
         continue;
       }
-      if (inRowIdRange(key.getRowId(), minRowId, maxRowId)) {
-        return true;
+      long rowId = key.getRowId();
+      if (inRowIdRange(rowId, minRowId, maxRowId)) {
+        localRows.put(rowId, entry.getValue());
       }
     }
-    return false;
+    return localRows;
   }
-
 
   public RowValue getVisibleCommitted(Transaction2 txn, DataKey key) throws SQLException {
     if (key != null && key.isRow()) {
@@ -1692,6 +1769,20 @@ public class TxnManager {
         continue;
       }
       if (rowsCoveredByStoreScan.contains(key)) {
+        continue;
+      }
+      if (isCountable(entry.getValue())) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private static long countLocalRowsMissingFromStore(
+      Map<Long, RowValue> localRowWrites, Set<Long> rowsCoveredByStoreScan) {
+    long count = 0L;
+    for (Map.Entry<Long, RowValue> entry : localRowWrites.entrySet()) {
+      if (rowsCoveredByStoreScan.contains(entry.getKey())) {
         continue;
       }
       if (isCountable(entry.getValue())) {
