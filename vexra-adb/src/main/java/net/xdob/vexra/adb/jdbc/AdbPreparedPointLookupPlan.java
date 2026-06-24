@@ -7,11 +7,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
+import net.xdob.vexra.adb.AdbBenchmarkMain;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.adb.db.TxnMap2;
 import net.xdob.vexra.adb.db.TxnManager;
+import net.xdob.vexra.adb.db.VersionReadSession;
 import net.xdob.vexra.adb.key.RowKey;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
@@ -48,6 +50,9 @@ final class AdbPreparedPointLookupPlan {
   private List<String> resolvedSelectColumns;
   private int[] resolvedColumnIds;
   private SessionLocal cachedSession;
+  private AdbSimpleResultSet.SingleValueResultSet singleValueResultSet;
+  private VersionReadSession visibleColumnReadSession;
+  private long visibleColumnReadSessionModificationId = Long.MIN_VALUE;
   private final ConcurrentHashMap<Long, CachedColumnValues> decodedColumnCache =
       new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Long, CachedSingleColumnValue>
@@ -139,8 +144,16 @@ final class AdbPreparedPointLookupPlan {
         || parameterSet.length <= 1 || !parameterSet[1]) {
       return null;
     }
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     SessionLocal session = resolveSession(connection);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.resolveSession", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     AdbTable table = resolveAdbTable(session);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.resolveTable", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     if (table == null) {
       return null;
     }
@@ -150,39 +163,83 @@ final class AdbPreparedPointLookupPlan {
     try {
       long rowId = toLong(parameters[1]);
       boolean singleColumn = resolvedColumnIds.length == 1;
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       Value cachedSingleValue = singleColumn
           ? cachedSingleValue(table, rowId) : null;
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.cacheLookup", allocationStarted,
+          AdbBenchmarkMain.benchmarkAllocationBytes());
       if (cachedSingleValue != null) {
         if (!detailedSqlDiagnostics()) {
-          return resultSet(true, cachedSingleValue, null);
+          allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+          try {
+            return resultSet(true, cachedSingleValue, null);
+          } finally {
+            AdbBenchmarkMain.recordCurrentMixedStage(
+                "plan.pointLookup.resultSetBuild", allocationStarted,
+                AdbBenchmarkMain.benchmarkAllocationBytes());
+          }
         }
         long resultStarted = System.nanoTime();
         try {
-          return resultSet(true, cachedSingleValue, null);
+          allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+          try {
+            return resultSet(true, cachedSingleValue, null);
+          } finally {
+            AdbBenchmarkMain.recordCurrentMixedStage(
+                "plan.pointLookup.resultSetBuild", allocationStarted,
+                AdbBenchmarkMain.benchmarkAllocationBytes());
+          }
         } finally {
           table.recordSqlPhase("ADB_POINT_LOOKUP_RESULT_BUILD",
               System.nanoTime() - resultStarted);
         }
       }
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       TxnManager.VisibleColumnValue visibleColumn = singleColumn
           ? visibleSingleColumnValue(session, table, rowId) : null;
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.visibleColumn", allocationStarted,
+          AdbBenchmarkMain.benchmarkAllocationBytes());
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       RowValue rowValue = !singleColumn
           ? visibleRowValue(session, table, rowId) : null;
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.visibleRow", allocationStarted,
+          AdbBenchmarkMain.benchmarkAllocationBytes());
       if ((singleColumn && visibleColumn == null)
           || (!singleColumn && rowValue == null)) {
         decodedColumnCache.remove(Long.valueOf(rowId));
         decodedSingleColumnCache.remove(Long.valueOf(rowId));
       }
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       Value singleValue = singleColumn && visibleColumn != null
           ? decodedSingleValue(table, rowId, visibleColumn) : null;
       Value[] values = !singleColumn && rowValue != null
           ? decodedValues(table, rowId, rowValue) : null;
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.decode", allocationStarted,
+          AdbBenchmarkMain.benchmarkAllocationBytes());
       if (!detailedSqlDiagnostics()) {
-        return resultSet(singleColumn, singleValue, values);
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        try {
+          return resultSet(singleColumn, singleValue, values);
+        } finally {
+          AdbBenchmarkMain.recordCurrentMixedStage(
+              "plan.pointLookup.resultSetBuild", allocationStarted,
+              AdbBenchmarkMain.benchmarkAllocationBytes());
+        }
       }
       long resultStarted = System.nanoTime();
       try {
-        return resultSet(singleColumn, singleValue, values);
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        try {
+          return resultSet(singleColumn, singleValue, values);
+        } finally {
+          AdbBenchmarkMain.recordCurrentMixedStage(
+              "plan.pointLookup.resultSetBuild", allocationStarted,
+              AdbBenchmarkMain.benchmarkAllocationBytes());
+        }
       } finally {
         table.recordSqlPhase("ADB_POINT_LOOKUP_RESULT_BUILD",
             System.nanoTime() - resultStarted);
@@ -202,26 +259,84 @@ final class AdbPreparedPointLookupPlan {
   private TxnManager.VisibleColumnValue visibleSingleColumnValue(
       SessionLocal session, AdbTable table, long rowId) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
-    RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    net.xdob.vexra.adb.key.TabId tabId = map.getTabId(table.getId());
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.tabId", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    RowKey rowKey = RowKey.of(tabId, rowId);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.rowKey", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
+    VersionReadSession readSession = visibleColumnReadSession(table, map);
     if (!detailedSqlDiagnostics()) {
-      return map.getVisibleColumn(rowKey, resolvedColumnIds[0]);
+      return map.getVisibleColumn(readSession, rowKey, resolvedColumnIds[0]);
     }
     long started = System.nanoTime();
     try {
-      return map.getVisibleColumn(rowKey, resolvedColumnIds[0]);
+      return map.getVisibleColumn(readSession, rowKey, resolvedColumnIds[0]);
     } finally {
       table.recordSqlPhase("ADB_POINT_LOOKUP_VISIBLE_ROW",
           System.nanoTime() - started);
     }
   }
 
+  private VersionReadSession visibleColumnReadSession(AdbTable table,
+      TxnMap2 map) throws SQLException {
+    long tableModificationId = table.getMaxDataModificationId();
+    if (visibleColumnReadSession != null
+        && visibleColumnReadSessionModificationId == tableModificationId) {
+      return visibleColumnReadSession;
+    }
+    closeVisibleColumnReadSession();
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    visibleColumnReadSession = map.openVersionReadSession();
+    visibleColumnReadSessionModificationId = tableModificationId;
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.readSessionOpen",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    return visibleColumnReadSession;
+  }
+
+  /**
+   * 关闭点查计划持有的可复用读资源。
+   *
+   * @throws SQLException 底层读会话关闭失败时抛出
+   */
+  void close() throws SQLException {
+    closeVisibleColumnReadSession();
+  }
+
+  private void closeVisibleColumnReadSession() throws SQLException {
+    VersionReadSession readSession = visibleColumnReadSession;
+    visibleColumnReadSession = null;
+    visibleColumnReadSessionModificationId = Long.MIN_VALUE;
+    if (readSession != null) {
+      try {
+        readSession.close();
+      } catch (RuntimeException e) {
+        throw new SQLException("Failed to close point lookup read session", e);
+      }
+    }
+  }
+
   private ResultSet resultSet(boolean singleColumn, Value singleValue,
       Value[] values) {
     if (singleColumn) {
-      return AdbSimpleResultSet.singleValue(resolvedSelectColumns.get(0),
-          singleValue);
+      return singleValueResultSet(resolvedSelectColumns.get(0))
+          .resultSet(singleValue);
     }
     return AdbSimpleResultSet.singleRow(resolvedSelectColumns, values);
+  }
+
+  private AdbSimpleResultSet.SingleValueResultSet singleValueResultSet(
+      String columnName) {
+    if (singleValueResultSet == null) {
+      singleValueResultSet = AdbSimpleResultSet.reusableSingleValue(
+          columnName);
+    }
+    return singleValueResultSet;
   }
 
   private boolean isPrimaryKeyLookup(AdbTable table) {

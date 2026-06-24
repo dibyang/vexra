@@ -99,6 +99,9 @@ final class AdbPreparedStatementProxy {
         delegateMayHaveParameters = false;
         return invokeDelegate(method, args);
       }
+      if ("close".equals(name) && noSqlArgument(args)) {
+        return close(method, args);
+      }
       if ("executeQuery".equals(name) && noSqlArgument(args)
           && tableCountPlan != null) {
         ResultSet resultSet = tableCountPlan.tryExecuteQuery(connection);
@@ -163,6 +166,37 @@ final class AdbPreparedStatementProxy {
         replayDeferredSetters();
       }
       return invokeDelegate(method, args);
+    }
+
+    private Object close(Method method, Object[] args) throws Throwable {
+      Throwable closeFailure = null;
+      try {
+        if (pointLookupPlan != null) {
+          pointLookupPlan.close();
+        }
+        if (rangeCountPlan != null) {
+          rangeCountPlan.close();
+        }
+      } catch (Throwable t) {
+        closeFailure = t;
+      }
+      Object result = null;
+      Throwable delegateFailure = null;
+      try {
+        result = invokeDelegate(method, args);
+      } catch (Throwable t) {
+        delegateFailure = t;
+      }
+      if (closeFailure != null) {
+        if (delegateFailure != null) {
+          closeFailure.addSuppressed(delegateFailure);
+        }
+        throw closeFailure;
+      }
+      if (delegateFailure != null) {
+        throw delegateFailure;
+      }
+      return result;
     }
 
     private void replayDeferredSetters() throws Throwable {

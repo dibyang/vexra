@@ -16,7 +16,7 @@ file-backed `ldb`; `mem` mode is intentionally out of scope.
 | --- | --- |
 | Date | 2026-06-21 |
 | ADB module | `vexra-adb` |
-| ldb version | `0.10.0` |
+| ldb version | `0.12.0-SNAPSHOT` |
 | Rows | 5000 |
 | Warmup operations | 300 |
 | Measured operations | 3000 |
@@ -5726,3 +5726,240 @@ Conclusion:
 - The remaining higher-value objective-5 work is segment rebuild / cost-model
   selection and further reducing the fixed outer cost of
   `ADB_TABLE_RANGE_COUNT_FAST`.
+
+## Round 76: Adopt ldb 0.12.0-SNAPSHOT Cursor View APIs
+
+This round adopts the new ldb cursor APIs on the ADB side:
+
+1. Switch `vexra-ldb` to `0.12.0-SNAPSHOT`.
+2. Use `javap` to confirm that the active classpath exposes
+   `SnapshotCursor.seek(byte[], byte[])`, `keyView()`, `valueView()`,
+   `keyStartsWith(...)`, and `isKeyBefore(...)`.
+3. Add default `keyView()` / `valueView()` / `keyStartsWith(...)` /
+   `isKeyBefore(...)` methods to `VersionScanSource`, keeping Rocks/Raft and
+   other existing implementations byte-array compatible.
+4. Override the view APIs in `LdbVersionEntryCursor` and delegate directly to
+   ldb `SnapshotCursor`, avoiding key/value copies on LDB hot paths.
+5. Change `TxnManager` range-count raw scans, committed point-lookup fallback,
+   and single-column visibility reads to parse key/value data from `Slice`
+   views.
+6. After clarifying that ldb `seek(byte[], byte[])` is `[begin,end)` and
+   `seekClosed(byte[], byte[])` is `[begin,end]`, ADB now enables bounded seek
+   directly: plain byte ranges use `seek(begin,end)`, while logical rowId
+   closed ranges first map the end row to a full physical version-row key and
+   then use `seekClosed(begin,end)`.
+7. Fix `TableScanCursor` row seek-key encoding to use the same rowId sign-bit
+   flip as `RowKey` / `VersionRowKey`. This old issue was mostly hidden while
+   lower layers ignored the upper bound, but it makes positive-rowId bounded
+   scans seek into the wrong range once bounded seek is active.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.queriesAndDeletesRowsThroughPrimaryAndSecondaryIndexes --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rangeCountSeesLocalDeleteAndRollback
+.\gradlew.bat :vexra-adb:test
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | Shape | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | --- |
+| `mixed` | ADB, 8 threads, batch100, rangeSize 4096 | 14423.08 | 6784 | 185162 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2, 8 threads, batch100, rangeSize 4096 | 25000.00 | 4621 | 28676 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/h2_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB, rangeSize 4096 | 1969.80 | 1360 | 163524 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/adb_range_scan_4096.properties` |
+| `mixed` | ADB repeat | 14218.01 | 7189 | 184854 | `vexra-adb/build/adb-benchmark/ldb012-view-repeat-20260623-192519/adb_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB repeat | 2250.56 | 1292 | 164332 | `vexra-adb/build/adb-benchmark/ldb012-view-repeat-20260623-192519/adb_range_scan_4096.properties` |
+| `mixed` | ADB + bounded seek / seekClosed, 8 threads, batch100, rangeSize 4096 | 17647.06 | 4452 | 184807 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2 rerun, same shape | 27777.78 | 7047 | 28702 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/h2_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB + bounded seek / seekClosed, rangeSize 4096 | 2093.51 | 1430 | 163549 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/adb_range_scan_4096.properties` |
+
+Compared with the previous ADB/H2 comparison sample:
+
+- ADB `mixed_threads8_batch100` improved from `13043.48 ops/s` to roughly
+  `14.2k-14.4k ops/s`, about `+9%` to `+11%`; ADB/H2 improved from about
+  `0.44x` to about `0.57x`.
+- With bounded seek / seekClosed fully enabled, ADB `mixed_threads8_batch100`
+  further reached `17647.06 ops/s`, about `+35%` over the `0.11.0`
+  comparison sample and about `0.64x` of this round's H2 rerun
+  (`27777.78 ops/s`).
+- `mixed` allocation dropped from about `736128 bytes/op` to about
+  `185k bytes/op`, roughly `-75%`.
+- `range_scan_4096` allocation dropped from about `1149881 bytes/op` to about
+  `164k bytes/op`, roughly `-86%`. With bounded seek / seekClosed it measured
+  `2093.51 ops/s`, still below the previous `2744.74 ops/s` sample. The next
+  round should use a longer window and split `seek/next/valueView` timing to
+  determine whether this comes from ldb 0.12 snapshot variance,
+  segment/range-count cost, or normal short-run IO/JIT variance.
+
+Conclusion:
+
+1. Adopting ldb `keyView/valueView` clearly reduces allocation in `mixed` and
+   `range_scan`.
+2. ldb `seek(begin,end)` / `seekClosed(begin,end)` range semantics are now
+   usable by ADB. The important ADB-side rule is to distinguish plain byte
+   half-open ranges from logical rowId closed ranges mapped to full physical
+   version-key upper bounds.
+3. The mixed throughput gap to H2 is smaller but still meaningful. The next
+   high-value work is adding finer `LDB_SEEK/NEXT/VALUE_VIEW` diagnostic phases
+   in ADB to locate whether the remaining time is in cursor next, MVCC grouping,
+   or the H2 execution layer.
+
+## Round 77: Adopt ldb `SnapshotCursor.countRemaining()`
+
+ldb 0.12.0-SNAPSHOT added `SnapshotCursor.countRemaining()`. Its semantics are
+to advance the current cursor and count the remaining KV entries without calling
+`key()` or `value()`. ADB adopts it where that physical-count semantics is safe:
+
+1. Add a default `countRemaining()` method to `VersionScanSource`. The default
+   implementation advances one entry at a time, keeping Rocks/Raft and other
+   existing implementations compatible.
+2. Override `countRemaining()` in `LdbVersionEntryCursor` and delegate directly
+   to ldb `SnapshotCursor.countRemaining()`, avoiding per-entry key/value
+   byte-array copies on LDB physical range-count paths.
+3. Change `AdbBenchmarkMain` `store`-mode range_scan to use
+   `countRemaining()`. This path counts physical KV entries, matching the API
+   semantics.
+4. Do not directly replace SQL `COUNT(*)` with `countRemaining()` yet: ADB SQL
+   counts MVCC-visible logical rows and must handle multiple versions, delete
+   markers, local writes, and rollback. Counting physical KV entries directly
+   would be incorrect for multi-version or deleted rows. To use this in SQL
+   range count, ADB needs metadata or proof conditions showing that physical
+   entry count equals visible logical row count for the target range.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | Shape | ops/s | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | --- |
+| `range_scan` | `store` mode, rangeSize 4096, using `countRemaining()` | 1332.15 | 1383 | 166185 | `vexra-adb/build/adb-benchmark/ldb012-countremaining-20260623-210444/store_range_scan_4096.properties` |
+
+Conclusion:
+
+1. ADB now has an entry point for ldb's low-allocation physical count API.
+2. The current store benchmark still allocates noticeably, which means the
+   remaining allocation is not only from ADB calling `key()/value()`. The next
+   step is to split ldb `countRemaining()/next` internals, benchmark harness
+   overhead, and store cursor lifecycle cost.
+3. The high-value SQL range-count optimization is not a direct raw-scan
+   replacement. It needs conditions under which visible logical row count can be
+   safely derived from physical counts, such as a stronger compact/latest-row
+   index, segment metadata, or a proof that the range has no multi-version rows.
+
+## Round 78: Adopt ldb ReadSession Cursor Reuse
+
+This round implements the ADB-side cooperation suggested by ldb:
+
+1. Add ADB's own `VersionReadSession` abstraction to `DbStore`, avoiding a hard
+   leak of `net.xdob.vexra.ldb.ReadSession` into the generic store API.
+2. Keep old stores compatible through a default `VersionScanSource`-based
+   implementation. `LdbStore` overrides it with a real `LDB.openReadSession()`.
+3. Change `store` benchmark to reuse one `VersionReadSession` during the
+   benchmark lifecycle. Physical range/table_count/mixed range counts use
+   `countClosed(begin,end)`.
+4. Add an experimental async write combining switch to `LdbStore`:
+   `vexra.adb.ldb.asyncWriteCombining.enabled=true`, plus
+   `vexra.adb.ldb.asyncWriteCombining.maxDelayNanos`. It remains off by
+   default.
+5. SQL `COUNT(*)` still does not directly use `ReadSession.countClosed`, for the
+   same reason as round 77: SQL counts MVCC-visible logical rows, not physical KV
+   entries.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunStoreBenchmarkAgainstLdbStore
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | Shape | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | `store`, rangeSize 4096, ReadSession `countClosed` | 5976.10 | 150 | 289 | 500 | 165606 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_range_scan_4096.properties` |
+| `mixed` | `store`, rangeSize 4096, ReadSession reuse | 14851.49 | 2 | 388 | 682 | 36449 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_mixed_range4096.properties` |
+| `mixed` | `store`, ReadSession + asyncWriteCombining | 14705.88 | 2 | 382 | 691 | 36453 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_mixed_range4096_async.properties` |
+
+Compared with round 77's `store range_scan_4096` sample that opened a cursor for
+each range:
+
+- Throughput improved from `1332.15 ops/s` to `5976.10 ops/s`, about `4.49x`.
+- p99 dropped from `1383 us` to `500 us`.
+- Allocation stayed roughly flat: `166185 bytes/op` to `165606 bytes/op`. This
+  indicates ReadSession mainly reduces cursor-open and seek-path cost, not the
+  remaining allocation source.
+
+Conclusion:
+
+1. `ReadSession` cursor reuse has clear throughput and latency benefits on
+   physical range/mixed read paths.
+2. async write combining does not help this single-threaded `store mixed`
+   profile, so it should remain disabled by default. It should only be evaluated
+   separately for ADB mixed high-concurrency async-write profiles.
+3. The next high-value step is safely introducing `ReadSession` into SQL
+   execution-worker / transaction-batch read paths, but ADB must first define the
+   snapshot lifetime boundary to avoid reusing a fixed snapshot across
+   transactions and returning stale visibility.
+
+## Round 79: Allocation Boundary Benchmarks
+
+This round adds four `store`-mode allocation-boundary workloads. All four use
+the same ADB physical row-version key/value dataset so the allocation source can
+be split by layer:
+
+1. `alloc_count_closed`: only calls `ReadSession.countClosed(begin,end)`.
+2. `alloc_scan_empty`: calls `ReadSession.scanClosed(begin,end, empty visitor)`.
+3. `alloc_scan_view`: `scanClosed` only reads `keyView.length()` /
+   `valueView.length()`.
+4. `alloc_scan_materialize`: `scanClosed` copies the key view, decodes
+   `VersionKey`, runs `RowValue.decodeValueView`, decodes columns, and builds a
+   `DefaultRow`.
+
+The adapter test also confirms that ADB `LdbVersionReadSession` only delegates
+to `ReadSession.countClosed` and `ReadSession.scanClosed`; it does not escape
+through `ReadSession.cursor()` back to a `cursor.key()/cursor.value()` hot path.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunStoreAllocationBoundaryBenchmarks
+```
+
+Result: passed.
+
+Benchmark:
+
+| workload | Shape | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `alloc_count_closed` | `ReadSession.countClosed(begin,end)` | 6772.01 | 129 | 260 | 432 | 162632 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_count_closed.properties` |
+| `alloc_scan_empty` | `scanClosed(begin,end, empty visitor)` | 2304.15 | 417 | 680 | 1068 | 162733 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_empty.properties` |
+| `alloc_scan_view` | `scanClosed + keyView/valueView only` | 2290.08 | 426 | 651 | 992 | 162783 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_view.properties` |
+| `alloc_scan_materialize` | `scanClosed + full ADB row materialization` | 631.45 | 1341 | 2932 | 3687 | 2477237 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_materialize.properties` |
+
+Attribution:
+
+1. `countClosed`, empty visitor, and view-only allocation are almost identical,
+   about `162.6KB/op - 162.8KB/op`. This indicates that the fixed allocation
+   observed here does not come from ADB `key()/value()` copies or simple view
+   access. It is more likely inside ldb cursor/range-seek state rebuild or the
+   benchmark harness.
+2. Moving from count-only to visitor scanning drops throughput from
+   `6772 ops/s` to about `2300 ops/s`. The callback/per-entry traversal boundary
+   mainly affects CPU/latency, not allocation.
+3. Full ADB row materialization raises allocation to about `2.48MB/op`, making it
+   the dominant allocation source in this split. The next optimization should
+   focus on reducing key copies, RowValue payload copies, and
+   `Value[]/DefaultRow` object creation during column decoding.
+4. async write combining remains disabled by default. It is only kept as an
+   optional switch for multi-threaded async-write profiles.

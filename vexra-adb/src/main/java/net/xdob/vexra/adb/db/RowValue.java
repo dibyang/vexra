@@ -1,5 +1,7 @@
 package net.xdob.vexra.adb.db;
 
+import net.xdob.vexra.ldb.util.Slice;
+
 public class RowValue {
   private static final int OFFSET_TXN_ID = 0;
   private static final int OFFSET_COMMIT_TS = 8;
@@ -62,6 +64,34 @@ public class RowValue {
   }
 
   /**
+   * 从低分配 Slice 视图解码行值。
+   *
+   * <p>该入口用于 LDB cursor view 热路径，避免先复制完整 value 字节数组；返回的
+   * {@link RowValue#payload} 仍会复制，因为行数据可能在游标移动后继续被上层使用。</p>
+   *
+   * @param data encoded row value 视图
+   * @return 解码后的行值，空 value 返回 null
+   */
+  public static RowValue decodeValueView(Slice data) {
+    if (data == null || data.length() == 0) {
+      return null;
+    }
+    RowValue value = new RowValue();
+    value.txnId = readLong(data, OFFSET_TXN_ID);
+    value.commitTs = readLong(data, OFFSET_COMMIT_TS);
+    value.deleted = data.getByte(OFFSET_DELETED) != 0;
+    int len = readInt(data, OFFSET_PAYLOAD_LENGTH);
+    if (len > 0) {
+      byte[] bytes = new byte[len];
+      data.getBytes(OFFSET_PAYLOAD, bytes, 0, len);
+      value.payload = bytes;
+    } else {
+      value.payload = EMPTY_PAYLOAD;
+    }
+    return value;
+  }
+
+  /**
    * 只解码行值头部元数据，不复制 payload。
    *
    * <p>COUNT、可见性判断等只关心提交时间、删除标记和 payload 是否存在的路径可以使用它，
@@ -101,7 +131,29 @@ public class RowValue {
         ? COUNTABLE_ROW : COUNTABLE_NOT_ROW;
   }
 
+  /**
+   * 基于 Slice 视图判断 encoded row value 是否可被 COUNT 计入。
+   *
+   * @param data encoded row value 视图
+   * @return {@link #COUNTABLE_INVALID}、{@link #COUNTABLE_ROW} 或
+   *     {@link #COUNTABLE_NOT_ROW}
+   */
+  static int countableStateView(Slice data) {
+    if (data == null || data.length() == 0) {
+      return COUNTABLE_INVALID;
+    }
+    if (data.getByte(OFFSET_DELETED) != 0) {
+      return COUNTABLE_NOT_ROW;
+    }
+    return readInt(data, OFFSET_PAYLOAD_LENGTH) > 0
+        ? COUNTABLE_ROW : COUNTABLE_NOT_ROW;
+  }
+
   static long commitTs(byte[] data) {
+    return readLong(data, OFFSET_COMMIT_TS);
+  }
+
+  static long commitTsView(Slice data) {
     return readLong(data, OFFSET_COMMIT_TS);
   }
 
@@ -109,7 +161,15 @@ public class RowValue {
     return data[OFFSET_DELETED] != 0;
   }
 
+  static boolean isDeletedView(Slice data) {
+    return data.getByte(OFFSET_DELETED) != 0;
+  }
+
   static int payloadLength(byte[] data) {
+    return readInt(data, OFFSET_PAYLOAD_LENGTH);
+  }
+
+  static int payloadLengthView(Slice data) {
     return readInt(data, OFFSET_PAYLOAD_LENGTH);
   }
 
@@ -128,11 +188,29 @@ public class RowValue {
         | (long) (data[offset + 7] & 0xff);
   }
 
+  private static long readLong(Slice data, int offset) {
+    return ((long) (data.getByte(offset) & 0xff) << 56)
+        | ((long) (data.getByte(offset + 1) & 0xff) << 48)
+        | ((long) (data.getByte(offset + 2) & 0xff) << 40)
+        | ((long) (data.getByte(offset + 3) & 0xff) << 32)
+        | ((long) (data.getByte(offset + 4) & 0xff) << 24)
+        | ((long) (data.getByte(offset + 5) & 0xff) << 16)
+        | ((long) (data.getByte(offset + 6) & 0xff) << 8)
+        | (long) (data.getByte(offset + 7) & 0xff);
+  }
+
   private static int readInt(byte[] data, int offset) {
     return ((data[offset] & 0xff) << 24)
         | ((data[offset + 1] & 0xff) << 16)
         | ((data[offset + 2] & 0xff) << 8)
         | (data[offset + 3] & 0xff);
+  }
+
+  private static int readInt(Slice data, int offset) {
+    return ((data.getByte(offset) & 0xff) << 24)
+        | ((data.getByte(offset + 1) & 0xff) << 16)
+        | ((data.getByte(offset + 2) & 0xff) << 8)
+        | (data.getByte(offset + 3) & 0xff);
   }
 
   /**

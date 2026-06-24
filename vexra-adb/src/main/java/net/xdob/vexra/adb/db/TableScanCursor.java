@@ -43,7 +43,12 @@ public final class TableScanCursor implements AutoCloseable {
             ? KeyCodec.prefixEnd(buildRowSeekKey(prefixKey, maxRowId))
             : KeyCodec.prefixEnd(tablePrefix);
 
-    scanSource.seekToRangeStart(lowerInclusive, upperExclusive);
+    if (maxRowId != null && scanSource.direction() == ScanDirection.FORWARD) {
+      scanSource.seekToRangeClosed(lowerInclusive,
+          buildRowVersionClosedEndKey(prefixKey, maxRowId));
+    } else {
+      scanSource.seekToRangeStart(lowerInclusive, upperExclusive);
+    }
   }
 
   public boolean next() {
@@ -193,8 +198,19 @@ public final class TableScanCursor implements AutoCloseable {
   private static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
     DynamicByteBuffer b = DynamicByteBuffer.c();
     b.put(prefixKey.toBytes());
-    b.putLong(rowId);
+    b.putLong(KeyCodec.flipSign(rowId));
     return b.toArray();
+  }
+
+  private static byte[] buildRowVersionClosedEndKey(PrefixKey prefixKey,
+      long rowId) {
+    byte[] rowPrefix = buildRowSeekKey(prefixKey, rowId);
+    byte[] data = new byte[rowPrefix.length + Byte.BYTES + Long.BYTES];
+    System.arraycopy(rowPrefix, 0, data, 0, rowPrefix.length);
+    for (int i = rowPrefix.length; i < data.length; i++) {
+      data[i] = (byte) 0xff;
+    }
+    return data;
   }
 
   public static boolean startsWith(byte[] key, byte[] prefix) {

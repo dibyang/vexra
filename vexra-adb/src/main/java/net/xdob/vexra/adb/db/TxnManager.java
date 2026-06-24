@@ -3,6 +3,7 @@ package net.xdob.vexra.adb.db;
 import net.xdob.vexra.adb.*;
 import net.xdob.vexra.adb.key.*;
 import net.xdob.vexra.adb.util.Utils;
+import net.xdob.vexra.ldb.util.Slice;
 import org.h2.api.ErrorCode;
 import org.h2.message.DbException;
 import org.h2.value.Value;
@@ -19,11 +20,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class TxnManager {
 
   /**
-   * committed row cache 默认只在支持内容世代号的 store 上跳过物理版本校验。
-   *
-   * <p>restore 或 snapshot install 会推进 store 内容世代号并触发缓存失效；如果调用方需要
-   * 恢复旧的每次命中都校验 committed version 行为，可以设置
-   * {@code vexra.adb.rowCache.validateCommitted=true}。</p>
+   * committed row cache 默认只在支持内容世代号的 store 上跳过物理版本校验�?   *
+   * <p>restore �?snapshot install 会推�?store 内容世代号并触发缓存失效；如果调用方需�?   * 恢复旧的每次命中都校�?committed version 行为，可以设�?   * {@code vexra.adb.rowCache.validateCommitted=true}�?/p>
    */
   private static final String TRUST_COMMITTED_ROW_CACHE_PROPERTY =
       "vexra.adb.rowCache.trustCommitted";
@@ -92,11 +90,10 @@ public class TxnManager {
   }
 
   /**
-   * 判断默认 committed row cache 是否可以跳过物理版本校验。
-   *
+   * 判断默认 committed row cache 是否可以跳过物理版本校验�?   *
    * <p>显式 {@code vexra.adb.rowCache.validateCommitted=true} 会强制保守校验；显式
    * {@code vexra.adb.rowCache.trustCommitted} 会按调用方配置执行。未显式配置时，只有能在
-   * restore 后推进内容世代号的 store 才默认启用 trusted cache。</p>
+   * restore 后推进内容世代号�?store 才默认启�?trusted cache�?/p>
    *
    * @param store 当前事务管理器绑定的 store
    * @return 默认是否信任 committed row cache
@@ -117,12 +114,9 @@ public class TxnManager {
   }
 
   /**
-   * 使所有从底层 store 派生的进程内缓存失效。
-   *
-   * <p>该方法用于 restore、region snapshot 安装等会整体替换 store 可见内容的运维边界。
-   * committed row cache 在压测模式下可以跳过物理版本校验，因此 restore 成功后必须主动清理；
-   * row-count、segment row-count 与 rowId hint 也同样来自持久化内容，
-   * 需要一起失效。</p>
+   * 使所有从底层 store 派生的进程内缓存失效�?   *
+   * <p>该方法用�?restore、region snapshot 安装等会整体替换 store 可见内容的运维边界�?   * committed row cache 在压测模式下可以跳过物理版本校验，因�?restore 成功后必须主动清理；
+   * row-count、segment row-count �?rowId hint 也同样来自持久化内容�?   * 需要一起失效�?/p>
    */
   public void invalidateStoreDerivedCaches() {
     committedRowCache.clear();
@@ -142,10 +136,9 @@ public class TxnManager {
   }
 
   /**
-   * 设置 ADB region 写入 gate。
-   *
-   * <p>传入 null 会恢复为 no-op gate。gate 在 commitTs 分配和 durable commit 前执行，
-   * 用于分布式 region 模式下阻止缺少多数派的写入。</p>
+   * 设置 ADB region 写入 gate�?   *
+   * <p>传入 null 会恢复为 no-op gate。gate �?commitTs 分配�?durable commit 前执行，
+   * 用于分布�?region 模式下阻止缺少多数派的写入�?/p>
    *
    * @param regionWriteGate 新的 region 写入 gate
    */
@@ -159,10 +152,9 @@ public class TxnManager {
   }
 
   /**
-   * 设置 ADB region 读路由器。
-   *
+   * 设置 ADB region 读路由器�?   *
    * <p>传入 null 会恢复为 no-op router。router 在点读和扫描创建本地 cursor 前执行，
-   * 用于分布式 region 模式下记录或校验读请求的 region 路由。</p>
+   * 用于分布�?region 模式下记录或校验读请求的 region 路由�?/p>
    *
    * @param regionReadRouter 新的 region 读路由器
    */
@@ -176,13 +168,11 @@ public class TxnManager {
   }
 
   /**
-   * 设置 ADB region commit 协调器。
+   * 设置 ADB region commit 协调器�?   *
+   * <p>传入 null 会恢复为直接调用底层 store commit。启用后，事�?durable commit 会先
+   * �?write set 路由�?region，再交由 coordinator 调用 region commit client�?/p>
    *
-   * <p>传入 null 会恢复为直接调用底层 store commit。启用后，事务 durable commit 会先
-   * 按 write set 路由到 region，再交由 coordinator 调用 region commit client。</p>
-   *
-   * @param regionCommitCoordinator 新的 region commit 协调器
-   */
+   * @param regionCommitCoordinator 新的 region commit 协调�?   */
   public void setRegionCommitCoordinator(
       AdbRegionCommitCoordinator regionCommitCoordinator) {
     this.regionCommitCoordinator = regionCommitCoordinator;
@@ -193,11 +183,9 @@ public class TxnManager {
   }
 
   /**
-   * 设置事务提交前的生产范围 guard。
-   *
-   * <p>默认 no-op 以保持旧单机路径兼容。显式生产配置或 runtime session 可以安装该 guard，
-   * 让没有 region coordinator 的本地 commit 也先通过生产能力边界；已安装 region coordinator
-   * 时，真实 region 列表仍由 coordinator 在 RPC 前校验。</p>
+   * 设置事务提交前的生产范围 guard�?   *
+   * <p>默认 no-op 以保持旧单机路径兼容。显式生产配置或 runtime session 可以安装�?guard�?   * 让没�?region coordinator 的本�?commit 也先通过生产能力边界；已安装 region coordinator
+   * 时，真实 region 列表仍由 coordinator �?RPC 前校验�?/p>
    *
    * @param txnRegionGuard 事务 region guard；null 表示恢复 no-op
    */
@@ -207,9 +195,8 @@ public class TxnManager {
   }
 
   /**
-   * 设置 SQL 分布式 scan runtime。
-   *
-   * @param sqlDistributedScanRuntime SQL 分布式 scan runtime；null 表示关闭
+   * 设置 SQL 分布�?scan runtime�?   *
+   * @param sqlDistributedScanRuntime SQL 分布�?scan runtime；null 表示关闭
    */
   public void setSqlDistributedScanRuntime(
       AdbSqlDistributedScanRuntime sqlDistributedScanRuntime) {
@@ -217,8 +204,7 @@ public class TxnManager {
   }
 
   /**
-   * 返回当前 SQL 分布式 scan runtime。
-   *
+   * 返回当前 SQL 分布�?scan runtime�?   *
    * @return runtime；未启用时为 null
    */
   public AdbSqlDistributedScanRuntime getSqlDistributedScanRuntime() {
@@ -226,9 +212,8 @@ public class TxnManager {
   }
 
   /**
-   * 设置 SQL 分布式写入 runtime。
-   *
-   * @param sqlDistributedWriteRuntime SQL 分布式写入 runtime；null 表示关闭
+   * 设置 SQL 分布式写�?runtime�?   *
+   * @param sqlDistributedWriteRuntime SQL 分布式写�?runtime；null 表示关闭
    */
   public void setSqlDistributedWriteRuntime(
       AdbSqlDistributedWriteRuntime sqlDistributedWriteRuntime) {
@@ -236,8 +221,7 @@ public class TxnManager {
   }
 
   /**
-   * 返回当前 SQL 分布式写入 runtime。
-   *
+   * 返回当前 SQL 分布式写�?runtime�?   *
    * @return runtime；未启用时为 null
    */
   public AdbSqlDistributedWriteRuntime getSqlDistributedWriteRuntime() {
@@ -245,13 +229,10 @@ public class TxnManager {
   }
 
   /**
-   * 设置 SQL 诊断记录器。
+   * 设置 SQL 诊断记录器�?   *
+   * <p>recorder 只接收真�?ADB table engine 入口上报的轻量摘要，不参与事务提交�?   * 回滚或锁控制；传�?null 表示关闭当前 manager �?SQL 诊断�?/p>
    *
-   * <p>recorder 只接收真实 ADB table engine 入口上报的轻量摘要，不参与事务提交、
-   * 回滚或锁控制；传入 null 表示关闭当前 manager 的 SQL 诊断。</p>
-   *
-   * @param sqlDiagnosticRecorder SQL 诊断记录器
-   */
+   * @param sqlDiagnosticRecorder SQL 诊断记录�?   */
   public void setSqlDiagnosticRecorder(
       AdbSqlDiagnosticRecorder sqlDiagnosticRecorder) {
     this.sqlDiagnosticRecorder = sqlDiagnosticRecorder;
@@ -260,8 +241,7 @@ public class TxnManager {
   }
 
   /**
-   * 返回当前 SQL 诊断记录器。
-   *
+   * 返回当前 SQL 诊断记录器�?   *
    * @return SQL 诊断记录器；未启用时返回 null
    */
   public AdbSqlDiagnosticRecorder getSqlDiagnosticRecorder() {
@@ -269,10 +249,8 @@ public class TxnManager {
   }
 
   /**
-   * 记录一条 SQL 诊断事件。
-   *
-   * <p>该方法对业务路径是 best-effort：未启用 recorder 时直接返回，已启用时只做内存计数，
-   * 不允许诊断链路改变 SQL 执行结果。</p>
+   * 记录一�?SQL 诊断事件�?   *
+   * <p>该方法对业务路径�?best-effort：未启用 recorder 时直接返回，已启用时只做内存计数�?   * 不允许诊断链路改�?SQL 执行结果�?/p>
    *
    * @param event SQL 诊断事件
    */
@@ -282,27 +260,23 @@ public class TxnManager {
       try {
         recorder.record(event);
       } catch (RuntimeException ignored) {
-        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果。
+        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果�?
       }
     }
   }
 
   /**
-   * 记录 SQL/table-engine 内部关键阶段耗时。
+   * 记录 SQL/table-engine 内部关键阶段耗时�?   *
+   * <p>该方法与 SQL 事件诊断一样是 best-effort，任�?recorder 异常都不会反向影响事务�?   * 锁或底层存储结果�?/p>
    *
-   * <p>该方法与 SQL 事件诊断一样是 best-effort，任何 recorder 异常都不会反向影响事务、
-   * 锁或底层存储结果。</p>
-   *
-   * @param phase 阶段名
-   * @param latencyNanos 阶段耗时，纳秒
-   */
+   * @param phase 阶段�?   * @param latencyNanos 阶段耗时，纳�?   */
   public void recordSqlPhase(String phase, long latencyNanos) {
     AdbSqlDiagnosticRecorder recorder = sqlDiagnosticRecorder;
     if (recorder != null && phase != null) {
       try {
         recorder.recordPhase(phase, latencyNanos);
       } catch (RuntimeException ignored) {
-        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果。
+        // 诊断链路必须是旁路能力，不能反向改变 SQL 执行结果�?
       }
     }
   }
@@ -316,10 +290,9 @@ public class TxnManager {
   }
 
   /**
-   * 设置外部 timestamp provider。
-   *
-   * <p>传入 null 会恢复为本地 commitTs 计数器。启用后，新事务 startTs 和 commitTs
-   * 都由外部控制面 TSO 分配。</p>
+   * 设置外部 timestamp provider�?   *
+   * <p>传入 null 会恢复为本地 commitTs 计数器。启用后，新事务 startTs �?commitTs
+   * 都由外部控制�?TSO 分配�?/p>
    *
    * @param timestampProvider 外部 timestamp provider
    */
@@ -349,13 +322,10 @@ public class TxnManager {
   }
 
   /**
-   * 返回当前活跃事务 startTs 快照。
+   * 返回当前活跃事务 startTs 快照�?   *
+   * <p>该快照只包含本进程内已经 begin、但尚未 commit/rollback 成功的事务�?   * GC safe point 推进器使用它保护长事务，避免删除仍可能被快照读访问的历史版本�?/p>
    *
-   * <p>该快照只包含本进程内已经 begin、但尚未 commit/rollback 成功的事务。
-   * GC safe point 推进器使用它保护长事务，避免删除仍可能被快照读访问的历史版本。</p>
-   *
-   * @return 活跃事务 startTs 的只读快照
-   */
+   * @return 活跃事务 startTs 的只读快�?   */
   public List<Long> activeStartTsSnapshot() {
     List<Long> startTs = new ArrayList<>();
     for (Transaction2 txn : activeTransactions.values()) {
@@ -376,17 +346,15 @@ public class TxnManager {
     return tsGen.lastCommitTs();
   }
 
-  // -------------------- 鍐?鍒犻櫎鎿嶄綔 --------------------
+  // -------------------- �?鍒犻櫎鎿嶄綔 --------------------
   public void put(Transaction2 txn, DataKey key, RowValue value) throws SQLException {
     RowValue oldValue = getVisible(txn, key);
     put(txn, key, value, oldValue);
   }
 
   /**
-   * 写入当前事务 intent，并复用 table/index 层已读到的旧可见版本。
-   *
-   * <p>该路径避免每次 SQL 写入重复打开版本扫描器；oldValue 必须来自同一事务快照，
-   * 以保持 row-count delta、undo log 和冲突检测语义不变。</p>
+   * 写入当前事务 intent，并复用 table/index 层已读到的旧可见版本�?   *
+   * <p>该路径避免每�?SQL 写入重复打开版本扫描器；oldValue 必须来自同一事务快照�?   * 以保�?row-count delta、undo log 和冲突检测语义不变�?/p>
    */
   public void put(Transaction2 txn, DataKey key, RowValue value,
       RowValue oldValue) throws SQLException {
@@ -425,15 +393,12 @@ public class TxnManager {
   }
 
   /**
-   * 预热指定表的 row-count 基线缓存。
-   *
+   * 预热指定表的 row-count 基线缓存�?   *
    * <p>该方法用于数据库打开或表对象恢复阶段，把 row-count base/delta 元数据扫描从首个业务
-   * COUNT 或 optimizer cost 读取前移。它只填充进程内缓存，不修改持久化数据；调用方可以安全地在
-   * 表构造后执行。</p>
+   * COUNT �?optimizer cost 读取前移。它只填充进程内缓存，不修改持久化数据；调用方可以安全地�?   * 表构造后执行�?/p>
    *
-   * @param tId 表 id 和 epoch
-   * @throws SQLException 底层 meta 扫描失败时抛出
-   */
+   * @param tId �?id �?epoch
+   * @throws SQLException 底层 meta 扫描失败时抛�?   */
   public void prewarmRowCountCache(TabId tId) throws SQLException {
     if (tId == null) {
       return;
@@ -595,8 +560,7 @@ public class TxnManager {
       store.writeBatch(batch -> batch.put(CF.META.getCfId(),
           snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
     } catch (SQLException ignored) {
-      // row-count base snapshot 是读后优化，失败时不能反向影响本次 COUNT 结果。
-    } finally {
+      // row-count base snapshot 是读后优化，失败时不能反向影响本�?COUNT 结果�?    } finally {
       recordSqlPhase("ADB_ROW_COUNT_BASE_COMPACT",
           System.nanoTime() - started);
     }
@@ -608,12 +572,11 @@ public class TxnManager {
   }
 
   /**
-   * 返回 segment row-count base snapshot 的读后压实阈值。
+   * 返回 segment row-count base snapshot 的读后压实阈值�?   *
+   * <p>该阈值只控制可�?segment range count 元数据链的读后优化；默认复用表级
+   * row-count 压实阈值。配置为 0 或负数时关闭压实，但仍可读取已有 base�?/p>
    *
-   * <p>该阈值只控制可选 segment range count 元数据链的读后优化；默认复用表级
-   * row-count 压实阈值。配置为 0 或负数时关闭压实，但仍可读取已有 base。</p>
-   *
-   * @return 触发压实所需的最小 delta 数量
+   * @return 触发压实所需的最�?delta 数量
    */
   private static int rangeCountSegmentCompactDeltaThreshold() {
     return Integer.getInteger(
@@ -638,11 +601,9 @@ public class TxnManager {
   }
 
   /**
-   * 判断指定 row insert 是否可以跳过 committed 版本扫描。
-   *
-   * <p>该 hint 只在当前进程已经通过成功写入见过表内最大 rowId 后启用；未知表、重启恢复、
-   * 非 row key、低于或等于 hint 的 key 都会回退到完整唯一性检查。因此它只优化 append
-   * insert，不改变保守路径的正确性。</p>
+   * 判断指定 row insert 是否可以跳过 committed 版本扫描�?   *
+   * <p>�?hint 只在当前进程已经通过成功写入见过表内最�?rowId 后启用；未知表、重启恢复�?   * �?row key、低于或等于 hint �?key 都会回退到完整唯一性检查。因此它只优�?append
+   * insert，不改变保守路径的正确性�?/p>
    */
   public boolean canSkipAppendUniqueCheck(DataKey key) {
     if (key == null || !key.isRow()) {
@@ -652,15 +613,13 @@ public class TxnManager {
   }
 
   /**
-   * 判断指定表的 append insert 是否可以跳过 committed 唯一性扫描。
+   * 判断指定表的 append insert 是否可以跳过 committed 唯一性扫描�?   *
+   * <p>该入口供 bulk insert 在已经收集整批最�?rowId 后复用，避免为每一行都构�?   * RowKey 后再查一次全局 rowId hint。它只读取进程内成功提交后维护的最�?rowId
+   * 上界，不改变事务状态；调用方仍需自行处理事务内本地写集冲突�?/p>
    *
-   * <p>该入口供 bulk insert 在已经收集整批最小 rowId 后复用，避免为每一行都构造
-   * RowKey 后再查一次全局 rowId hint。它只读取进程内成功提交后维护的最大 rowId
-   * 上界，不改变事务状态；调用方仍需自行处理事务内本地写集冲突。</p>
-   *
-   * @param tabId 表 id 与 epoch
-   * @param rowId 待插入 rowId 或整批最小 rowId
-   * @return true 表示该 rowId 一定大于当前进程已知 committed 上界
+   * @param tabId �?id �?epoch
+   * @param rowId 待插�?rowId 或整批最�?rowId
+   * @return true 表示�?rowId 一定大于当前进程已�?committed 上界
    */
   public boolean canSkipAppendUniqueCheck(TabId tabId, long rowId) {
     invalidateStoreDerivedCachesIfNeeded();
@@ -672,8 +631,7 @@ public class TxnManager {
   }
 
   /**
-   * 记录当前进程已成功接收的 rowId 上界 hint。
-   *
+   * 记录当前进程已成功接收的 rowId 上界 hint�?   *
    * @param key row key
    */
   public void recordRowIdHint(DataKey key) {
@@ -744,11 +702,10 @@ public class TxnManager {
   }
 
   /**
-   * 批量写入已经完成回填或 rebuild 的索引项。
-   *
-   * <p>索引项写入后会立即作为 committed version 对后续事务可见，因此这里必须分配
-   * 真实 commitTs，而不是复用 txnId。否则多批 backfill 时后续批次可能因为 commitTs
-   * 大于读事务 startTs 而暂时不可见。</p>
+   * 批量写入已经完成回填�?rebuild 的索引项�?   *
+   * <p>索引项写入后会立即作�?committed version 对后续事务可见，因此这里必须分配
+   * 真实 commitTs，而不是复�?txnId。否则多�?backfill 时后续批次可能因�?commitTs
+   * 大于读事�?startTs 而暂时不可见�?/p>
    *
    * @param txn 当前内部事务或建索引事务，仅用于保持既有调用签名
    * @param indexPrefix 索引前缀
@@ -762,8 +719,7 @@ public class TxnManager {
     Objects.requireNonNull(indexKeys, "indexKeys == null");
     long commitTs = nextCommitTs();
     store.writeBatch(batch -> {
-      //todo 绉婚櫎鑰佺殑绱㈠紩
-//      byte[] indexPrefixBytes = indexPrefix.toBytes();
+      //todo 绉婚櫎鑰佺殑绱㈠�?//      byte[] indexPrefixBytes = indexPrefix.toBytes();
 //      byte[] prefixEnd = KeyCodec.prefixEnd(indexPrefixBytes);
 //      batch.deleteRange(indexPrefixBytes, prefixEnd);
       for (IndexKey indexKey : indexKeys) {
@@ -795,18 +751,13 @@ public class TxnManager {
   }
 
   /**
-   * 统计指定 rowId 范围内对当前事务可见的行数。
-   *
-   * <p>该路径服务于 {@code COUNT(*) WHERE primary_key BETWEEN ? AND ?}。
-   * 与通用 {@link TableScanCursor} 不同，它只解码 RowValue 头部元数据，不复制 payload；
-   * 同时在扫描结束后叠加当前事务尚未落到 store 的本地 write-set，保证本地 insert/delete
-   * 和回滚语义与通用执行路径一致。</p>
+   * 统计指定 rowId 范围内对当前事务可见的行数�?   *
+   * <p>该路径服务于 {@code COUNT(*) WHERE primary_key BETWEEN ? AND ?}�?   * 与通用 {@link TableScanCursor} 不同，它只解�?RowValue 头部元数据，不复�?payload�?   * 同时在扫描结束后叠加当前事务尚未落到 store 的本�?write-set，保证本�?insert/delete
+   * 和回滚语义与通用执行路径一致�?/p>
    *
    * @param txn 当前事务
-   * @param prefixKey 表 row 前缀
-   * @param min 最小 rowId，null 表示无下界
-   * @param max 最大 rowId，null 表示无上界
-   * @return 当前事务快照下可见且未删除的行数
+   * @param prefixKey �?row 前缀
+   * @param min 最�?rowId，null 表示无下�?   * @param max 最�?rowId，null 表示无上�?   * @return 当前事务快照下可见且未删除的行数
    */
   public long countVisibleRows(Transaction2 txn, PrefixKey prefixKey, Long min,
       Long max) {
@@ -834,6 +785,27 @@ public class TxnManager {
         min, max);
   }
 
+  long countVisibleRows(Transaction2 txn, PrefixKey prefixKey, Long min,
+      Long max, VersionReadSession readSession) {
+    if (readSession == null) {
+      return countVisibleRows(txn, prefixKey, min, max);
+    }
+    routeRangeRead(txn,
+        tableScanStartKey(prefixKey, min), tableScanEndKey(prefixKey, max));
+
+    byte[] tablePrefix = prefixKey.toBytes();
+    if (txn.mayHaveLocalRowWriteInRange(prefixKey.getTabID(), min, max)) {
+      return countVisibleRows(txn, prefixKey, min, max);
+    }
+    Long segmentCount = countVisibleRowsWithoutLocalWritesBySegments(txn,
+        prefixKey, tablePrefix, min, max);
+    if (segmentCount != null) {
+      return segmentCount.longValue();
+    }
+    return countVisibleRowsWithoutLocalWritesReadSession(txn, prefixKey,
+        tablePrefix, min, max, readSession);
+  }
+
   private long countVisibleRowsWithLocalWritesObject(Transaction2 txn,
       PrefixKey prefixKey, byte[] tablePrefix, Long min, Long max) {
     Set<DataKey> localRowsCoveredByStoreScan = new HashSet<>();
@@ -841,8 +813,7 @@ public class TxnManager {
 
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
-          tableScanEndKey(prefixKey, max));
+      seekToTableScanRange(scan, prefixKey, min, max);
 
       while (scan.isValid() && TableScanCursor.startsWith(scan.key(),
           tablePrefix)) {
@@ -894,12 +865,11 @@ public class TxnManager {
     try {
       try (VersionScanSource scan =
           store.openVersionScanSource(ScanDirection.FORWARD)) {
-        scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
-            tableScanEndKey(prefixKey, max));
+        seekToTableScanRange(scan, prefixKey, min, max);
 
         while (scan.isValid()) {
-          byte[] rawKey = scan.key();
-          if (!TableScanCursor.startsWith(rawKey, tablePrefix)) {
+          Slice rawKey = scan.keyView();
+          if (!startsWith(rawKey, tablePrefix)) {
             break;
           }
           if (!isRawVersionRowKey(rawKey)) {
@@ -911,14 +881,14 @@ public class TxnManager {
             if (max != null && rowId > max) {
               break;
             }
-            skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+            skipCurrentRawLogicalRow(scan, tablePrefix, rowId);
             continue;
           }
 
           RowValue local = localRowWrites.get(rowId);
           if (local != null) {
             localRowsCoveredByStoreScan.add(rowId);
-            skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+            skipCurrentRawLogicalRow(scan, tablePrefix, rowId);
             if (isCountable(local)) {
               count++;
             }
@@ -1007,12 +977,11 @@ public class TxnManager {
 
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(tableScanStartKey(prefixKey, min),
-          tableScanEndKey(prefixKey, max));
+      seekToTableScanRange(scan, prefixKey, min, max);
 
       while (scan.isValid()) {
-        byte[] rawKey = scan.key();
-        if (!TableScanCursor.startsWith(rawKey, tablePrefix)) {
+        Slice rawKey = scan.keyView();
+        if (!startsWith(rawKey, tablePrefix)) {
           break;
         }
         if (!isRawVersionRowKey(rawKey)) {
@@ -1024,7 +993,7 @@ public class TxnManager {
           if (max != null && rowId > max) {
             break;
           }
-          skipCurrentRawLogicalRow(scan, tablePrefix, rawKey);
+          skipCurrentRawLogicalRow(scan, tablePrefix, rowId);
           continue;
         }
 
@@ -1039,6 +1008,92 @@ public class TxnManager {
       throw new RuntimeException(e);
     }
     return count;
+  }
+
+  private long countVisibleRowsWithoutLocalWritesReadSession(Transaction2 txn,
+      PrefixKey prefixKey, byte[] tablePrefix, Long min, Long max,
+      VersionReadSession readSession) {
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    byte[] begin = tableScanStartKey(prefixKey, min);
+    byte[] end = max == null ? tableScanClosedEndKey(prefixKey,
+        Long.MAX_VALUE) : tableScanClosedEndKey(prefixKey, max);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.countVisible.readSession.boundKeys",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    RangeCountVisitor visitor = new RangeCountVisitor(tablePrefix, min, max,
+        txn.getStartTs());
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.countVisible.readSession.visitor",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    try {
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+      readSession.scanClosed(begin, end, visitor);
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.rangeCount.countVisible.readSession.scanClosed",
+          allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    } catch (RuntimeException e) {
+      throw e;
+    }
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    long count = visitor.count();
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.countVisible.readSession.result",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    return count;
+  }
+
+  private static final class RangeCountVisitor
+      implements VersionReadSession.EntryVisitor {
+    private final byte[] tablePrefix;
+    private final Long min;
+    private final Long max;
+    private final long startTs;
+    private long currentRowId = Long.MIN_VALUE;
+    private boolean currentRowResolved;
+    private long count;
+
+    private RangeCountVisitor(byte[] tablePrefix, Long min, Long max,
+        long startTs) {
+      this.tablePrefix = tablePrefix;
+      this.min = min;
+      this.max = max;
+      this.startTs = startTs;
+    }
+
+    @Override
+    public void visit(Slice rawKey, Slice value) {
+      if (!startsWith(rawKey, tablePrefix) || !isRawVersionRowKey(rawKey)) {
+        return;
+      }
+      long rowId = rawRowId(rawKey);
+      if (!inRowIdRange(rowId, min, max)) {
+        return;
+      }
+      if (rowId != currentRowId) {
+        currentRowId = rowId;
+        currentRowResolved = false;
+      }
+      if (currentRowResolved || !isRawCommittedVersion(rawKey)) {
+        return;
+      }
+      long commitTs = rawCommitTs(rawKey);
+      if (commitTs > startTs) {
+        return;
+      }
+      int countableState = RowValue.countableStateView(value);
+      if (countableState == RowValue.COUNTABLE_INVALID) {
+        return;
+      }
+      if (countableState == RowValue.COUNTABLE_ROW) {
+        count++;
+      }
+      currentRowResolved = true;
+    }
+
+    private long count() {
+      return count;
+    }
   }
 
   private long getVisibleSegmentRowCount(TabId tabId, long firstSegmentId,
@@ -1059,15 +1114,13 @@ public class TxnManager {
   }
 
   /**
-   * 读取最新快照下某个 segment 的行数，并在进程内缓存命中时避免访问 META CF。
+   * 读取最新快照下某个 segment 的行数，并在进程内缓存命中时避免访问 META CF�?   *
+   * <p>缓存未命中时�?base + delta 读取路径，使冷启动或 cache miss 可以顺便触发
+   * segment base snapshot 压实。缓存命中不强制压实，避免在线热路径引入额外写入�?/p>
    *
-   * <p>缓存未命中时走 base + delta 读取路径，使冷启动或 cache miss 可以顺便触发
-   * segment base snapshot 压实。缓存命中不强制压实，避免在线热路径引入额外写入。</p>
-   *
-   * @param tabId 表 id 与 epoch
+   * @param tabId �?id �?epoch
    * @param segmentId rowId 分段编号
-   * @return 最新可见行数
-   */
+   * @return 最新可见行�?   */
   private long getLatestSegmentRowCount(TabId tabId, long segmentId) {
     SegmentRowCountDeltaKey key = SegmentRowCountDeltaKey.of(tabId,
         segmentId);
@@ -1082,17 +1135,14 @@ public class TxnManager {
   }
 
   /**
-   * 按指定快照读取单个 segment 的行数。
+   * 按指定快照读取单�?segment 的行数�?   *
+   * <p>该方法先读取不晚�?{@code startTs} 的最�?base snapshot，再只叠�?base
+   * 之后且不晚于快照�?delta。达到阈值时�?best-effort 写入新的 base snapshot�?   * 写入失败不会影响本次计数结果�?/p>
    *
-   * <p>该方法先读取不晚于 {@code startTs} 的最新 base snapshot，再只叠加 base
-   * 之后且不晚于快照的 delta。达到阈值时会 best-effort 写入新的 base snapshot；
-   * 写入失败不会影响本次计数结果。</p>
-   *
-   * @param tabId 表 id 与 epoch
+   * @param tabId �?id �?epoch
    * @param segmentId rowId 分段编号
    * @param startTs 读事务快照时间戳
-   * @return 该 segment 在快照下的可见行数
-   */
+   * @return �?segment 在快照下的可见行�?   */
   private long getSegmentRowCount(TabId tabId, long segmentId,
       long startTs) {
     SegmentRowCountBase base = getVisibleBaseSegmentRowCount(tabId,
@@ -1140,12 +1190,11 @@ public class TxnManager {
   }
 
   /**
-   * 查找不晚于读快照的最新 segment row-count base。
-   *
+   * 查找不晚于读快照的最�?segment row-count base�?   *
    * <p>base key 使用倒序 commitTs 编码，因此扫描到第一条不晚于 {@code startTs}
-   * 的记录即可返回。旧库没有 base 时返回 0/0，让调用方退回 0 + delta 的兼容语义。</p>
+   * 的记录即可返回。旧库没�?base 时返�?0/0，让调用方退�?0 + delta 的兼容语义�?/p>
    *
-   * @param tabId 表 id 与 epoch
+   * @param tabId �?id �?epoch
    * @param segmentId rowId 分段编号
    * @param startTs 读事务快照时间戳
    * @return base 行数和对应提交时间戳
@@ -1183,16 +1232,12 @@ public class TxnManager {
   }
 
   /**
-   * 在 segment delta 链超过阈值后写入新的 base snapshot。
+   * �?segment delta 链超过阈值后写入新的 base snapshot�?   *
+   * <p>该方法只追加�?base，不删除�?delta，避免并发提交或旧快照读取场景下误删元数据�?   * 它是读后优化：失败会被忽略，只通过 SQL phase 诊断暴露耗时�?/p>
    *
-   * <p>该方法只追加新 base，不删除旧 delta，避免并发提交或旧快照读取场景下误删元数据。
-   * 它是读后优化：失败会被忽略，只通过 SQL phase 诊断暴露耗时。</p>
-   *
-   * @param tabId 表 id 与 epoch
+   * @param tabId �?id �?epoch
    * @param segmentId rowId 分段编号
-   * @param rowCount 已计算出的快照行数
-   * @param compactCommitTs base 覆盖到的提交时间戳
-   * @param deltaCount 本次读取叠加的 delta 数量
+   * @param rowCount 已计算出的快照行�?   * @param compactCommitTs base 覆盖到的提交时间�?   * @param deltaCount 本次读取叠加�?delta 数量
    */
   private void compactSegmentRowCountBaseIfNeeded(TabId tabId, long segmentId,
       long rowCount, long compactCommitTs, int deltaCount) {
@@ -1213,8 +1258,7 @@ public class TxnManager {
       store.writeBatch(batch -> batch.put(CF.META.getCfId(),
           snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
     } catch (SQLException ignored) {
-      // segment base snapshot 是读后优化，失败不能影响本次 range count 结果。
-    } finally {
+      // segment base snapshot 是读后优化，失败不能影响本次 range count 结果�?    } finally {
       recordSqlPhase("ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT",
           System.nanoTime() - started);
     }
@@ -1258,7 +1302,7 @@ public class TxnManager {
     if (detailedSqlDiagnostics()) {
       return getVisibleDetailed(txn, rowKey);
     }
-    // 1. 鍏堢湅褰撳墠浜嬪姟鏈湴 writeSet
+    // 1. 鍏堢湅褰撳墠浜嬪姟鏈�?writeSet
     RowValue local = txn.getLocalWrite(rowKey);
     if (local != null) {
       return local;
@@ -1271,7 +1315,7 @@ public class TxnManager {
       return cached.deleted ? null : cached;
     }
 
-    // 2. 璇?committed 鎴?Intent
+    // 2. �?committed �?Intent
     RowValue visible = this.getVisibleCommitted(txn, rowKey);
 
     long version = visible == null ? 0L : visible.commitTs;
@@ -1280,44 +1324,79 @@ public class TxnManager {
   }
 
   /**
-   * 读取当前事务可见的单列值。
-   *
-   * <p>该入口只面向主键点查单列投影快路径：当命中底层 committed store 版本时，直接从 RowValue
-   * 落盘字节的 payload 子区间解码目标列，避免先复制完整 payload。事务 read-set、region
-   * 路由和 committed row cache 校验沿用 {@link #getVisible(Transaction2, DataKey)}
-   * 的约束。</p>
+   * 读取当前事务可见的单列值�?   *
+   * <p>该入口只面向主键点查单列投影快路径：当命中底�?committed store 版本时，直接�?RowValue
+   * 落盘字节�?payload 子区间解码目标列，避免先复制完整 payload。事�?read-set、region
+   * 路由�?committed row cache 校验沿用 {@link #getVisible(Transaction2, DataKey)}
+   * 的约束�?/p>
    *
    * @param txn 当前事务
-   * @param rowKey 行 key
+   * @param rowKey �?key
    * @param columnId 目标列号
-   * @return 可见列值；行不存在、被删除或没有 payload 时返回 {@code null}
-   * @throws SQLException 读取 store 或 region 路由失败时抛出
-   */
+   * @return 可见列值；行不存在、被删除或没�?payload 时返�?{@code null}
+   * @throws SQLException 读取 store �?region 路由失败时抛�?   */
   public VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
       int columnId) throws SQLException {
+    return getVisibleColumn(txn, rowKey, columnId, null);
+  }
+
+  VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
+      int columnId, VersionReadSession readSession) throws SQLException {
     invalidateStoreDerivedCachesIfNeeded();
     if (detailedSqlDiagnostics()) {
       RowValue rowValue = getVisibleDetailed(txn, rowKey);
       return visibleColumnFromRow(rowValue, columnId);
     }
 
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     RowValue local = txn.getLocalWrite(rowKey);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.localWrite", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     if (local != null) {
       return visibleColumnFromRow(local, columnId);
     }
 
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     regionReadRouter.routePointRead(txn, rowKey);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.route", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
 
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     RowValue cached = getVisibleCommittedFromCache(txn, rowKey);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.cache", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     if (cached != null) {
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+      try {
       return visibleColumnFromRow(cached, columnId);
+      } finally {
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.decodeCached",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+      }
     }
 
-    VisibleColumnValue visible = getVisibleCommittedColumn(txn, rowKey,
-        columnId);
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    VisibleColumnValue visible = readSession == null
+        ? getVisibleCommittedColumn(txn, rowKey, columnId)
+        : getVisibleCommittedColumn(txn, rowKey, columnId, readSession);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.committedColumn", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     long version = visible == null ? 0L : visible.commitTs();
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     txn.recordRead(rowKey, version);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.recordRead", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     return visible;
+  }
+
+  VersionReadSession openVersionReadSession() {
+    return store.openVersionReadSession();
   }
 
   private RowValue getVisibleDetailed(Transaction2 txn, DataKey rowKey)
@@ -1416,19 +1495,18 @@ public class TxnManager {
       try (VersionScanSource scan =
                store.openVersionScanSource(ScanDirection.FORWARD)) {
         long seekStarted = System.nanoTime();
-        // 点查只需要定位到 row prefix 起点；forward cursor 不消费 upperExclusive。
-        scan.seekToRangeStart(prefix, null);
+        // 点查只需要定位到 row prefix 起点；forward cursor 不消�?upperExclusive�?        scan.seekToRangeStart(prefix, null);
         recordSqlPhase("ADB_VISIBLE_STORE_SEEK",
             System.nanoTime() - seekStarted);
 
         while (scan.isValid()) {
-          byte[] rawKey = scan.key();
-          if (rawKey == null || !KeyCodec.startsWith(rawKey, prefix)) {
+          Slice rawKey = scan.keyView();
+          if (rawKey == null || !startsWith(rawKey, prefix)) {
             return null;
           }
 
           long keyDecodeStarted = System.nanoTime();
-          VersionKey versionKey = VersionKey.fromBytes(rawKey);
+          VersionKey versionKey = VersionKey.fromBytes(rawKey.copyBytes());
           recordSqlPhase("ADB_VISIBLE_VERSION_KEY_DECODE",
               System.nanoTime() - keyDecodeStarted);
           if (!versionKey.isCommited()) {
@@ -1441,7 +1519,7 @@ public class TxnManager {
           }
 
           long rowDecodeStarted = System.nanoTime();
-          RowValue rowValue = RowValue.decodeValue(scan.value());
+          RowValue rowValue = RowValue.decodeValueView(scan.valueView());
           recordSqlPhase("ADB_VISIBLE_ROW_VALUE_DECODE",
               System.nanoTime() - rowDecodeStarted);
           if (rowValue.commitTs <= txn.getStartTs()) {
@@ -1482,12 +1560,11 @@ public class TxnManager {
     boolean sawNewerCommitted = false;
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
-      // 点查只需要定位到 row prefix 起点；forward cursor 不消费 upperExclusive。
-      scan.seekToRangeStart(prefix, null);
+      // 点查只需要定位到 row prefix 起点；forward cursor 不消�?upperExclusive�?      scan.seekToRangeStart(prefix, null);
 
       while (scan.isValid()) {
-        byte[] rawKey = scan.key();
-        if (rawKey == null || !TableScanCursor.startsWith(rawKey, prefix)) {
+        Slice rawKey = scan.keyView();
+        if (rawKey == null || !startsWith(rawKey, prefix)) {
           return null;
         }
         if (!isRawVersionRowKey(rawKey)) {
@@ -1505,7 +1582,7 @@ public class TxnManager {
           continue;
         }
 
-        RowValue rowValue = RowValue.decodeValue(scan.value());
+        RowValue rowValue = RowValue.decodeValueView(scan.valueView());
         if (rowValue != null) {
           if (rowValue.deleted) {
             return null;
@@ -1531,15 +1608,32 @@ public class TxnManager {
 
   private VisibleColumnValue getVisibleCommittedColumn(Transaction2 txn,
       RowKey rowKey, int columnId) throws SQLException {
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     byte[] prefix = rowKey.versionScanPrefixBytes();
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.committedColumn.prefix",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
     boolean latestCommitted = true;
-    try (VersionScanSource scan =
-        store.openVersionScanSource(ScanDirection.FORWARD)) {
+    VersionScanSource scan = null;
+    try {
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+      scan = store.openVersionScanSource(ScanDirection.FORWARD);
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.visibleColumn.committedColumn.openScan",
+          allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       scan.seekToRangeStart(prefix, null);
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.visibleColumn.committedColumn.seek",
+          allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
 
       while (scan.isValid()) {
-        byte[] rawKey = scan.key();
-        if (rawKey == null || !TableScanCursor.startsWith(rawKey, prefix)) {
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        Slice rawKey = scan.keyView();
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.committedColumn.keyView",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+        if (rawKey == null || !startsWith(rawKey, prefix)) {
           return null;
         }
         if (!isRawVersionRowKey(rawKey)) {
@@ -1557,18 +1651,33 @@ public class TxnManager {
           continue;
         }
 
-        byte[] encoded = scan.value();
-        if (encoded == null || encoded.length == 0
-            || RowValue.isDeleted(encoded)) {
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        Slice encoded = scan.valueView();
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.committedColumn.valueView",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+        if (encoded == null || encoded.length() == 0
+            || RowValue.isDeletedView(encoded)) {
           return null;
         }
-        int payloadLength = RowValue.payloadLength(encoded);
+        int payloadLength = RowValue.payloadLengthView(encoded);
         if (payloadLength <= 0) {
           return null;
         }
-        Value value = RowCodec.decodeColumn(encoded, RowValue.payloadOffset(),
-            payloadLength, columnId);
-        return new VisibleColumnValue(commitTs, value, latestCommitted);
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        Value value = RowCodec.decodeColumn(encoded.getRawArray(),
+            encoded.getRawOffset() + RowValue.payloadOffset(), payloadLength,
+            columnId);
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.committedColumn.decode",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        VisibleColumnValue visibleColumn = new VisibleColumnValue(commitTs,
+            value, latestCommitted);
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.committedColumn.result",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+        return visibleColumn;
       }
       return null;
     } catch (Exception e) {
@@ -1576,7 +1685,52 @@ public class TxnManager {
         throw (SQLException) e;
       }
       throw new SQLException("Failed to get visible committed column", e);
+    } finally {
+      if (scan != null) {
+        allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+        try {
+          scan.close();
+        } catch (Exception e) {
+          if (e instanceof SQLException) {
+            throw (SQLException) e;
+          }
+          throw new SQLException("Failed to close visible committed column scan",
+              e);
+        }
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.pointLookup.visibleColumn.committedColumn.close",
+            allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+      }
     }
+  }
+
+  private VisibleColumnValue getVisibleCommittedColumn(Transaction2 txn,
+      RowKey rowKey, int columnId, VersionReadSession readSession)
+      throws SQLException {
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    byte[] prefix = rowKey.versionScanPrefixBytes();
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.pointLookup.visibleColumn.committedColumn.prefix",
+        allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    byte[] end = rowVersionClosedEnd(prefix);
+    VisibleColumnScanVisitor visitor = new VisibleColumnScanVisitor(prefix,
+        txn.getStartTs(), columnId);
+    try {
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+      readSession.scanClosed(prefix, end, visitor);
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.pointLookup.visibleColumn.committedColumn.readSessionScan",
+          allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+      return visitor.result();
+    } catch (RuntimeException e) {
+      throw new SQLException("Failed to get visible committed column", e);
+    }
+  }
+
+  private static byte[] rowVersionClosedEnd(byte[] prefix) {
+    byte[] data = Arrays.copyOf(prefix, RAW_VERSION_ROW_KEY_LENGTH);
+    Arrays.fill(data, prefix.length, data.length, (byte) 0xff);
+    return data;
   }
 
   private static VisibleColumnValue visibleColumnFromRow(RowValue rowValue,
@@ -1587,6 +1741,62 @@ public class TxnManager {
     }
     return new VisibleColumnValue(rowValue.commitTs,
         RowCodec.decodeColumn(rowValue.payload, columnId), true);
+  }
+
+  private static final class VisibleColumnScanVisitor
+      implements VersionReadSession.EntryVisitor {
+    private final byte[] prefix;
+    private final long startTs;
+    private final int columnId;
+    private boolean latestCommitted = true;
+    private boolean done;
+    private VisibleColumnValue result;
+
+    private VisibleColumnScanVisitor(byte[] prefix, long startTs,
+        int columnId) {
+      this.prefix = prefix;
+      this.startTs = startTs;
+      this.columnId = columnId;
+    }
+
+    @Override
+    public void visit(Slice rawKey, Slice encoded) {
+      if (done) {
+        return;
+      }
+      if (rawKey == null || !startsWith(rawKey, prefix)
+          || !isRawVersionRowKey(rawKey)) {
+        done = true;
+        return;
+      }
+      if (!isRawCommittedVersion(rawKey)) {
+        return;
+      }
+      long commitTs = rawCommitTs(rawKey);
+      if (commitTs > startTs) {
+        latestCommitted = false;
+        return;
+      }
+      if (encoded == null || encoded.length() == 0
+          || RowValue.isDeletedView(encoded)) {
+        done = true;
+        return;
+      }
+      int payloadLength = RowValue.payloadLengthView(encoded);
+      if (payloadLength <= 0) {
+        done = true;
+        return;
+      }
+      Value value = RowCodec.decodeColumn(encoded.getRawArray(),
+          encoded.getRawOffset() + RowValue.payloadOffset(), payloadLength,
+          columnId);
+      result = new VisibleColumnValue(commitTs, value, latestCommitted);
+      done = true;
+    }
+
+    private VisibleColumnValue result() {
+      return result;
+    }
   }
 
   private void recordReadVersion(Transaction2 txn, DataKey key, long version) {
@@ -1608,11 +1818,8 @@ public class TxnManager {
   }
 
   /**
-   * 检查底层 store 内容世代号并按需清理派生缓存。
-   *
-   * <p>该方法用于覆盖直接 {@code DbStore.restore(...)} 等绕过运维桥接层的内容替换路径。
-   * 支持 content epoch 的 store 在 restore 成功后递增世代号；事务管理器下一次读、
-   * row-count 或 append hint 使用前会发现变化并清空旧缓存。</p>
+   * 检查底�?store 内容世代号并按需清理派生缓存�?   *
+   * <p>该方法用于覆盖直�?{@code DbStore.restore(...)} 等绕过运维桥接层的内容替换路径�?   * 支持 content epoch �?store �?restore 成功后递增世代号；事务管理器下一次读�?   * row-count �?append hint 使用前会发现变化并清空旧缓存�?/p>
    */
   private void invalidateStoreDerivedCachesIfNeeded() {
     long currentEpoch = store.contentEpoch();
@@ -1633,10 +1840,8 @@ public class TxnManager {
   }
 
   /**
-   * 回填从 store 读出的 committed 可见行。
-   *
-   * <p>只缓存真实存在的 row 版本；deleted/null/索引 key 仍走原路径。缓存值复制一份，避免后续调用方修改
-   * {@link RowValue#rowKey} 时影响共享缓存。</p>
+   * 回填�?store 读出�?committed 可见行�?   *
+   * <p>只缓存真实存在的 row 版本；deleted/null/索引 key 仍走原路径。缓存值复制一份，避免后续调用方修�?   * {@link RowValue#rowKey} 时影响共享缓存�?/p>
    */
   private void cacheCommittedVisible(DataKey key, RowValue visible) {
     if (key == null || !key.isRow() || visible == null || visible.deleted
@@ -1684,7 +1889,7 @@ public class TxnManager {
       long currentVersion = latest == null ? 0L : latest.commitTs;
 
 
-      // 濡傛灉鐗堟湰娌″彉 鈫?OK
+      // 濡傛灉鐗堟湰娌″彉 �?OK
       if (currentVersion == readVersion) {
         continue;
       }
@@ -1694,7 +1899,7 @@ public class TxnManager {
         continue;
       }
 
-      // 鍚﹀垯鎵嶆槸鍐茬獊
+      // 鍚﹀垯鎵嶆槸鍐茬�?
       throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, key.toString());
     }
   }
@@ -1993,10 +2198,9 @@ public class TxnManager {
   }
 
   /**
-   * 主键点查单列快路径的可见值结果。
-   *
-   * <p>该对象只保存已经解码出的 H2 {@link Value} 和对应 committed version，用于 JDBC
-   * 快路径构造 ResultSet 或复用上层列值缓存；它不持有底层 store value。</p>
+   * 主键点查单列快路径的可见值结果�?   *
+   * <p>该对象只保存已经解码出的 H2 {@link Value} 和对�?committed version，用�?JDBC
+   * 快路径构�?ResultSet 或复用上层列值缓存；它不持有底层 store value�?/p>
    */
   public static final class VisibleColumnValue {
     private final long commitTs;
@@ -2040,6 +2244,26 @@ public class TxnManager {
     return maxRowId != null ? KeyCodec.prefixEnd(
         buildRowSeekKey(prefixKey, maxRowId))
         : KeyCodec.prefixEnd(prefixKey.toBytes());
+  }
+
+  private static void seekToTableScanRange(VersionScanSource scan,
+      PrefixKey prefixKey, Long minRowId, Long maxRowId) {
+    byte[] lowerInclusive = tableScanStartKey(prefixKey, minRowId);
+    if (maxRowId == null || scan.direction() != ScanDirection.FORWARD) {
+      scan.seekToRangeStart(lowerInclusive, tableScanEndKey(prefixKey,
+          maxRowId));
+      return;
+    }
+    scan.seekToRangeClosed(lowerInclusive,
+        tableScanClosedEndKey(prefixKey, maxRowId));
+  }
+
+  private static byte[] tableScanClosedEndKey(PrefixKey prefixKey,
+      long maxRowId) {
+    byte[] rowPrefix = buildRowSeekKey(prefixKey, maxRowId);
+    byte[] data = Arrays.copyOf(rowPrefix, RAW_VERSION_ROW_KEY_LENGTH);
+    Arrays.fill(data, rowPrefix.length, data.length, (byte) 0xff);
+    return data;
   }
 
   private static boolean resolveVisibleCountableInCurrentLogicalRow(
@@ -2094,33 +2318,34 @@ public class TxnManager {
   }
 
   private static boolean resolveVisibleCountableInCurrentRawLogicalRow(
-      VersionScanSource scan, byte[] firstRowKey, long startTs) {
-    byte[] rawKey = firstRowKey;
+      VersionScanSource scan, Slice firstRowKey, long startTs) {
+    long firstRowId = rawRowId(firstRowKey);
+    Slice rawKey = firstRowKey;
     while (scan.isValid()) {
-      if (!sameRawLogicalRow(rawKey, firstRowKey)) {
+      if (!sameRawLogicalRow(rawKey, firstRowId)) {
         return false;
       }
       if (!isRawCommittedVersion(rawKey)) {
         scan.advance();
-        rawKey = scan.isValid() ? scan.key() : null;
+        rawKey = scan.isValid() ? scan.keyView() : null;
         continue;
       }
 
       long commitTs = rawCommitTs(rawKey);
       if (commitTs > startTs) {
         scan.advance();
-        rawKey = scan.isValid() ? scan.key() : null;
+        rawKey = scan.isValid() ? scan.keyView() : null;
         continue;
       }
 
-      int countableState = RowValue.countableState(scan.value());
+      int countableState = RowValue.countableStateView(scan.valueView());
       if (countableState != RowValue.COUNTABLE_INVALID) {
-        skipCurrentRawLogicalRow(scan, null, firstRowKey);
+        skipCurrentRawLogicalRow(scan, null, firstRowId);
         return countableState == RowValue.COUNTABLE_ROW;
       }
 
       scan.advance();
-      rawKey = scan.isValid() ? scan.key() : null;
+      rawKey = scan.isValid() ? scan.keyView() : null;
     }
     return false;
   }
@@ -2202,31 +2427,51 @@ public class TxnManager {
   }
 
   private static void skipCurrentRawLogicalRow(VersionScanSource scan,
-      byte[] tablePrefix, byte[] currentRowKey) {
+      byte[] tablePrefix, long currentRowId) {
     while (scan.isValid()) {
       scan.advance();
       if (!scan.isValid()) {
         return;
       }
 
-      byte[] key = scan.key();
-      if (tablePrefix != null
-          && !TableScanCursor.startsWith(key, tablePrefix)) {
+      Slice key = scan.keyView();
+      if (tablePrefix != null && !startsWith(key, tablePrefix)) {
         return;
       }
-      if (!sameRawLogicalRow(key, currentRowKey)) {
+      if (!sameRawLogicalRow(key, currentRowId)) {
         return;
       }
     }
+  }
+
+  private static boolean startsWith(Slice value, byte[] prefix) {
+    if (value == null || prefix == null || prefix.length > value.length()) {
+      return false;
+    }
+    for (int i = 0; i < prefix.length; i++) {
+      if (value.getByte(i) != prefix[i]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private static boolean isRawVersionRowKey(byte[] rawKey) {
     return rawKey != null && rawKey.length == RAW_VERSION_ROW_KEY_LENGTH;
   }
 
+  private static boolean isRawVersionRowKey(Slice rawKey) {
+    return rawKey != null && rawKey.length() == RAW_VERSION_ROW_KEY_LENGTH;
+  }
+
   private static boolean isRawCommittedVersion(byte[] rawKey) {
     return isRawVersionRowKey(rawKey)
         && rawKey[RAW_COMMITTED_OFFSET] == (byte) 1;
+  }
+
+  private static boolean isRawCommittedVersion(Slice rawKey) {
+    return isRawVersionRowKey(rawKey)
+        && rawKey.getByte(RAW_COMMITTED_OFFSET) == (byte) 1;
   }
 
   private static boolean sameRawLogicalRow(byte[] rawKey,
@@ -2242,26 +2487,36 @@ public class TxnManager {
     return true;
   }
 
+  private static boolean sameRawLogicalRow(Slice rawKey, long firstRowId) {
+    return isRawVersionRowKey(rawKey) && rawRowId(rawKey) == firstRowId;
+  }
+
   /**
-   * 直接从 VersionRowKey 的磁盘编码中解析 rowId。
-   *
+   * 直接�?VersionRowKey 的磁盘编码中解析 rowId�?   *
    * <p>该方法只服务于无本地写事务的 range count 快路径，依赖
    * VersionRowKey 当前的固定布局：table header(13) + rowId(8) +
-   * committed(1) + version(8)。如果未来 key 编码变更，必须同步更新这些
-   * RAW_* offset 常量，或让快路径回退到对象化解析。</p>
+   * committed(1) + version(8)。如果未�?key 编码变更，必须同步更新这�?   * RAW_* offset 常量，或让快路径回退到对象化解析�?/p>
    */
   private static long rawRowId(byte[] rawKey) {
     return Key.flipSign(readLong(rawKey, RAW_ROW_ID_OFFSET));
   }
 
+  private static long rawRowId(Slice rawKey) {
+    return Key.flipSign(readLong(rawKey, RAW_ROW_ID_OFFSET));
+  }
+
   /**
-   * 直接从 committed VersionRowKey 的磁盘编码中还原提交时间戳。
-   *
+   * 直接�?committed VersionRowKey 的磁盘编码中还原提交时间戳�?   *
    * <p>row version key 为了让新版本排在旧版本前，落盘时写入
-   * {@code flipSign(Long.MAX_VALUE - commitTs)}。点查可见性扫描可以先从 key
-   * 判断该版本是否晚于当前快照，只有可能可见时才解码 value，避免跳过新版本时复制 payload。</p>
+   * {@code flipSign(Long.MAX_VALUE - commitTs)}。点查可见性扫描可以先�?key
+   * 判断该版本是否晚于当前快照，只有可能可见时才解码 value，避免跳过新版本时复�?payload�?/p>
    */
   private static long rawCommitTs(byte[] rawKey) {
+    return Long.MAX_VALUE - Key.flipSign(readLong(rawKey,
+        RAW_VERSION_OFFSET));
+  }
+
+  private static long rawCommitTs(Slice rawKey) {
     return Long.MAX_VALUE - Key.flipSign(readLong(rawKey,
         RAW_VERSION_OFFSET));
   }
@@ -2277,12 +2532,21 @@ public class TxnManager {
         | (long) (data[offset + 7] & 0xff);
   }
 
+  private static long readLong(Slice data, int offset) {
+    return ((long) (data.getByte(offset) & 0xff) << 56)
+        | ((long) (data.getByte(offset + 1) & 0xff) << 48)
+        | ((long) (data.getByte(offset + 2) & 0xff) << 40)
+        | ((long) (data.getByte(offset + 3) & 0xff) << 32)
+        | ((long) (data.getByte(offset + 4) & 0xff) << 24)
+        | ((long) (data.getByte(offset + 5) & 0xff) << 16)
+        | ((long) (data.getByte(offset + 6) & 0xff) << 8)
+        | (long) (data.getByte(offset + 7) & 0xff);
+  }
+
   static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
     byte[] prefix = prefixKey.toBytes();
     byte[] data = Arrays.copyOf(prefix, prefix.length + Long.BYTES);
-    // VersionRowKey / RowKey 对 rowId 做符号位翻转以保持 signed long 的字典序。
-    // range seek bound 必须使用相同编码，否则正数主键范围会从表前部开始扫描。
-    putLong(data, prefix.length, Key.flipSign(rowId));
+    // VersionRowKey / RowKey �?rowId 做符号位翻转以保�?signed long 的字典序�?    // range seek bound 必须使用相同编码，否则正数主键范围会从表前部开始扫描�?    putLong(data, prefix.length, Key.flipSign(rowId));
     return data;
   }
 
@@ -2400,15 +2664,12 @@ public class TxnManager {
   }
 
   /**
-   * 释放内部 helper 创建的事务快照。
-   *
-   * <p>该方法只从活跃事务集合移除事务，不调用底层 store rollback。Online DDL
+   * 释放内部 helper 创建的事务快照�?   *
+   * <p>该方法只从活跃事务集合移除事务，不调用底�?store rollback。Online DDL
    * backfill 这类内部流程会用事务对象读取一致快照，并通过专用批量接口写入已经
-   * committed 的索引项；如果再调用 rollback，未来一旦批量接口改为记录 txn ref，
-   * 就可能误删已经回填的索引项。</p>
+   * committed 的索引项；如果再调用 rollback，未来一旦批量接口改为记�?txn ref�?   * 就可能误删已经回填的索引项�?/p>
    *
-   * @param txn 内部 helper 创建的事务
-   */
+   * @param txn 内部 helper 创建的事�?   */
   void releaseInternalTransaction(Transaction2 txn) {
     if (txn != null) {
       activeTransactions.remove(txn.getTxnId());

@@ -68,6 +68,14 @@ final class AdbSimpleResultSet {
         new SingleLongHandler(columnName, value));
   }
 
+  static SingleValueResultSet reusableSingleValue(String columnName) {
+    return new SingleValueResultSet(columnName);
+  }
+
+  static SingleLongResultSet reusableSingleLong(String columnName) {
+    return new SingleLongResultSet(columnName);
+  }
+
   private static final class Handler implements InvocationHandler {
 
     private final List<String> columns;
@@ -307,6 +315,124 @@ final class AdbSimpleResultSet {
     }
   }
 
+  static final class SingleLongResultSet implements InvocationHandler {
+
+    private final String columnName;
+    private final ResultSet proxy;
+    private long value;
+    private boolean beforeFirst;
+    private boolean onRow;
+    private boolean closed = true;
+    private boolean wasNull;
+
+    private SingleLongResultSet(String columnName) {
+      this.columnName = columnName;
+      this.proxy = (ResultSet) Proxy.newProxyInstance(
+          ResultSet.class.getClassLoader(),
+          new Class<?>[]{ResultSet.class}, this);
+    }
+
+    ResultSet resultSet(long value) {
+      if (!closed) {
+        return singleLong(columnName, value);
+      }
+      this.value = value;
+      this.beforeFirst = true;
+      this.onRow = false;
+      this.closed = false;
+      this.wasNull = false;
+      return proxy;
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args)
+        throws Throwable {
+      String name = method.getName();
+      if ("next".equals(name)) {
+        if (closed || !beforeFirst) {
+          onRow = false;
+          beforeFirst = false;
+          return Boolean.FALSE;
+        }
+        beforeFirst = false;
+        onRow = true;
+        return Boolean.TRUE;
+      }
+      if ("close".equals(name)) {
+        closed = true;
+        onRow = false;
+        return null;
+      }
+      if ("isClosed".equals(name)) {
+        return Boolean.valueOf(closed);
+      }
+      if ("wasNull".equals(name)) {
+        return Boolean.valueOf(wasNull);
+      }
+      if ("findColumn".equals(name)) {
+        return Integer.valueOf(findColumn(args[0]));
+      }
+      if ("getLong".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Long.valueOf(value);
+      }
+      if ("getInt".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Integer.valueOf((int) value);
+      }
+      if ("getString".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return String.valueOf(value);
+      }
+      if ("getObject".equals(name)) {
+        checkOnRow();
+        findColumn(args[0]);
+        wasNull = false;
+        return Long.valueOf(value);
+      }
+      if ("unwrap".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        Class<?> type = (Class<?>) args[0];
+        if (type.isInstance(proxy)) {
+          return proxy;
+        }
+        throw new SQLException("Not a wrapper for " + type.getName());
+      }
+      if ("isWrapperFor".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        return Boolean.valueOf(((Class<?>) args[0]).isInstance(proxy));
+      }
+      return Handler.defaultValue(method.getReturnType(), name);
+    }
+
+    private void checkOnRow() throws SQLException {
+      if (!onRow || closed) {
+        throw new SQLException("ResultSet is not positioned on a row");
+      }
+    }
+
+    private int findColumn(Object column) throws SQLException {
+      if (column instanceof Number) {
+        int index = ((Number) column).intValue();
+        if (index == 1) {
+          return 1;
+        }
+        throw new SQLException("Invalid column index: " + index);
+      }
+      String text = String.valueOf(column);
+      if (columnName.equalsIgnoreCase(text)) {
+        return 1;
+      }
+      throw new SQLException("Unknown column: " + text);
+    }
+  }
+
   private static final class SingleValueHandler implements InvocationHandler {
 
     private final String columnName;
@@ -319,6 +445,127 @@ final class AdbSimpleResultSet {
     private SingleValueHandler(String columnName, Value value) {
       this.columnName = columnName;
       this.value = value;
+    }
+
+    @Override
+    public Object invoke(Object proxy, Method method, Object[] args)
+        throws Throwable {
+      String name = method.getName();
+      if ("next".equals(name)) {
+        if (closed || !beforeFirst || value == null) {
+          onRow = false;
+          beforeFirst = false;
+          return Boolean.FALSE;
+        }
+        beforeFirst = false;
+        onRow = true;
+        return Boolean.TRUE;
+      }
+      if ("close".equals(name)) {
+        closed = true;
+        onRow = false;
+        return null;
+      }
+      if ("isClosed".equals(name)) {
+        return Boolean.valueOf(closed);
+      }
+      if ("wasNull".equals(name)) {
+        return Boolean.valueOf(wasNull);
+      }
+      if ("findColumn".equals(name)) {
+        return Integer.valueOf(findColumn(args[0]));
+      }
+      if ("getString".equals(name)) {
+        Value current = value(args[0]);
+        return current == null ? null : current.getString();
+      }
+      if ("getLong".equals(name)) {
+        Value current = value(args[0]);
+        return Long.valueOf(current == null ? 0L : current.getLong());
+      }
+      if ("getInt".equals(name)) {
+        Value current = value(args[0]);
+        return Integer.valueOf(current == null ? 0 : current.getInt());
+      }
+      if ("getBoolean".equals(name)) {
+        Value current = value(args[0]);
+        return Boolean.valueOf(current != null && current.getBoolean());
+      }
+      if ("getObject".equals(name)) {
+        Value current = value(args[0]);
+        return current == null ? null : current.getString();
+      }
+      if ("unwrap".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        Class<?> type = (Class<?>) args[0];
+        if (type.isInstance(proxy)) {
+          return proxy;
+        }
+        throw new SQLException("Not a wrapper for " + type.getName());
+      }
+      if ("isWrapperFor".equals(name) && args != null && args.length == 1
+          && args[0] instanceof Class) {
+        return Boolean.valueOf(((Class<?>) args[0]).isInstance(proxy));
+      }
+      return Handler.defaultValue(method.getReturnType(), name);
+    }
+
+    private Value value(Object column) throws SQLException {
+      checkOnRow();
+      findColumn(column);
+      wasNull = value == org.h2.value.ValueNull.INSTANCE;
+      return wasNull ? null : value;
+    }
+
+    private void checkOnRow() throws SQLException {
+      if (!onRow || closed) {
+        throw new SQLException("ResultSet is not positioned on a row");
+      }
+    }
+
+    private int findColumn(Object column) throws SQLException {
+      if (column instanceof Number) {
+        int index = ((Number) column).intValue();
+        if (index == 1) {
+          return 1;
+        }
+        throw new SQLException("Invalid column index: " + index);
+      }
+      String text = String.valueOf(column);
+      if (columnName.equalsIgnoreCase(text)) {
+        return 1;
+      }
+      throw new SQLException("Unknown column: " + text);
+    }
+  }
+
+  static final class SingleValueResultSet implements InvocationHandler {
+
+    private final String columnName;
+    private final ResultSet proxy;
+    private Value value;
+    private boolean beforeFirst;
+    private boolean onRow;
+    private boolean closed = true;
+    private boolean wasNull;
+
+    private SingleValueResultSet(String columnName) {
+      this.columnName = columnName;
+      this.proxy = (ResultSet) Proxy.newProxyInstance(
+          ResultSet.class.getClassLoader(),
+          new Class<?>[]{ResultSet.class}, this);
+    }
+
+    ResultSet resultSet(Value value) {
+      if (!closed) {
+        return singleValue(columnName, value);
+      }
+      this.value = value;
+      this.beforeFirst = true;
+      this.onRow = false;
+      this.closed = false;
+      this.wasNull = false;
+      return proxy;
     }
 
     @Override

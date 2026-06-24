@@ -153,7 +153,7 @@ class AdbBenchmarkMainTest {
         "--workload", "mixed",
         "--rows", "20",
         "--warmupOperations", "4",
-        "--operations", "8",
+        "--operations", "10",
         "--rangeSize", "4",
         "--transactionBatchSize", "4",
         "--threads", "2",
@@ -163,16 +163,57 @@ class AdbBenchmarkMainTest {
 
     assertEquals("jdbc", result.getMode());
     assertEquals("mixed", result.getWorkload());
-    assertEquals(8L, result.getOperations());
+    assertEquals(10L, result.getOperations());
     assertEquals(0L, result.getFailedOperations());
     assertEquals("2", result.getDetails().get("concurrency.threads"));
-    assertEquals("8", result.getDetails().get(
+    assertEquals("10", result.getDetails().get(
         "concurrency.completedOperations"));
     assertEquals("2", properties.getProperty("concurrency.threads"));
-    assertEquals("8", properties.getProperty(
+    assertEquals("10", properties.getProperty(
         "concurrency.completedOperations"));
     assertEquals("operationsOnly", properties.getProperty(
         "concurrency.measuredWindow"));
+    assertEquals("1", properties.getProperty("mixedLatency.write.count"));
+    assertEquals("7", properties.getProperty(
+        "mixedLatency.pointLookup.count"));
+    assertEquals("2", properties.getProperty(
+        "mixedLatency.rangeCount.count"));
+    assertEquals("2", properties.getProperty("mixedLatency.commit.count"));
+    assertEquals("1", properties.getProperty("mixedAllocation.write.count"));
+    assertEquals("7", properties.getProperty(
+        "mixedAllocation.pointLookup.count"));
+    assertEquals("2", properties.getProperty(
+        "mixedAllocation.rangeCount.count"));
+    assertEquals("2", properties.getProperty(
+        "mixedAllocation.commit.count"));
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedLatency.write.maxLatencyMicros")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedLatency.pointLookup.maxLatencyMicros")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedLatency.rangeCount.maxLatencyMicros")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.write.totalBytes")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.pointLookup.totalBytes")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.rangeCount.totalBytes")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.commit.totalBytes")) >= 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.jdbc.parameterSet.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.jdbc.statementExecute.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.jdbc.resultNext.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.jdbc.resultRead.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.jdbc.resultClose.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.plan.pointLookup.visibleColumn.count")) > 0L);
+    assertTrue(Long.parseLong(properties.getProperty(
+        "mixedAllocation.plan.rangeCount.countVisible.count")) > 0L);
     assertTrue(Integer.parseInt(properties.getProperty(
         "sqlDiagnostics.phaseStats.count")) > 0);
     assertFalse(containsPropertyValue(properties, "ADB_ROW_COUNT_PREWARM"));
@@ -207,6 +248,43 @@ class AdbBenchmarkMainTest {
     assertEquals(storeDir.toString(), properties.getProperty("url"));
     assertEquals(null, properties.getProperty("sqlDiagnostics.totalSqlCount"));
     assertAllocationDetails(properties);
+  }
+
+  /**
+   * 验证 store 模式可以执行 allocation 分界 workload，便于拆分 LDB cursor、visitor/view
+   * 和 ADB row materialization 的分配来源。
+   */
+  @Test
+  void shouldRunStoreAllocationBoundaryBenchmarks() throws Exception {
+    String[] workloads = new String[]{
+        "alloc_count_closed",
+        "alloc_scan_empty",
+        "alloc_scan_view",
+        "alloc_scan_materialize"
+    };
+    for (String workload : workloads) {
+      Path output = tempDir.resolve(workload + ".properties");
+      Path storeDir = tempDir.resolve(workload + "-store");
+
+      AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+          "--mode", "store",
+          "--storeDir", storeDir.toString(),
+          "--workload", workload,
+          "--rows", "20",
+          "--warmupOperations", "2",
+          "--operations", "4",
+          "--rangeSize", "4",
+          "--output", output.toString()
+      });
+      Properties properties = load(output);
+
+      assertEquals("store", result.getMode());
+      assertEquals(workload, result.getWorkload());
+      assertEquals(4L, result.getOperations());
+      assertEquals(0L, result.getFailedOperations());
+      assertEquals(workload, properties.getProperty("workload"));
+      assertAllocationDetails(properties);
+    }
   }
 
   /**

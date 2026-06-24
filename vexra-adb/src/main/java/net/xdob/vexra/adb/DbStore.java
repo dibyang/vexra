@@ -1,8 +1,10 @@
 package net.xdob.vexra.adb;
 
 import net.xdob.vexra.adb.db.AdbWriteBatch;
+import net.xdob.vexra.adb.db.CF;
 import net.xdob.vexra.adb.db.Meta;
 import net.xdob.vexra.adb.db.ScanDirection;
+import net.xdob.vexra.adb.db.VersionReadSession;
 import net.xdob.vexra.adb.db.VersionScanSource;
 
 import java.io.IOException;
@@ -103,6 +105,63 @@ public interface DbStore extends AutoCloseable {
   VersionScanSource openVersionScanSource(ScanDirection direction);
 
   VersionScanSource openVersionScanSource(byte cfId, ScanDirection direction);
+
+  /**
+   * 打开默认 CF 上的版本读会话。
+   *
+   * <p>默认实现基于 {@link VersionScanSource} 逐次打开 cursor，供非 LDB store 兼容。
+   * LDB store 会覆盖为真正的底层 ReadSession 复用。</p>
+   *
+   * @return 版本读会话
+   */
+  default VersionReadSession openVersionReadSession() {
+    return openVersionReadSession(CF.DEFAULT.getCfId());
+  }
+
+  /**
+   * 打开指定 CF 上的版本读会话。
+   *
+   * @param cfId column family id
+   * @return 版本读会话
+   */
+  default VersionReadSession openVersionReadSession(byte cfId) {
+    DbStore store = this;
+    return new VersionReadSession() {
+      @Override
+      public long countClosed(byte[] beginInclusive, byte[] endInclusive) {
+        try (VersionScanSource scan = store.openVersionScanSource(cfId,
+            ScanDirection.FORWARD)) {
+          scan.seekToRangeClosed(beginInclusive, endInclusive);
+          return scan.countRemaining();
+        } catch (RuntimeException e) {
+          throw e;
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      @Override
+      public void scanClosed(byte[] beginInclusive, byte[] endInclusive,
+          VersionReadSession.EntryVisitor visitor) {
+        try (VersionScanSource scan = store.openVersionScanSource(cfId,
+            ScanDirection.FORWARD)) {
+          scan.seekToRangeClosed(beginInclusive, endInclusive);
+          while (scan.isValid()) {
+            visitor.visit(scan.keyView(), scan.valueView());
+            scan.advance();
+          }
+        } catch (RuntimeException e) {
+          throw e;
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+      }
+
+      @Override
+      public void close() {
+      }
+    };
+  }
 
   default byte[] encodeLong(long v) {
     return ByteBuffer.allocate(8)

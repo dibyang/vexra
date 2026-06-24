@@ -4,8 +4,10 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Locale;
+import net.xdob.vexra.adb.AdbBenchmarkMain;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.TxnMap2;
+import net.xdob.vexra.adb.db.VersionReadSession;
 import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
 import org.h2.engine.Session;
@@ -38,6 +40,10 @@ final class AdbPreparedRangeCountPlan {
   private SessionLocal cachedSession;
   private TabId cachedTabId;
   private RowPrefix cachedRowPrefix;
+  private VersionReadSession readSession;
+  private long readSessionModificationId = Long.MIN_VALUE;
+  private final AdbSimpleResultSet.SingleLongResultSet countResultSet =
+      AdbSimpleResultSet.reusableSingleLong(COUNT_COLUMN);
 
   private AdbPreparedRangeCountPlan(String tableName, String whereColumn) {
     this.tableName = tableName;
@@ -111,8 +117,16 @@ final class AdbPreparedRangeCountPlan {
         || !parameterSet[2]) {
       return null;
     }
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     SessionLocal session = resolveSession(connection);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.resolveSession", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
+    allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     AdbTable table = resolveAdbTable(session);
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.resolveTable", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
     if (table == null) {
       return null;
     }
@@ -121,8 +135,19 @@ final class AdbPreparedRangeCountPlan {
     try {
       long min = toLong(parameters[1]);
       long max = toLong(parameters[2]);
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       long count = min > max ? 0L : countVisibleRows(session, table, min, max);
-      return AdbSimpleResultSet.singleLong(COUNT_COLUMN, count);
+      AdbBenchmarkMain.recordCurrentMixedStage(
+          "plan.rangeCount.countVisible", allocationStarted,
+          AdbBenchmarkMain.benchmarkAllocationBytes());
+      allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+      try {
+        return countResultSet.resultSet(count);
+      } finally {
+        AdbBenchmarkMain.recordCurrentMixedStage(
+            "plan.rangeCount.resultSetBuild", allocationStarted,
+            AdbBenchmarkMain.benchmarkAllocationBytes());
+      }
     } catch (SQLException e) {
       failure = e;
       throw e;
@@ -139,12 +164,51 @@ final class AdbPreparedRangeCountPlan {
       long max) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
     RowPrefix prefix = rowPrefix(map, table.getId());
+    VersionReadSession sessionView = readSession(table, map);
     long started = System.nanoTime();
     try {
-      return map.countVisibleRows(prefix, min, max);
+      return map.countVisibleRows(sessionView, prefix, min, max);
     } finally {
       table.recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT",
           System.nanoTime() - started);
+    }
+  }
+
+  private VersionReadSession readSession(AdbTable table, TxnMap2 map)
+      throws SQLException {
+    long modificationId = table.getMaxDataModificationId();
+    if (readSession != null && readSessionModificationId == modificationId) {
+      return readSession;
+    }
+    closeReadSession();
+    long allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
+    readSession = map.openVersionReadSession();
+    readSessionModificationId = modificationId;
+    AdbBenchmarkMain.recordCurrentMixedStage(
+        "plan.rangeCount.readSessionOpen", allocationStarted,
+        AdbBenchmarkMain.benchmarkAllocationBytes());
+    return readSession;
+  }
+
+  /**
+   * 关闭 range count 计划持有的可复用读资源。
+   *
+   * @throws SQLException 底层读会话关闭失败时抛出
+   */
+  void close() throws SQLException {
+    closeReadSession();
+  }
+
+  private void closeReadSession() throws SQLException {
+    VersionReadSession current = readSession;
+    readSession = null;
+    readSessionModificationId = Long.MIN_VALUE;
+    if (current != null) {
+      try {
+        current.close();
+      } catch (RuntimeException e) {
+        throw new SQLException("Failed to close range count read session", e);
+      }
     }
   }
 

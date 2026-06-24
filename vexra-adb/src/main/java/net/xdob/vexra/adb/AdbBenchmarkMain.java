@@ -1,12 +1,11 @@
 package net.xdob.vexra.adb;
 
-import net.xdob.vexra.adb.db.ScanDirection;
 import net.xdob.vexra.adb.db.RowCodec;
 import net.xdob.vexra.adb.db.RowValue;
 import net.xdob.vexra.adb.db.AdbTable;
 import net.xdob.vexra.adb.db.Transaction2;
 import net.xdob.vexra.adb.db.TxnManager;
-import net.xdob.vexra.adb.db.VersionScanSource;
+import net.xdob.vexra.adb.db.VersionReadSession;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticSnapshot;
 import net.xdob.vexra.adb.db.AdbSqlDiagnosticsRegistry;
 import net.xdob.vexra.adb.db.AdbSqlOperationStats;
@@ -15,7 +14,10 @@ import net.xdob.vexra.adb.h2plugin.AdbJdbcUrlPrefixProvider;
 import net.xdob.vexra.adb.jdbc.AdbDriver;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.TabId;
+import net.xdob.vexra.adb.key.VersionKey;
+import net.xdob.vexra.adb.key.VersionRowKey;
 import net.xdob.vexra.adb.ldb.LdbStore;
+import net.xdob.vexra.ldb.util.Slice;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
 import org.h2.jdbc.JdbcConnection;
@@ -48,6 +50,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -69,6 +73,15 @@ public final class AdbBenchmarkMain {
   private static final String TABLE_NAME = "ADB_BENCH";
   private static final String TABLE_ENGINE_ADB = "adb";
   private static final String TABLE_ENGINE_H2 = "h2";
+  private static final String ALLOC_COUNT_CLOSED = "alloc_count_closed";
+  private static final String ALLOC_SCAN_EMPTY = "alloc_scan_empty";
+  private static final String ALLOC_SCAN_VIEW = "alloc_scan_view";
+  private static final String ALLOC_SCAN_MATERIALIZE =
+      "alloc_scan_materialize";
+  private static final TabId STORE_ALLOCATION_TAB_ID = TabId.of(10_001, 1L);
+  private static volatile long allocationBoundarySink;
+  private static final ThreadLocal<MixedAllocationBreakdown>
+      CURRENT_MIXED_ALLOCATION = new ThreadLocal<>();
 
   private AdbBenchmarkMain() {
   }
@@ -203,6 +216,10 @@ public final class AdbBenchmarkMain {
         }
         AdbSqlDiagnosticsRegistry.resetAll();
         long[] latencies = new long[operations];
+        MixedLatencyBreakdown mixedLatency = newMixedLatencyBreakdown(
+            workload, operations);
+        MixedAllocationBreakdown mixedAllocation =
+            newMixedAllocationBreakdown(workload);
         long failed = 0;
         int pendingBatchOperations = 0;
         long allocationStart = currentThreadAllocatedBytes();
@@ -214,12 +231,33 @@ public final class AdbBenchmarkMain {
         } else {
           for (int i = 0; i < operations; i++) {
             long opStarted = System.nanoTime();
+            BenchmarkOperationKind operationKind = mixedOperationKind(
+                workload, i);
             try {
-              executeOperation(statements, workload, rows, rangeSize, i, true,
-                  statementBatchSize);
+              long operationAllocationStart = currentThreadAllocatedBytes();
+              CURRENT_MIXED_ALLOCATION.set(mixedAllocation);
+              try {
+                executeOperation(statements, workload, rows, rangeSize, i, true,
+                    statementBatchSize);
+              } finally {
+                CURRENT_MIXED_ALLOCATION.remove();
+              }
+              recordMixedAllocation(mixedAllocation, operationKind,
+                  operationAllocationStart, currentThreadAllocatedBytes());
+              recordMixedLatency(mixedLatency, operationKind,
+                  nanosToMicros(System.nanoTime() - opStarted));
               pendingBatchOperations++;
-              commitIfNeeded(connection, transactionBatchSize,
-                  pendingBatchOperations);
+              long commitStarted = System.nanoTime();
+              long commitAllocationStart = currentThreadAllocatedBytes();
+              boolean committed = commitIfNeeded(connection,
+                  transactionBatchSize, pendingBatchOperations);
+              if (committed) {
+                recordMixedAllocation(mixedAllocation,
+                    BenchmarkOperationKind.COMMIT, commitAllocationStart,
+                    currentThreadAllocatedBytes());
+                recordMixedLatency(mixedLatency, BenchmarkOperationKind.COMMIT,
+                    nanosToMicros(System.nanoTime() - commitStarted));
+              }
               if (transactionBatchSize > 1
                   && pendingBatchOperations >= transactionBatchSize) {
                 pendingBatchOperations = 0;
@@ -229,7 +267,9 @@ public final class AdbBenchmarkMain {
               rollbackIfNeeded(connection, transactionBatchSize);
               pendingBatchOperations = 0;
             } finally {
-              latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
+              long latencyMicros = nanosToMicros(
+                  System.nanoTime() - opStarted);
+              latencies[i] = latencyMicros;
             }
           }
           commitRemaining(connection, transactionBatchSize,
@@ -243,6 +283,8 @@ public final class AdbBenchmarkMain {
         details.put("tableEngine", resolvedTableEngine);
         details.put("secondaryIndex", String.valueOf(secondaryIndex));
         addThreadDetails(details, 1, throughput);
+        addMixedLatencyDetails(details, mixedLatency);
+        addMixedAllocationDetails(details, mixedAllocation);
         addAllocationDetails(details, allocationStart,
             currentThreadAllocatedBytes(), operations);
         return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
@@ -273,6 +315,10 @@ public final class AdbBenchmarkMain {
     final int warmupPerThread = warmupOperations / threads;
     final int warmupRemainder = warmupOperations % threads;
     final long[] latencies = new long[operations];
+    final MixedLatencyBreakdown mixedLatency = newMixedLatencyBreakdown(
+        workload, operations);
+    final MixedAllocationBreakdown mixedAllocation =
+        newMixedAllocationBreakdown(workload);
     final AtomicLong failed = new AtomicLong();
     final AtomicLong completed = new AtomicLong();
     final AtomicLong allocatedBytes = new AtomicLong();
@@ -297,7 +343,7 @@ public final class AdbBenchmarkMain {
               countedOps, latencyOffset, statementBatchSize,
               transactionBatchSize, latencies, failed, completed,
               allocatedBytes, ready, measureStart,
-              threadIndex, warmupOperations);
+              threadIndex, warmupOperations, mixedLatency, mixedAllocation);
         } catch (Throwable e) {
           firstFailure.compareAndSet(null, e);
           failed.addAndGet(countedOps);
@@ -334,6 +380,8 @@ public final class AdbBenchmarkMain {
       details.put("concurrency.completedOperations",
           String.valueOf(completed.get()));
       details.put("concurrency.measuredWindow", "operationsOnly");
+      addMixedLatencyDetails(details, mixedLatency);
+      addMixedAllocationDetails(details, mixedAllocation);
       addAllocationDetails(details, allocatedBytes.get(), operations);
       return new AdbBenchmarkResult("jdbc", workload, url, warmupOperations,
           operations, failed.get(), durationMillis, throughput,
@@ -352,7 +400,8 @@ public final class AdbBenchmarkMain {
       AtomicLong failed, AtomicLong completed, AtomicLong allocatedBytes,
       CountDownLatch ready, CountDownLatch measureStart,
       int threadIndex,
-      int totalWarmupOperations)
+      int totalWarmupOperations, MixedLatencyBreakdown mixedLatency,
+      MixedAllocationBreakdown mixedAllocation)
       throws Exception {
     try (Connection connection = DriverManager.getConnection(url,
         new Properties())) {
@@ -375,13 +424,34 @@ public final class AdbBenchmarkMain {
         try {
           for (int i = 0; i < operations; i++) {
             long opStarted = System.nanoTime();
+            int index = latencyOffset + i;
+            BenchmarkOperationKind operationKind = mixedOperationKind(
+                workload, index);
             try {
-              int index = latencyOffset + i;
-              executeOperation(statements, workload, rows, rangeSize, index,
-                  true, statementBatchSize);
+              long operationAllocationStart = currentThreadAllocatedBytes();
+              CURRENT_MIXED_ALLOCATION.set(mixedAllocation);
+              try {
+                executeOperation(statements, workload, rows, rangeSize, index,
+                    true, statementBatchSize);
+              } finally {
+                CURRENT_MIXED_ALLOCATION.remove();
+              }
+              recordMixedAllocation(mixedAllocation, operationKind,
+                  operationAllocationStart, currentThreadAllocatedBytes());
+              recordMixedLatency(mixedLatency, operationKind,
+                  nanosToMicros(System.nanoTime() - opStarted));
               pendingBatchOperations++;
-              commitIfNeeded(connection, transactionBatchSize,
-                  pendingBatchOperations);
+              long commitStarted = System.nanoTime();
+              long commitAllocationStart = currentThreadAllocatedBytes();
+              boolean committed = commitIfNeeded(connection,
+                  transactionBatchSize, pendingBatchOperations);
+              if (committed) {
+                recordMixedAllocation(mixedAllocation,
+                    BenchmarkOperationKind.COMMIT, commitAllocationStart,
+                    currentThreadAllocatedBytes());
+                recordMixedLatency(mixedLatency, BenchmarkOperationKind.COMMIT,
+                    nanosToMicros(System.nanoTime() - commitStarted));
+              }
               if (transactionBatchSize > 1
                   && pendingBatchOperations >= transactionBatchSize) {
                 pendingBatchOperations = 0;
@@ -392,8 +462,9 @@ public final class AdbBenchmarkMain {
               rollbackIfNeeded(connection, transactionBatchSize);
               pendingBatchOperations = 0;
             } finally {
-              latencies[latencyOffset + i] =
-                  nanosToMicros(System.nanoTime() - opStarted);
+              long latencyMicros = nanosToMicros(
+                  System.nanoTime() - opStarted);
+              latencies[latencyOffset + i] = latencyMicros;
             }
           }
           commitRemaining(connection, transactionBatchSize,
@@ -423,36 +494,40 @@ public final class AdbBenchmarkMain {
       throws Exception {
     requireSupportedWorkload(workload);
     try (LdbStore store = new LdbStore(storeDir)) {
-      prepareStore(store, rows);
-      for (int i = 0; i < warmupOperations; i++) {
-        executeStoreOperation(store, workload, rows, rangeSize, i, false);
-      }
-      long[] latencies = new long[operations];
-      long failed = 0;
-      long allocationStart = currentThreadAllocatedBytes();
-      long started = System.nanoTime();
-      for (int i = 0; i < operations; i++) {
-        long opStarted = System.nanoTime();
-        try {
-          executeStoreOperation(store, workload, rows, rangeSize, i, true);
-        } catch (Exception e) {
-          failed++;
-        } finally {
-          latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
+      prepareStore(store, workload, rows);
+      try (VersionReadSession readSession = store.openVersionReadSession()) {
+        for (int i = 0; i < warmupOperations; i++) {
+          executeStoreOperation(store, readSession, workload, rows, rangeSize,
+              i, false);
         }
+        long[] latencies = new long[operations];
+        long failed = 0;
+        long allocationStart = currentThreadAllocatedBytes();
+        long started = System.nanoTime();
+        for (int i = 0; i < operations; i++) {
+          long opStarted = System.nanoTime();
+          try {
+            executeStoreOperation(store, readSession, workload, rows, rangeSize,
+                i, true);
+          } catch (Exception e) {
+            failed++;
+          } finally {
+            latencies[i] = nanosToMicros(System.nanoTime() - opStarted);
+          }
+        }
+        long durationMillis = Math.max(1L,
+            (System.nanoTime() - started) / 1_000_000L);
+        Arrays.sort(latencies);
+        double throughput = operations * 1000D / durationMillis;
+        Map<String, String> details = new LinkedHashMap<>();
+        addAllocationDetails(details, allocationStart,
+            currentThreadAllocatedBytes(), operations);
+        return new AdbBenchmarkResult("store", workload, storeDir,
+            warmupOperations, operations, failed, durationMillis, throughput,
+            percentile(latencies, 0.50D), percentile(latencies, 0.95D),
+            percentile(latencies, 0.99D), latencies[latencies.length - 1],
+            details);
       }
-      long durationMillis = Math.max(1L,
-          (System.nanoTime() - started) / 1_000_000L);
-      Arrays.sort(latencies);
-      double throughput = operations * 1000D / durationMillis;
-      Map<String, String> details = new LinkedHashMap<>();
-      addAllocationDetails(details, allocationStart,
-          currentThreadAllocatedBytes(), operations);
-      return new AdbBenchmarkResult("store", workload, storeDir,
-          warmupOperations, operations, failed, durationMillis, throughput,
-          percentile(latencies, 0.50D), percentile(latencies, 0.95D),
-          percentile(latencies, 0.99D), latencies[latencies.length - 1],
-          details);
     }
   }
 
@@ -802,11 +877,13 @@ public final class AdbBenchmarkMain {
     return failed;
   }
 
-  private static void commitIfNeeded(Connection connection,
+  private static boolean commitIfNeeded(Connection connection,
       int transactionBatchSize, int operationCount) throws Exception {
     if (transactionBatchSize > 1 && operationCount % transactionBatchSize == 0) {
       connection.commit();
+      return true;
     }
+    return false;
   }
 
   private static void commitRemaining(Connection connection,
@@ -823,14 +900,20 @@ public final class AdbBenchmarkMain {
     }
   }
 
-  private static void prepareStore(DbStore store, int rows) throws Exception {
+  private static void prepareStore(DbStore store, String workload, int rows)
+      throws Exception {
     for (int i = 1; i <= rows; i++) {
-      store.put(storeKey(i), storeValue(i));
+      if (isAllocationBoundaryWorkload(workload)) {
+        store.put(storeMaterializedKey(i), storeMaterializedValue(i));
+      } else {
+        store.put(storeKey(i), storeValue(i));
+      }
     }
   }
 
-  private static void executeStoreOperation(DbStore store, String workload,
-      int rows, int rangeSize, int index, boolean countedRun)
+  private static void executeStoreOperation(DbStore store,
+      VersionReadSession readSession, String workload, int rows, int rangeSize,
+      int index, boolean countedRun)
       throws Exception {
     if ("insert".equals(workload)) {
       int id = rows + (countedRun ? 1_000_000 : 100_000) + index;
@@ -842,14 +925,26 @@ public final class AdbBenchmarkMain {
     } else if ("primary_find".equals(workload)) {
       store.get(storeKey((index % rows) + 1));
     } else if ("table_count".equals(workload)) {
-      scanStoreRange(store, 1, rows);
+      scanStoreRange(readSession, 1, rows);
     } else if ("range_scan".equals(workload)) {
-      scanStoreRange(store, (index % rows) + 1,
+      scanStoreRange(readSession, (index % rows) + 1,
           Math.min(rows, (index % rows) + rangeSize));
     } else if ("range_count_local_write".equals(workload)) {
       int id = rows + (countedRun ? 3_000_000 : 300_000) + index;
       store.put(storeKey(id), storeValue(id));
-      scanStoreRange(store, id, id);
+      scanStoreRange(readSession, id, id);
+    } else if (ALLOC_COUNT_CLOSED.equals(workload)) {
+      scanStoreAllocationCountClosed(readSession, (index % rows) + 1,
+          Math.min(rows, (index % rows) + rangeSize));
+    } else if (ALLOC_SCAN_EMPTY.equals(workload)) {
+      scanStoreAllocationEmptyVisitor(readSession, (index % rows) + 1,
+          Math.min(rows, (index % rows) + rangeSize));
+    } else if (ALLOC_SCAN_VIEW.equals(workload)) {
+      scanStoreAllocationViewOnly(readSession, (index % rows) + 1,
+          Math.min(rows, (index % rows) + rangeSize));
+    } else if (ALLOC_SCAN_MATERIALIZE.equals(workload)) {
+      scanStoreAllocationMaterialize(readSession, (index % rows) + 1,
+          Math.min(rows, (index % rows) + rangeSize));
     } else {
       int mode = index % 10;
       if (mode == 0) {
@@ -858,25 +953,42 @@ public final class AdbBenchmarkMain {
       } else if (mode <= 7) {
         store.get(storeKey((index % rows) + 1));
       } else {
-        scanStoreRange(store, (index % rows) + 1,
+        scanStoreRange(readSession, (index % rows) + 1,
             Math.min(rows, (index % rows) + rangeSize));
       }
     }
   }
 
-  private static void scanStoreRange(DbStore store, int start, int end)
+  private static void scanStoreRange(VersionReadSession readSession, int start,
+      int end)
       throws Exception {
     byte[] lower = storeKey(start);
-    byte[] upper = storeKey(end + 1);
-    try (VersionScanSource scan = store.openVersionScanSource(
-        ScanDirection.FORWARD)) {
-      scan.seekToRangeStart(lower, upper);
-      while (scan.isValid()) {
-        scan.key();
-        scan.value();
-        scan.advance();
-      }
-    }
+    byte[] upper = storeKey(end);
+    readSession.countClosed(lower, upper);
+  }
+
+  private static void scanStoreAllocationCountClosed(
+      VersionReadSession readSession, int start, int end) {
+    readSession.countClosed(storeMaterializedKey(start),
+        storeMaterializedKey(end));
+  }
+
+  private static void scanStoreAllocationEmptyVisitor(
+      VersionReadSession readSession, int start, int end) {
+    readSession.scanClosed(storeMaterializedKey(start),
+        storeMaterializedKey(end), EmptyAllocationVisitor.INSTANCE);
+  }
+
+  private static void scanStoreAllocationViewOnly(
+      VersionReadSession readSession, int start, int end) {
+    readSession.scanClosed(storeMaterializedKey(start),
+        storeMaterializedKey(end), ViewOnlyAllocationVisitor.INSTANCE);
+  }
+
+  private static void scanStoreAllocationMaterialize(
+      VersionReadSession readSession, int start, int end) {
+    readSession.scanClosed(storeMaterializedKey(start),
+        storeMaterializedKey(end), MaterializingAllocationVisitor.INSTANCE);
   }
 
   private static byte[] storeKey(int id) {
@@ -885,6 +997,22 @@ public final class AdbBenchmarkMain {
 
   private static byte[] storeValue(int id) {
     return ("value-" + id).getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static byte[] storeMaterializedKey(long id) {
+    return VersionRowKey.of(STORE_ALLOCATION_TAB_ID, id, true, id).toBytes();
+  }
+
+  private static byte[] storeMaterializedValue(long id) {
+    RowValue rowValue = new RowValue();
+    rowValue.txnId = 0L;
+    rowValue.commitTs = id;
+    rowValue.deleted = false;
+    rowValue.payload = RowCodec.encode(ValueRow.get(new Value[]{
+        ValueBigint.get(id),
+        ValueVarchar.get("alloc-" + id)
+    }));
+    return RowValue.encodeValue(rowValue);
   }
 
   private static void write(Path output, AdbBenchmarkResult result)
@@ -1060,6 +1188,83 @@ public final class AdbBenchmarkMain {
     return Math.max(0L, nanos / 1_000L);
   }
 
+  private static MixedLatencyBreakdown newMixedLatencyBreakdown(
+      String workload, int operations) {
+    return "mixed".equals(workload)
+        ? new MixedLatencyBreakdown(operations) : null;
+  }
+
+  private static MixedAllocationBreakdown newMixedAllocationBreakdown(
+      String workload) {
+    return "mixed".equals(workload) ? new MixedAllocationBreakdown() : null;
+  }
+
+  private static BenchmarkOperationKind mixedOperationKind(String workload,
+      int index) {
+    if (!"mixed".equals(workload)) {
+      return BenchmarkOperationKind.OTHER;
+    }
+    int mode = index % 10;
+    if (mode == 0) {
+      return BenchmarkOperationKind.WRITE;
+    }
+    if (mode <= 7) {
+      return BenchmarkOperationKind.POINT_LOOKUP;
+    }
+    return BenchmarkOperationKind.RANGE_COUNT;
+  }
+
+  private static void recordMixedLatency(MixedLatencyBreakdown mixedLatency,
+      BenchmarkOperationKind operationKind, long latencyMicros) {
+    if (mixedLatency != null) {
+      mixedLatency.record(operationKind, latencyMicros);
+    }
+  }
+
+  private static void recordMixedAllocation(
+      MixedAllocationBreakdown mixedAllocation,
+      BenchmarkOperationKind operationKind, long allocationStart,
+      long allocationEnd) {
+    if (mixedAllocation != null && allocationStart >= 0L
+        && allocationEnd >= allocationStart) {
+      mixedAllocation.record(operationKind, allocationEnd - allocationStart);
+    }
+  }
+
+  private static void recordCurrentMixedStage(
+      BenchmarkAllocationStage stage, long allocationStart,
+      long allocationEnd) {
+    recordCurrentMixedStage(stage.name(), allocationStart, allocationEnd);
+  }
+
+  public static long benchmarkAllocationBytes() {
+    return currentThreadAllocatedBytes();
+  }
+
+  public static void recordCurrentMixedStage(String stage,
+      long allocationStart, long allocationEnd) {
+    MixedAllocationBreakdown mixedAllocation =
+        CURRENT_MIXED_ALLOCATION.get();
+    if (mixedAllocation != null && allocationStart >= 0L
+        && allocationEnd >= allocationStart) {
+      mixedAllocation.recordStage(stage, allocationEnd - allocationStart);
+    }
+  }
+
+  private static void addMixedLatencyDetails(Map<String, String> details,
+      MixedLatencyBreakdown mixedLatency) {
+    if (mixedLatency != null) {
+      mixedLatency.addDetails(details);
+    }
+  }
+
+  private static void addMixedAllocationDetails(Map<String, String> details,
+      MixedAllocationBreakdown mixedAllocation) {
+    if (mixedAllocation != null) {
+      mixedAllocation.addDetails(details);
+    }
+  }
+
   private static void requireSupportedWorkload(String workload) {
     if (!"insert".equals(workload) && !"point_lookup".equals(workload)
         && !"point_lookup_all".equals(workload)
@@ -1067,8 +1272,239 @@ public final class AdbBenchmarkMain {
         && !"table_count".equals(workload)
         && !"range_scan".equals(workload)
         && !"range_count_local_write".equals(workload)
+        && !isAllocationBoundaryWorkload(workload)
         && !"mixed".equals(workload)) {
       throw new IllegalArgumentException("Unsupported workload: " + workload);
+    }
+  }
+
+  private static boolean isAllocationBoundaryWorkload(String workload) {
+    return ALLOC_COUNT_CLOSED.equals(workload)
+        || ALLOC_SCAN_EMPTY.equals(workload)
+        || ALLOC_SCAN_VIEW.equals(workload)
+        || ALLOC_SCAN_MATERIALIZE.equals(workload);
+  }
+
+  private enum EmptyAllocationVisitor implements VersionReadSession.EntryVisitor {
+    INSTANCE;
+
+    @Override
+    public void visit(Slice keyView, Slice valueView) {
+      // 空 visitor 用于隔离 LDB cursor/visitor 边界成本。
+    }
+  }
+
+  private enum ViewOnlyAllocationVisitor implements VersionReadSession.EntryVisitor {
+    INSTANCE;
+
+    @Override
+    public void visit(Slice keyView, Slice valueView) {
+      allocationBoundarySink += keyView.length() + valueView.length();
+    }
+  }
+
+  private enum MaterializingAllocationVisitor
+      implements VersionReadSession.EntryVisitor {
+    INSTANCE;
+
+    @Override
+    public void visit(Slice keyView, Slice valueView) {
+      VersionKey versionKey = VersionKey.fromBytes(keyView.copyBytes());
+      RowValue rowValue = RowValue.decodeValueView(valueView);
+      if (rowValue == null || rowValue.payload == null) {
+        return;
+      }
+      Value[] values = new Value[]{
+          RowCodec.decodeColumn(rowValue.payload, 0),
+          RowCodec.decodeColumn(rowValue.payload, 1)
+      };
+      DefaultRow row = new DefaultRow(values);
+      row.setKey(versionKey.getRowId());
+      allocationBoundarySink += row.getKey()
+          + values[0].getLong()
+          + values[1].getString().length();
+    }
+  }
+
+  private enum BenchmarkOperationKind {
+    WRITE,
+    POINT_LOOKUP,
+    RANGE_COUNT,
+    COMMIT,
+    OTHER
+  }
+
+  private enum BenchmarkAllocationStage {
+    PARAMETER_SET,
+    STATEMENT_EXECUTE,
+    RESULT_NEXT,
+    RESULT_READ,
+    RESULT_CLOSE
+  }
+
+  private static final class MixedLatencyBreakdown {
+    private final long[] writeLatencies;
+    private final long[] pointLookupLatencies;
+    private final long[] rangeCountLatencies;
+    private final long[] commitLatencies;
+    private final AtomicInteger writeCount = new AtomicInteger();
+    private final AtomicInteger pointLookupCount = new AtomicInteger();
+    private final AtomicInteger rangeCountCount = new AtomicInteger();
+    private final AtomicInteger commitCount = new AtomicInteger();
+
+    private MixedLatencyBreakdown(int operations) {
+      this.writeLatencies = new long[operations];
+      this.pointLookupLatencies = new long[operations];
+      this.rangeCountLatencies = new long[operations];
+      this.commitLatencies = new long[operations];
+    }
+
+    private void record(BenchmarkOperationKind operationKind,
+        long latencyMicros) {
+      if (operationKind == BenchmarkOperationKind.WRITE) {
+        record(writeLatencies, writeCount, latencyMicros);
+      } else if (operationKind == BenchmarkOperationKind.POINT_LOOKUP) {
+        record(pointLookupLatencies, pointLookupCount, latencyMicros);
+      } else if (operationKind == BenchmarkOperationKind.RANGE_COUNT) {
+        record(rangeCountLatencies, rangeCountCount, latencyMicros);
+      } else if (operationKind == BenchmarkOperationKind.COMMIT) {
+        record(commitLatencies, commitCount, latencyMicros);
+      }
+    }
+
+    private void addDetails(Map<String, String> details) {
+      addLatencyDetails(details, "mixedLatency.write", writeLatencies,
+          writeCount.get());
+      addLatencyDetails(details, "mixedLatency.pointLookup",
+          pointLookupLatencies, pointLookupCount.get());
+      addLatencyDetails(details, "mixedLatency.rangeCount",
+          rangeCountLatencies, rangeCountCount.get());
+      addLatencyDetails(details, "mixedLatency.commit",
+          commitLatencies, commitCount.get());
+    }
+
+    private static void record(long[] latencies, AtomicInteger count,
+        long latencyMicros) {
+      int index = count.getAndIncrement();
+      if (index < latencies.length) {
+        latencies[index] = latencyMicros;
+      }
+    }
+
+    private static void addLatencyDetails(Map<String, String> details,
+        String prefix, long[] latencies, int count) {
+      int safeCount = Math.max(0, Math.min(count, latencies.length));
+      details.put(prefix + ".count", String.valueOf(safeCount));
+      if (safeCount == 0) {
+        details.put(prefix + ".avgLatencyMicros", "0");
+        details.put(prefix + ".p50LatencyMicros", "0");
+        details.put(prefix + ".p95LatencyMicros", "0");
+        details.put(prefix + ".p99LatencyMicros", "0");
+        details.put(prefix + ".maxLatencyMicros", "0");
+        return;
+      }
+      long[] copy = Arrays.copyOf(latencies, safeCount);
+      Arrays.sort(copy);
+      long total = 0L;
+      for (long latency : copy) {
+        total += latency;
+      }
+      details.put(prefix + ".avgLatencyMicros",
+          String.valueOf(total / safeCount));
+      details.put(prefix + ".p50LatencyMicros",
+          String.valueOf(percentile(copy, 0.50D)));
+      details.put(prefix + ".p95LatencyMicros",
+          String.valueOf(percentile(copy, 0.95D)));
+      details.put(prefix + ".p99LatencyMicros",
+          String.valueOf(percentile(copy, 0.99D)));
+      details.put(prefix + ".maxLatencyMicros",
+          String.valueOf(copy[copy.length - 1]));
+    }
+  }
+
+  private static final class MixedAllocationBreakdown {
+    private final AllocationCounter write = new AllocationCounter();
+    private final AllocationCounter pointLookup = new AllocationCounter();
+    private final AllocationCounter rangeCount = new AllocationCounter();
+    private final AllocationCounter commit = new AllocationCounter();
+    private final AllocationCounter parameterSet = new AllocationCounter();
+    private final AllocationCounter statementExecute = new AllocationCounter();
+    private final AllocationCounter resultNext = new AllocationCounter();
+    private final AllocationCounter resultRead = new AllocationCounter();
+    private final AllocationCounter resultClose = new AllocationCounter();
+    private final Map<String, AllocationCounter> planStages =
+        new ConcurrentHashMap<>();
+
+    private void record(BenchmarkOperationKind operationKind,
+        long allocatedBytes) {
+      if (operationKind == BenchmarkOperationKind.WRITE) {
+        write.record(allocatedBytes);
+      } else if (operationKind == BenchmarkOperationKind.POINT_LOOKUP) {
+        pointLookup.record(allocatedBytes);
+      } else if (operationKind == BenchmarkOperationKind.RANGE_COUNT) {
+        rangeCount.record(allocatedBytes);
+      } else if (operationKind == BenchmarkOperationKind.COMMIT) {
+        commit.record(allocatedBytes);
+      }
+    }
+
+    private void recordStage(BenchmarkAllocationStage stage,
+        long allocatedBytes) {
+      recordStage(stage.name(), allocatedBytes);
+    }
+
+    private void recordStage(String stage, long allocatedBytes) {
+      if (BenchmarkAllocationStage.PARAMETER_SET.name().equals(stage)) {
+        parameterSet.record(allocatedBytes);
+      } else if (BenchmarkAllocationStage.STATEMENT_EXECUTE.name()
+          .equals(stage)) {
+        statementExecute.record(allocatedBytes);
+      } else if (BenchmarkAllocationStage.RESULT_NEXT.name().equals(stage)) {
+        resultNext.record(allocatedBytes);
+      } else if (BenchmarkAllocationStage.RESULT_READ.name().equals(stage)) {
+        resultRead.record(allocatedBytes);
+      } else if (BenchmarkAllocationStage.RESULT_CLOSE.name().equals(stage)) {
+        resultClose.record(allocatedBytes);
+      } else if (stage != null && stage.startsWith("plan.")) {
+        planStages.computeIfAbsent(stage, ignored -> new AllocationCounter())
+            .record(allocatedBytes);
+      }
+    }
+
+    private void addDetails(Map<String, String> details) {
+      write.addDetails(details, "mixedAllocation.write");
+      pointLookup.addDetails(details, "mixedAllocation.pointLookup");
+      rangeCount.addDetails(details, "mixedAllocation.rangeCount");
+      commit.addDetails(details, "mixedAllocation.commit");
+      parameterSet.addDetails(details, "mixedAllocation.jdbc.parameterSet");
+      statementExecute.addDetails(details,
+          "mixedAllocation.jdbc.statementExecute");
+      resultNext.addDetails(details, "mixedAllocation.jdbc.resultNext");
+      resultRead.addDetails(details, "mixedAllocation.jdbc.resultRead");
+      resultClose.addDetails(details, "mixedAllocation.jdbc.resultClose");
+      for (Map.Entry<String, AllocationCounter> entry : planStages.entrySet()) {
+        entry.getValue().addDetails(details,
+            "mixedAllocation." + entry.getKey());
+      }
+    }
+  }
+
+  private static final class AllocationCounter {
+    private final AtomicInteger count = new AtomicInteger();
+    private final AtomicLong totalBytes = new AtomicLong();
+
+    private void record(long allocatedBytes) {
+      count.incrementAndGet();
+      totalBytes.addAndGet(Math.max(0L, allocatedBytes));
+    }
+
+    private void addDetails(Map<String, String> details, String prefix) {
+      int safeCount = count.get();
+      long safeTotalBytes = totalBytes.get();
+      details.put(prefix + ".count", String.valueOf(safeCount));
+      details.put(prefix + ".totalBytes", String.valueOf(safeTotalBytes));
+      details.put(prefix + ".bytesPerOperation",
+          String.valueOf(safeTotalBytes / Math.max(1, safeCount)));
     }
   }
 
@@ -1174,9 +1610,15 @@ public final class AdbBenchmarkMain {
     }
 
     private void insert(long id, String name) throws Exception {
+      long parameterStart = currentThreadAllocatedBytes();
       insert.setLong(1, id);
       insert.setString(2, name);
+      recordCurrentMixedStage(BenchmarkAllocationStage.PARAMETER_SET,
+          parameterStart, currentThreadAllocatedBytes());
+      long executeStart = currentThreadAllocatedBytes();
       insert.executeUpdate();
+      recordCurrentMixedStage(BenchmarkAllocationStage.STATEMENT_EXECUTE,
+          executeStart, currentThreadAllocatedBytes());
     }
 
     private void insertMany(long firstId, int batchSize, String namePrefix)
@@ -1210,10 +1652,35 @@ public final class AdbBenchmarkMain {
     }
 
     private void pointLookup(long id) throws Exception {
+      long parameterStart = currentThreadAllocatedBytes();
       pointLookup.setLong(1, id);
-      try (ResultSet ignored = pointLookup.executeQuery()) {
-        while (ignored.next()) {
-          ignored.getString(1);
+      recordCurrentMixedStage(BenchmarkAllocationStage.PARAMETER_SET,
+          parameterStart, currentThreadAllocatedBytes());
+      ResultSet resultSet = null;
+      try {
+        long executeStart = currentThreadAllocatedBytes();
+        resultSet = pointLookup.executeQuery();
+        recordCurrentMixedStage(BenchmarkAllocationStage.STATEMENT_EXECUTE,
+            executeStart, currentThreadAllocatedBytes());
+        while (true) {
+          long nextStart = currentThreadAllocatedBytes();
+          boolean hasNext = resultSet.next();
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_NEXT,
+              nextStart, currentThreadAllocatedBytes());
+          if (!hasNext) {
+            break;
+          }
+          long readStart = currentThreadAllocatedBytes();
+          resultSet.getString(1);
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_READ,
+              readStart, currentThreadAllocatedBytes());
+        }
+      } finally {
+        if (resultSet != null) {
+          long closeStart = currentThreadAllocatedBytes();
+          resultSet.close();
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_CLOSE,
+              closeStart, currentThreadAllocatedBytes());
         }
       }
     }
@@ -1246,11 +1713,36 @@ public final class AdbBenchmarkMain {
     }
 
     private void rangeScan(long start, long end) throws Exception {
+      long parameterStart = currentThreadAllocatedBytes();
       rangeScan.setLong(1, start);
       rangeScan.setLong(2, end);
-      try (ResultSet ignored = rangeScan.executeQuery()) {
-        while (ignored.next()) {
-          ignored.getLong(1);
+      recordCurrentMixedStage(BenchmarkAllocationStage.PARAMETER_SET,
+          parameterStart, currentThreadAllocatedBytes());
+      ResultSet resultSet = null;
+      try {
+        long executeStart = currentThreadAllocatedBytes();
+        resultSet = rangeScan.executeQuery();
+        recordCurrentMixedStage(BenchmarkAllocationStage.STATEMENT_EXECUTE,
+            executeStart, currentThreadAllocatedBytes());
+        while (true) {
+          long nextStart = currentThreadAllocatedBytes();
+          boolean hasNext = resultSet.next();
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_NEXT,
+              nextStart, currentThreadAllocatedBytes());
+          if (!hasNext) {
+            break;
+          }
+          long readStart = currentThreadAllocatedBytes();
+          resultSet.getLong(1);
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_READ,
+              readStart, currentThreadAllocatedBytes());
+        }
+      } finally {
+        if (resultSet != null) {
+          long closeStart = currentThreadAllocatedBytes();
+          resultSet.close();
+          recordCurrentMixedStage(BenchmarkAllocationStage.RESULT_CLOSE,
+              closeStart, currentThreadAllocatedBytes());
         }
       }
     }

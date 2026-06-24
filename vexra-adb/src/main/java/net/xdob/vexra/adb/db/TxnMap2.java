@@ -31,8 +31,7 @@ public class TxnMap2 {
   }
 
   /**
-   * 返回当前 H2 session 绑定的 ADB 事务。
-   *
+   * 返回当前 H2 session 绑定�?ADB 事务�?   *
    * @return 当前事务对象
    */
   public Transaction2 getTransaction() {
@@ -65,12 +64,10 @@ public class TxnMap2 {
   }
 
   /**
-   * 插入不存在的 row，并允许调用方复用已经计算过的 append fast path 判定。
-   *
+   * 插入不存在的 row，并允许调用方复用已经计算过�?append fast path 判定�?   *
    * @param dataKey row key
    * @param row 待编码的 H2 row
-   * @param skipAppendUniqueCheck 是否已确认可跳过 committed 版本唯一性扫描
-   * @return 已存在的可见版本；不存在时返回 null
+   * @param skipAppendUniqueCheck 是否已确认可跳过 committed 版本唯一性扫�?   * @return 已存在的可见版本；不存在时返�?null
    */
   public RowValue putIfAbsent(DataKey dataKey, Value row,
       boolean skipAppendUniqueCheck) throws SQLException {
@@ -100,17 +97,14 @@ public class TxnMap2 {
   }
 
   /**
-   * 批量追加插入一个已经编码好的 row value。
-   *
+   * 批量追加插入一个已经编码好�?row value�?   *
    * <p>该方法服务于 JDBC bulk insert fast path：调用方已经完成 RowKey/RowValue
-   * 构造，可以避免再次把 H2 Row 包装成 Value 后编码。对于无法使用 append hint 的 key，
-   * 仍会回退到当前事务快照下的可见性检查，保证重复主键不会被静默覆盖。</p>
+   * 构造，可以避免再次�?H2 Row 包装�?Value 后编码。对于无法使�?append hint �?key�?   * 仍会回退到当前事务快照下的可见性检查，保证重复主键不会被静默覆盖�?/p>
    *
    * @param dataKey row key
    * @param value 已编码的 row value
-   * @return 已存在的可见版本；不存在时返回 null
-   * @throws SQLException 可见性检查或写入失败时抛出
-   */
+   * @return 已存在的可见版本；不存在时返�?null
+   * @throws SQLException 可见性检查或写入失败时抛�?   */
   public RowValue putEncodedIfAbsent(DataKey dataKey, RowValue value)
       throws SQLException {
     if (canSkipAppendUniqueCheck(dataKey)) {
@@ -128,15 +122,11 @@ public class TxnMap2 {
   }
 
   /**
-   * 写入已经编码好的数据 key，并复用调用方已经读取过的旧可见版本。
+   * 写入已经编码好的数据 key，并复用调用方已经读取过的旧可见版本�?   *
+   * <p>该入口用�?bulk insert 在完成整批主�?索引校验后一次性登记事务本地写集�?   * 调用方必须保�?{@code oldValue} 来自同一事务快照；这样提交和回滚仍然�?   * {@link Transaction2} �?write set / undo log 统一处理�?/p>
    *
-   * <p>该入口用于 bulk insert 在完成整批主键/索引校验后一次性登记事务本地写集。
-   * 调用方必须保证 {@code oldValue} 来自同一事务快照；这样提交和回滚仍然由
-   * {@link Transaction2} 的 write set / undo log 统一处理。</p>
-   *
-   * @param dataKey 写入的逻辑 key，可以是 row key 或 index key
-   * @param value 已编码的写入值
-   * @param oldValue 同一事务快照下的旧可见值，不存在时为 null
+   * @param dataKey 写入的逻辑 key，可以是 row key �?index key
+   * @param value 已编码的写入�?   * @param oldValue 同一事务快照下的旧可见值，不存在时�?null
    * @throws SQLException 写入事务本地状态失败时抛出
    */
   public void putEncoded(DataKey dataKey, RowValue value, RowValue oldValue)
@@ -145,15 +135,14 @@ public class TxnMap2 {
   }
 
   /**
-   * 写入 bulk append row，并登记当前事务内的 rowId 上界。
-   *
-   * <p>bulk insert 已经在 table 层完成批内重复主键检查和必要的 committed
-   * 可见性检查；这里在复用旧值写入事务本地 write set 后，同步维护本事务内 append
-   * high-water，让同一事务的后续追加批次可以继续走 fast path。</p>
+   * 写入 bulk append row，并登记当前事务内的 rowId 上界�?   *
+   * <p>bulk insert 已经�?table 层完成批内重复主键检查和必要�?committed
+   * 可见性检查；这里在复用旧值写入事务本�?write set 后，同步维护本事务内 append
+   * high-water，让同一事务的后续追加批次可以继续走 fast path�?/p>
    *
    * @param dataKey row key
-   * @param value 已编码 row value
-   * @param oldValue 同一事务快照下的旧可见值；不存在时为 null
+   * @param value 已编�?row value
+   * @param oldValue 同一事务快照下的旧可见值；不存在时�?null
    * @throws SQLException 写入事务本地状态失败时抛出
    */
   public void putEncodedAppend(DataKey dataKey, RowValue value,
@@ -163,15 +152,14 @@ public class TxnMap2 {
   }
 
   /**
-   * 写入已经由调用方完成唯一性检查的 bulk append row。
-   *
+   * 写入已经由调用方完成唯一性检查的 bulk append row�?   *
    * <p>该入口不逐行更新 append high-water，供整批 append-safe 的批量写入使用；
-   * 调用方需要在批次成功登记后调用 {@link #recordAppendHighWater(TabId, long)}
-   * 一次性推进本事务内上界。失败路径会通过 savepoint rollback 清理 high-water。</p>
+   * 调用方需要在批次成功登记后调�?{@link #recordAppendHighWater(TabId, long)}
+   * 一次性推进本事务内上界。失败路径会通过 savepoint rollback 清理 high-water�?/p>
    *
    * @param dataKey row key
-   * @param value 已编码 row value
-   * @param oldValue 同一事务快照下的旧可见值；append-safe 场景通常为 null
+   * @param value 已编�?row value
+   * @param oldValue 同一事务快照下的旧可见值；append-safe 场景通常�?null
    * @throws SQLException 写入事务本地状态失败时抛出
    */
   public void putEncodedAppendAlreadyChecked(DataKey dataKey, RowValue value,
@@ -180,14 +168,13 @@ public class TxnMap2 {
   }
 
   /**
-   * 本地写入已经由调用方完成唯一性检查的 bulk append row。
-   *
+   * 本地写入已经由调用方完成唯一性检查的 bulk append row�?   *
    * <p>该入口只允许本地 append-safe fast path 使用：调用方已经确认没有 region commit
    * coordinator、没有二级索引失败面，并且在调用前完成了所有可能失败的行编码。方法只登记
-   * 事务本地 write-set / undo log / row-count delta，不访问底层 store。</p>
+   * 事务本地 write-set / undo log / row-count delta，不访问底层 store�?/p>
    *
    * @param dataKey row key
-   * @param value 已编码 row value
+   * @param value 已编�?row value
    */
   public void putEncodedAppendLocalAlreadyChecked(DataKey dataKey,
       RowValue value) {
@@ -195,9 +182,8 @@ public class TxnMap2 {
   }
 
   /**
-   * 判断当前事务是否可以跳过 append insert 的 committed 版本扫描。
-   *
-   * <p>事务内已经写过相同 key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入。</p>
+   * 判断当前事务是否可以跳过 append insert �?committed 版本扫描�?   *
+   * <p>事务内已经写过相�?key 时必须回退到完整可见性检查，避免同一事务内重复主键被误判为可插入�?/p>
    */
   public boolean canSkipAppendUniqueCheck(DataKey dataKey) {
     if (dataKey == null || !dataKey.isRow()) {
@@ -213,17 +199,15 @@ public class TxnMap2 {
   }
 
   /**
-   * 判断整批 append row 是否可以跳过 committed 唯一性扫描。
-   *
+   * 判断整批 append row 是否可以跳过 committed 唯一性扫描�?   *
    * <p>调用方必须已经完成批内主键去重。该方法只在整批范围与当前事务本地写集不重叠时才
-   * 返回 true，避免同一事务中先 update/delete 某个 rowId、随后 bulk insert 相同 rowId
-   * 时被 append high-water 误判为可直接插入。</p>
+   * 返回 true，避免同一事务中先 update/delete 某个 rowId、随�?bulk insert 相同 rowId
+   * 时被 append high-water 误判为可直接插入�?/p>
    *
-   * @param tabId 表 id 与 epoch
-   * @param minRowId 本批最小 rowId
-   * @param maxRowId 本批最大 rowId
-   * @return true 表示本批可以跳过 committed 可见性扫描
-   */
+   * @param tabId �?id �?epoch
+   * @param minRowId 本批最�?rowId
+   * @param maxRowId 本批最�?rowId
+   * @return true 表示本批可以跳过 committed 可见性扫�?   */
   public boolean canSkipAppendUniqueChecks(TabId tabId, long minRowId,
       long maxRowId) {
     if (tabId == null || minRowId > maxRowId
@@ -266,10 +250,9 @@ public class TxnMap2 {
   }
 
   /**
-   * 一次性推进当前事务内指定表的 append rowId 上界。
-   *
-   * @param tabId 表 id 与 epoch
-   * @param rowId 已写入批次的最大 rowId
+   * 一次性推进当前事务内指定表的 append rowId 上界�?   *
+   * @param tabId �?id �?epoch
+   * @param rowId 已写入批次的最�?rowId
    */
   public void recordAppendHighWater(TabId tabId, long rowId) {
     if (tabId == null) {
@@ -290,19 +273,39 @@ public class TxnMap2 {
   }
 
   /**
-   * 读取当前事务可见行的单列值。
+   * 读取当前事务可见行的单列值�?   *
+   * <p>该入口服�?JDBC 主键点查单列投影快路径，允许底层�?committed store 命中时直接从 RowValue
+   * 落盘字节�?payload 子区间解码目标列�?/p>
    *
-   * <p>该入口服务 JDBC 主键点查单列投影快路径，允许底层在 committed store 命中时直接从 RowValue
-   * 落盘字节的 payload 子区间解码目标列。</p>
-   *
-   * @param rowKey 行 key
+   * @param rowKey �?key
    * @param columnId 目标列号
-   * @return 可见列值；行不存在或已删除时返回 {@code null}
+   * @return 可见列值；行不存在或已删除时返�?{@code null}
    * @throws SQLException 可见性读取失败时抛出
    */
   public TxnManager.VisibleColumnValue getVisibleColumn(RowKey rowKey,
       int columnId) throws SQLException {
     return txnManager.getVisibleColumn(transaction, rowKey, columnId);
+  }
+
+  /**
+   * 复用指定版本读会话读取当前事务可见的单列值�?   *
+   * @param readSession 与当前表修改世代匹配的版本读会话
+   * @param rowKey �?key
+   * @param columnId 目标列号
+   * @return 可见列值；行不可见时返�?{@code null}
+   * @throws SQLException 读取底层版本数据失败时抛�?   */
+  public TxnManager.VisibleColumnValue getVisibleColumn(
+      VersionReadSession readSession, RowKey rowKey, int columnId)
+      throws SQLException {
+    return txnManager.getVisibleColumn(transaction, rowKey, columnId,
+        readSession);
+  }
+
+  /**
+   * 打开默认 CF 的版本读会话，供 JDBC 热路径按表修改世代复用�?   *
+   * @return 新的版本读会�?   */
+  public VersionReadSession openVersionReadSession() {
+    return txnManager.openVersionReadSession();
   }
 
   public RowValue delete(DataKey key) throws SQLException {
@@ -319,15 +322,22 @@ public class TxnMap2 {
   }
 
   /**
-   * 统计当前事务快照下指定 rowId 范围内可见的行数。
-   *
-   * @param prefixKey 表 row 前缀
-   * @param min 最小 rowId，null 表示无下界
-   * @param max 最大 rowId，null 表示无上界
-   * @return 可见且未删除的行数
-   */
+   * 统计当前事务快照下指�?rowId 范围内可见的行数�?   *
+   * @param prefixKey �?row 前缀
+   * @param min 最�?rowId，null 表示无下�?   * @param max 最�?rowId，null 表示无上�?   * @return 可见且未删除的行�?   */
   public long countVisibleRows(PrefixKey prefixKey, Long min, Long max) {
     return txnManager.countVisibleRows(transaction, prefixKey, min, max);
+  }
+
+  /**
+   * 复用指定版本读会话统计当前事务可见行数�?   *
+   * @param readSession 与当前表修改世代匹配的版本读会话
+   * @param prefixKey �?row 前缀
+   * @param min 最�?rowId，null 表示无下�?   * @param max 最�?rowId，null 表示无上�?   * @return 可见且未删除的行�?   */
+  public long countVisibleRows(VersionReadSession readSession,
+      PrefixKey prefixKey, Long min, Long max) {
+    return txnManager.countVisibleRows(transaction, prefixKey, min, max,
+        readSession);
   }
 
   public IndexScanCursor indexScanIterator(PrefixKey prefixKey, TableKey min, TableKey max){
@@ -356,7 +366,7 @@ public class TxnMap2 {
 
     DataKey rowKey = RowKey.of(getTabId(indexKey.getTableId()), existingRowId);
 
-    // 鍙熀浜庡綋鍓嶄簨鍔″彲瑙佽鍥惧垽鏂?
+    // 鍙熀浜庡綋鍓嶄簨鍔″彲瑙佽鍥惧垽�?
     RowValue visible = getVisible(rowKey);
     if (isUsableRow(visible)) {
       return UniqueCheckResult.DUPLICATE;
@@ -419,17 +429,14 @@ public class TxnMap2 {
   }
 
   /**
-   * 在当前事务中登记二级索引 key 写入。
-   *
-   * <p>与 {@link #addIndexBatch(IndexPrefix, Collection)} 不同，该方法不直接写
+   * 在当前事务中登记二级索引 key 写入�?   *
+   * <p>�?{@link #addIndexBatch(IndexPrefix, Collection)} 不同，该方法不直接写
    * committed version，而是写入事务本地 write set，使普通用户事务的 commit、rollback
-   * 和 savepoint 语义与 row 写入保持一致。调用方已经在 bulk insert 阶段完成主键、
-   * 唯一索引和批内冲突校验；二级索引 key 又包含 rowId，因此这里不再逐个执行
-   * {@code getVisible(indexKey)}，避免每个索引项都打开一次版本扫描。</p>
+   * �?savepoint 语义�?row 写入保持一致。调用方已经�?bulk insert 阶段完成主键�?   * 唯一索引和批内冲突校验；二级索引 key 又包�?rowId，因此这里不再逐个执行
+   * {@code getVisible(indexKey)}，避免每个索引项都打开一次版本扫描�?/p>
    *
-   * @param indexKeys 需要随当前事务提交的索引 key
-   * @throws SQLException 可见性检查或事务写入失败时抛出
-   */
+   * @param indexKeys 需要随当前事务提交的索�?key
+   * @throws SQLException 可见性检查或事务写入失败时抛�?   */
   public void putIndexKeys(Collection<IndexKey> indexKeys) throws SQLException {
     for (IndexKey indexKey : indexKeys) {
       RowValue indexValue = new RowValue();

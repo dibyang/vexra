@@ -37,6 +37,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 public class LdbStore implements DbStore {
 
   public static final String ADB = "adb";
+  private static final String ASYNC_WRITE_COMBINING_ENABLED_PROPERTY =
+      "vexra.adb.ldb.asyncWriteCombining.enabled";
+  private static final String ASYNC_WRITE_COMBINING_MAX_DELAY_NANOS_PROPERTY =
+      "vexra.adb.ldb.asyncWriteCombining.maxDelayNanos";
   private final Options options;
   private final File dbRootDir;
   private final File slotADir;
@@ -86,6 +90,7 @@ public class LdbStore implements DbStore {
         .filterPolicy(new BloomFilterPolicy(10))
         .compressionType(CompressionType.LZ4)
         .addPlugin(adbLdbPlugin);
+    configureAsyncWriteCombining(options);
 
     defCF = adbLdbPlugin.getDefaultColumnFamily();
     metaCF = adbLdbPlugin.getMetaColumnFamily();
@@ -94,6 +99,18 @@ public class LdbStore implements DbStore {
     ensureSlotDirExists(getSlotDir(activeSlot));
     persistActiveSlot(activeSlot); // 启动时顺手纠正/初始化 ACTIVE
     openDb();
+  }
+
+  private static void configureAsyncWriteCombining(Options options) {
+    if (!Boolean.getBoolean(ASYNC_WRITE_COMBINING_ENABLED_PROPERTY)) {
+      return;
+    }
+    options.asyncWriteCombiningEnabled(true);
+    Long maxDelayNanos = Long.getLong(
+        ASYNC_WRITE_COMBINING_MAX_DELAY_NANOS_PROPERTY);
+    if (maxDelayNanos != null) {
+      options.asyncWriteCombiningMaxDelayNanos(maxDelayNanos);
+    }
   }
 
   private File getSlotDir(String slot) {
@@ -418,6 +435,35 @@ public class LdbStore implements DbStore {
       return new LdbVersionEntryCursor(
           current.newSnapshotCursor(current.getColumnFamily(cfId)),
           direction);
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  @Override
+  public VersionReadSession openVersionReadSession() {
+    readLock.lock();
+    try {
+      LDB current = db;
+      if (current == null) {
+        throw new IllegalStateException("Database is closed");
+      }
+      return new LdbVersionReadSession(current.openReadSession());
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  @Override
+  public VersionReadSession openVersionReadSession(byte cfId) {
+    readLock.lock();
+    try {
+      LDB current = db;
+      if (current == null) {
+        throw new IllegalStateException("Database is closed");
+      }
+      return new LdbVersionReadSession(
+          current.openReadSession(current.getColumnFamily(cfId)));
     } finally {
       readLock.unlock();
     }

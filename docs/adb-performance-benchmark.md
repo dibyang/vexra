@@ -14,7 +14,7 @@
 | --- | --- |
 | 日期 | 2026-06-21 |
 | ADB 模块 | `vexra-adb` |
-| ldb 版本 | `0.10.0` |
+| ldb 版本 | `0.12.0-SNAPSHOT` |
 | 行数 | 5000 |
 | 预热操作数 | 300 |
 | 正式操作数 | 3000 |
@@ -4816,3 +4816,206 @@ benchmark：
   预置数据写入后进程内 segment cache 是热的；读后压实场景由低阈值 JUnit 冷读测试覆盖。
 - 第 5 项剩余更高价值工作是 segment rebuild / 成本模型，以及进一步缩小
   `ADB_TABLE_RANGE_COUNT_FAST` 外层固定成本。
+
+## 第七十六轮：对接 ldb 0.12.0-SNAPSHOT cursor view API
+
+本轮按 ldb 的新 API 建议推进 ADB 接入：
+
+1. 将 `vexra-ldb` 依赖切到 `0.12.0-SNAPSHOT`。
+2. 用 `javap` 确认当前 classpath 中 `SnapshotCursor` 已暴露
+   `seek(byte[], byte[])`、`keyView()`、`valueView()`、`keyStartsWith(...)` 和
+   `isKeyBefore(...)`。
+3. `VersionScanSource` 增加默认 `keyView()` / `valueView()` / `keyStartsWith(...)`
+   / `isKeyBefore(...)`，Rocks/Raft 等旧实现仍保持 byte[] 兼容。
+4. `LdbVersionEntryCursor` 覆盖 view API，直接委托给 ldb `SnapshotCursor`，避免
+   LDB 热路径上的 key/value 复制。
+5. `TxnManager` 的 range count raw scan、point lookup committed fallback 和
+   单列可见性读取改用 `Slice` view 解析 key/value，减少 `VersionScanSource.key()`
+   / `value()` 数组复制。
+6. 明确 ldb `seek(byte[], byte[])` 语义为 `[begin,end)`，
+   `seekClosed(byte[], byte[])` 语义为 `[begin,end]` 后，ADB 直接启用 bounded
+   seek：普通半开字节范围走 `seek(begin,end)`；逻辑 rowId 闭区间扫描先映射为完整
+   version-row 物理 key 上界，再走 `seekClosed(begin,end)`。
+7. 修正 `TableScanCursor` 的 row seek key 编码，使用与 `RowKey` / `VersionRowKey`
+   一致的 rowId 符号位翻转。该问题过去因底层未真正使用 upper bound 不明显，启用
+   bounded seek 后会导致正数 rowId 有界扫描落到错误范围。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.queriesAndDeletesRowsThroughPrimaryAndSecondaryIndexes --tests net.xdob.vexra.adb.h2plugin.AdbTableProviderIntegrationTest.rangeCountSeesLocalDeleteAndRollback
+.\gradlew.bat :vexra-adb:test
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | 口径 | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `mixed` | ADB, 8 线程, batch100, rangeSize 4096 | 14423.08 | 6784 | 185162 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2, 8 线程, batch100, rangeSize 4096 | 25000.00 | 4621 | 28676 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/h2_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB, rangeSize 4096 | 1969.80 | 1360 | 163524 | `vexra-adb/build/adb-benchmark/ldb012-view-20260623-192421/adb_range_scan_4096.properties` |
+| `mixed` | ADB 复跑 | 14218.01 | 7189 | 184854 | `vexra-adb/build/adb-benchmark/ldb012-view-repeat-20260623-192519/adb_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB 复跑 | 2250.56 | 1292 | 164332 | `vexra-adb/build/adb-benchmark/ldb012-view-repeat-20260623-192519/adb_range_scan_4096.properties` |
+| `mixed` | ADB + bounded seek / seekClosed，8 线程, batch100, rangeSize 4096 | 17647.06 | 4452 | 184807 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2 同口径复跑 | 27777.78 | 7047 | 28702 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/h2_mixed_threads8_batch100.properties` |
+| `range_scan` | ADB + bounded seek / seekClosed，rangeSize 4096 | 2093.51 | 1430 | 163549 | `vexra-adb/build/adb-benchmark/ldb012-seekclosed-20260623-195807/adb_range_scan_4096.properties` |
+
+与上一轮 ADB/H2 对比样本相比：
+
+- `mixed_threads8_batch100` ADB 从 `13043.48 ops/s` 提升到约 `14.2k-14.4k ops/s`，
+  吞吐约提升 `9%-11%`；ADB/H2 从约 `0.44x` 提升到约 `0.57x`。
+- 完整接入 bounded seek / seekClosed 后，`mixed_threads8_batch100` ADB 进一步到
+  `17647.06 ops/s`，相对 `0.11.0` 对比样本提升约 `35%`，约为本轮 H2 复跑
+  `27777.78 ops/s` 的 `0.64x`。
+- `mixed` allocation 从约 `736128 bytes/op` 降到约 `185k bytes/op`，下降约 `75%`。
+- `range_scan_4096` allocation 从约 `1149881 bytes/op` 降到约 `164k bytes/op`，
+  下降约 `86%`；bounded seek / seekClosed 后 `2093.51 ops/s`，仍低于上一轮
+  `2744.74 ops/s` 样本，需要后续用更长窗口拆 `seek/next/valueView` 时间确认是否是
+  ldb 0.12 snapshot 波动、segment/range count 成本，还是短窗口 IO/JIT 波动。
+
+结论：
+
+1. ldb `keyView/valueView` 接入对 mixed 和 range allocation 有明确收益，是正确方向。
+2. ldb `seek(begin,end)` / `seekClosed(begin,end)` 的区间语义已经可用于 ADB；
+   ADB 侧的关键是区分“字节半开范围”和“逻辑 rowId 闭区间映射出的完整物理 key 上界”。
+3. mixed 与 H2 的吞吐差距缩小但仍明显，下一步应在 ADB 内补更细的
+   `LDB_SEEK/NEXT/VALUE_VIEW` 诊断阶段，定位剩余时间是否集中在 cursor next、MVCC
+   分组解析还是 H2 层执行器成本。
+
+## 第七十七轮：接入 ldb `SnapshotCursor.countRemaining()`
+
+ldb 0.12.0-SNAPSHOT 补充了 `SnapshotCursor.countRemaining()`，语义是从当前 cursor
+位置开始只推进 cursor 并统计剩余 KV 条目数，不读取 `key()` / `value()`。ADB 本轮完成
+安全接入：
+
+1. `VersionScanSource` 增加默认 `countRemaining()`，默认实现逐条 `advance()`，用于
+   Rocks/Raft 等旧实现兼容。
+2. `LdbVersionEntryCursor` 覆盖 `countRemaining()`，直接委托 ldb
+   `SnapshotCursor.countRemaining()`，避免 LDB 物理范围计数路径生成每行 key/value
+   byte[]。
+3. `AdbBenchmarkMain` 的 `store` 模式 range_scan 改用 `countRemaining()`，该路径计数
+   的是物理 KV 范围，和 API 语义一致。
+4. SQL `COUNT(*)` 暂不直接替换为 `countRemaining()`：ADB SQL 计数需要处理 MVCC
+   可见版本、delete 标记、本地写和 rollback；直接计数物理 KV 条目会在多版本或删除场景
+   产生错误结果。后续如要进入 SQL range count，需要新增“该范围物理条目数等于可见逻辑行数”
+   的元数据或证明条件。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | 口径 | ops/s | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | --- |
+| `range_scan` | `store` 模式，rangeSize 4096，使用 `countRemaining()` | 1332.15 | 1383 | 166185 | `vexra-adb/build/adb-benchmark/ldb012-countremaining-20260623-210444/store_range_scan_4096.properties` |
+
+结论：
+
+1. ADB 已具备使用 ldb 低分配物理计数 API 的入口。
+2. 当前 store benchmark 仍有较高 allocation，说明剩余分配不只来自 ADB 调用
+   `key()/value()`；下一步需要拆 ldb `countRemaining()/next` 内部、benchmark 外层和
+   store cursor 生命周期成本。
+3. SQL range count 的高价值优化方向不是直接替换 raw scan，而是建立“可见逻辑行数可由物理
+   计数安全推导”的条件，例如更强的 compact/latest-row 索引、segment 元数据或范围内无多版本证明。
+
+## 第七十八轮：接入 ldb ReadSession 复用读 cursor
+
+本轮按 ldb 对 ADB 的配合建议推进：
+
+1. `DbStore` 增加 ADB 自身的 `VersionReadSession` 抽象，避免把
+   `net.xdob.vexra.ldb.ReadSession` 泄漏到通用 store 接口。
+2. 默认 `VersionReadSession` 基于 `VersionScanSource` 兼容旧 store；`LdbStore`
+   覆盖为真正的 `LDB.openReadSession()`。
+3. `store` benchmark 在一次 benchmark 生命周期内复用同一个 `VersionReadSession`，
+   range/table_count/mixed 中的物理范围计数走 `countClosed(begin,end)`。
+4. `LdbStore` 增加实验性 async write combining 开关：
+   `vexra.adb.ldb.asyncWriteCombining.enabled=true`，以及
+   `vexra.adb.ldb.asyncWriteCombining.maxDelayNanos`；默认仍关闭。
+5. SQL `COUNT(*)` 仍未直接改成 `ReadSession.countClosed`，原因同第七十七轮：SQL
+   语义是 MVCC 可见逻辑行计数，不是物理 KV 计数。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.ldb.LdbVersionEntryCursorTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunStoreBenchmarkAgainstLdbStore
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | 口径 | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `range_scan` | `store`，rangeSize 4096，ReadSession `countClosed` | 5976.10 | 150 | 289 | 500 | 165606 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_range_scan_4096.properties` |
+| `mixed` | `store`，rangeSize 4096，ReadSession 复用 | 14851.49 | 2 | 388 | 682 | 36449 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_mixed_range4096.properties` |
+| `mixed` | `store`，ReadSession + asyncWriteCombining | 14705.88 | 2 | 382 | 691 | 36453 | `vexra-adb/build/adb-benchmark/readsession-20260624-105911/store_mixed_range4096_async.properties` |
+
+与第七十七轮每次 range 打开 cursor 的 `store range_scan_4096` 样本相比：
+
+- 吞吐从 `1332.15 ops/s` 提升到 `5976.10 ops/s`，约 `4.49x`。
+- p99 从 `1383 us` 降到 `500 us`。
+- allocation 基本持平：`166185 bytes/op` 到 `165606 bytes/op`，说明 `ReadSession`
+  主要减少 cursor 打开和 seek 路径成本，未解决剩余分配。
+
+结论：
+
+1. `ReadSession` 复用 cursor 对物理 range/mixed 读路径有明确吞吐和延迟收益。
+2. async write combining 在当前单线程 `store mixed` profile 中没有收益，仍应保持默认关闭；
+   后续只适合在 ADB mixed 高并发异步写 profile 单独评估。
+3. 下一步高价值工作是把 `ReadSession` 安全引入 SQL 执行 worker / 事务批次读路径，但必须
+   先定义 snapshot 生命周期边界，避免跨事务复用固定 snapshot 导致读可见性过旧。
+
+## 第七十九轮：allocation 分界 benchmark
+
+本轮补充 4 个 `store` 模式 allocation 分界 workload，用同一批 ADB 物理 row
+version key/value 数据拆分分配来源：
+
+1. `alloc_count_closed`：只调用 `ReadSession.countClosed(begin,end)`。
+2. `alloc_scan_empty`：调用 `ReadSession.scanClosed(begin,end, empty visitor)`。
+3. `alloc_scan_view`：`scanClosed` 中只访问 `keyView.length()` /
+   `valueView.length()`。
+4. `alloc_scan_materialize`：`scanClosed` 中复制 key view、解码
+   `VersionKey`、`RowValue.decodeValueView`、列解码并构造 `DefaultRow`。
+
+适配层测试同时确认 ADB `LdbVersionReadSession` 只委托 `ReadSession.countClosed`
+和 `ReadSession.scanClosed`，没有通过 `ReadSession.cursor()` 逃逸回
+`cursor.key()/cursor.value()` 热路径。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.ldb.LdbVersionReadSessionTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest.shouldRunStoreAllocationBoundaryBenchmarks
+```
+
+验证结果：通过。
+
+benchmark：
+
+| workload | 口径 | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `alloc_count_closed` | `ReadSession.countClosed(begin,end)` | 6772.01 | 129 | 260 | 432 | 162632 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_count_closed.properties` |
+| `alloc_scan_empty` | `scanClosed(begin,end, empty visitor)` | 2304.15 | 417 | 680 | 1068 | 162733 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_empty.properties` |
+| `alloc_scan_view` | `scanClosed + keyView/valueView only` | 2290.08 | 426 | 651 | 992 | 162783 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_view.properties` |
+| `alloc_scan_materialize` | `scanClosed + 完整 ADB row materialization` | 631.45 | 1341 | 2932 | 3687 | 2477237 | `vexra-adb/build/adb-benchmark/allocation-boundary-20260624-110957/alloc_scan_materialize.properties` |
+
+归因结论：
+
+1. `countClosed`、空 visitor、view-only 三档 allocation 基本一致，约
+   `162.6KB/op - 162.8KB/op`。这说明本轮测到的主要固定分配不来自 ADB
+   `key()/value()` 拷贝，也不来自简单 view 访问；更可能在 LDB cursor 内部、range seek
+   状态重建或 benchmark 外层。
+2. `scanClosed` 从 count-only 到 visitor 模式吞吐下降明显：`6772 ops/s` 到
+   `~2300 ops/s`，说明 callback/逐条遍历边界主要影响 CPU/延迟，不明显增加 allocation。
+3. 完整 ADB row materialization 将 allocation 提升到 `~2.48MB/op`，是当前三段拆分里
+   最主要的分配来源；后续优化应优先减少 key copy、RowValue payload copy、列解码
+   `Value[]/DefaultRow` 对象创建。
+4. async write combining 继续不默认启用；只保留多线程 async 写 profile 的可选开关。
