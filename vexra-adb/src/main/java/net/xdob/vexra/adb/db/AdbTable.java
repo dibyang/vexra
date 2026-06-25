@@ -778,6 +778,57 @@ public class AdbTable extends TableBase {
   }
 
   /**
+   * 尝试写入已经编码好的 append-only 多行 payload。
+   *
+   * <p>该入口只给 JDBC prepared insert 的极窄 raw fast path 使用。调用方已经完成
+   * rowId 提取和 payload 编码；这里仍统一检查本地写入、无二级索引、无 region commit
+   * coordinator、整批 append-safe 等条件。不满足时返回 {@code null}，调用方必须回退到
+   * 常规 bulk insert 路径以保留完整 SQL 语义。</p>
+   *
+   * @param session 当前 H2 session
+   * @param rowIds 按插入顺序排列的 rowId
+   * @param payloads 与 rowIds 一一对应的 RowCodec payload
+   * @return 命中时返回写入行数；不命中时返回 {@code null}
+   */
+  public Integer tryBulkInsertEncodedAppendRows(SessionLocal session,
+      long[] rowIds, byte[][] payloads) {
+    if (rowIds == null || payloads == null || rowIds.length == 0
+        || rowIds.length != payloads.length || hasAdbSecondaryIndex()
+        || getSqlDistributedWriteRuntime() != null
+        || txnManager.getRegionCommitCoordinator() != null) {
+      return null;
+    }
+    BulkRowIdRange rowIdRange = prepareEncodedBulkRowIds(rowIds, payloads);
+    TxnMap2 map = getTxnMap(session);
+    TabId tabId = map.getTabId(getId());
+    if (!map.canSkipAppendUniqueChecks(tabId, rowIdRange.minRowId,
+        rowIdRange.maxRowId)) {
+      return null;
+    }
+    long startMillis = System.currentTimeMillis();
+    RuntimeException failure = null;
+    try {
+      syncLastModificationIdWithDatabase();
+      long txnId = map.getTransaction().getTxnId();
+      for (int i = 0; i < rowIds.length; i++) {
+        map.putEncodedAppendLocalAlreadyChecked(RowKey.of(tabId, rowIds[i]),
+            rowValue(txnId, payloads[i]));
+      }
+      map.recordAppendHighWater(tabId, rowIdRange.maxRowId);
+      recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, null);
+      analyzeIfRequired(session);
+      return Integer.valueOf(rowIds.length);
+    } catch (RuntimeException e) {
+      failure = e;
+      throw e;
+    } finally {
+      if (failure != null) {
+        recordSqlDiagnostic("INSERT", "BULK_ADD_ROW", startMillis, failure);
+      }
+    }
+  }
+
+  /**
    * 在当前 JDBC session 的 ADB 事务内追加写入单行。
    *
    * <p>该入口服务参数化单行 INSERT，避免先创建 singleton list 再进入多行 bulk
@@ -988,6 +1039,41 @@ public class AdbTable extends TableBase {
       maxRowId = Math.max(maxRowId, rowId);
     }
     return new BulkRowIdRange(minRowId, maxRowId, strictlyIncreasingRowIds);
+  }
+
+  private BulkRowIdRange prepareEncodedBulkRowIds(long[] rowIds,
+      byte[][] payloads) {
+    long minRowId = Long.MAX_VALUE;
+    long maxRowId = Long.MIN_VALUE;
+    long previousRowId = Long.MIN_VALUE;
+    boolean hasPreviousRowId = false;
+    boolean strictlyIncreasingRowIds = true;
+    for (int i = 0; i < rowIds.length; i++) {
+      if (payloads[i] == null || payloads[i].length == 0) {
+        throw DbException.getInvalidValueException("payload", payloads[i]);
+      }
+      long rowId = rowIds[i];
+      if (hasPreviousRowId && rowId <= previousRowId) {
+        strictlyIncreasingRowIds = false;
+      }
+      previousRowId = rowId;
+      hasPreviousRowId = true;
+      minRowId = Math.min(minRowId, rowId);
+      maxRowId = Math.max(maxRowId, rowId);
+    }
+    if (!strictlyIncreasingRowIds) {
+      assertNoDuplicateEncodedRowIds(rowIds);
+    }
+    return new BulkRowIdRange(minRowId, maxRowId, strictlyIncreasingRowIds);
+  }
+
+  private void assertNoDuplicateEncodedRowIds(long[] rowIds) {
+    Set<Long> uniqueRowIds = new HashSet<>(hashCapacity(rowIds.length));
+    for (long rowId : rowIds) {
+      if (!uniqueRowIds.add(rowId)) {
+        throw duplicateKey(rowId, null);
+      }
+    }
   }
 
   private static final class BulkRowIdRange {

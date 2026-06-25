@@ -50,6 +50,8 @@ final class AdbPreparedStatementProxy {
     private final boolean[] parameterSet;
     private final SetterCall[] deferredSetters;
     private boolean delegateMayHaveParameters;
+    private boolean insertFastPathConfirmed;
+    private boolean insertParametersComplete;
     private int lastUpdateCount = -1;
 
     private Handler(Connection connection, PreparedStatement delegate,
@@ -77,26 +79,14 @@ final class AdbPreparedStatementProxy {
         throws Throwable {
       String name = method.getName();
       if (isSetter(name, args)) {
-        int parameter = ((Integer) args[0]).intValue();
-        if (parameter <= 0 || parameter >= parameters.length) {
-          return invokeDelegate(method, args);
-        }
-        parameterSet[parameter] = true;
-        parameters[parameter] = "setNull".equals(name) ? null
-            : args.length > 1 ? args[1] : null;
-        SetterCall setter = deferredSetters[parameter];
-        if (setter == null) {
-          setter = new SetterCall();
-          deferredSetters[parameter] = setter;
-        }
-        setter.capture(name, method, args);
-        return null;
+        return setParameter(method, args, name);
       }
       if ("clearParameters".equals(name)) {
         java.util.Arrays.fill(parameters, null);
         java.util.Arrays.fill(parameterSet, false);
         clearDeferredSetters();
         delegateMayHaveParameters = false;
+        insertParametersComplete = false;
         return invokeDelegate(method, args);
       }
       if ("close".equals(name) && noSqlArgument(args)) {
@@ -166,6 +156,31 @@ final class AdbPreparedStatementProxy {
         replayDeferredSetters();
       }
       return invokeDelegate(method, args);
+    }
+
+    private Object setParameter(Method method, Object[] args, String name)
+        throws Throwable {
+      int parameter = ((Integer) args[0]).intValue();
+      if (parameter <= 0 || parameter >= parameters.length) {
+        return invokeDelegate(method, args);
+      }
+      parameterSet[parameter] = true;
+      parameters[parameter] = "setNull".equals(name) ? null
+          : args.length > 1 ? args[1] : null;
+      if (insertFastPathConfirmed && insertPlan != null) {
+        SetterCall setter = deferredSetters[parameter];
+        if (setter != null) {
+          setter.clear();
+        }
+        return null;
+      }
+      SetterCall setter = deferredSetters[parameter];
+      if (setter == null) {
+        setter = new SetterCall();
+        deferredSetters[parameter] = setter;
+      }
+      setter.capture(name, method, args);
+      return null;
     }
 
     private Object close(Method method, Object[] args) throws Throwable {
@@ -238,8 +253,19 @@ final class AdbPreparedStatementProxy {
     }
 
     private Integer tryExecuteInsert() throws java.sql.SQLException {
-      return insertPlan == null ? null
+      if (insertPlan == null) {
+        return null;
+      }
+      Integer count = insertParametersComplete
+          ? insertPlan.tryExecuteKnownComplete(connection, parameters)
           : insertPlan.tryExecute(connection, parameters, parameterSet);
+      if (count != null) {
+        insertFastPathConfirmed = true;
+        insertParametersComplete = true;
+        clearDeferredSetters();
+        delegateMayHaveParameters = false;
+      }
+      return count;
     }
 
     private static int parameterCount(AdbPreparedInsertPlan plan) {

@@ -1,17 +1,20 @@
 package net.xdob.vexra.adb.jdbc;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
+import net.xdob.vexra.adb.db.DynamicByteBuffer;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
 import org.h2.jdbc.JdbcConnection;
 import org.h2.result.DefaultRow;
 import org.h2.result.Row;
+import org.h2.result.SearchRow;
 import org.h2.schema.Schema;
 import org.h2.table.Column;
 import org.h2.table.Table;
@@ -136,10 +139,38 @@ final class AdbPreparedInsertPlan {
     if (!hasAllParameters(parameters, parameterSet)) {
       return null;
     }
+    return tryExecuteKnownComplete(connection, parameters);
+  }
+
+  /**
+   * 执行已确认参数完整的 ADB bulk insert。
+   *
+   * <p>同一个 PreparedStatement 首次命中 fast path 后，后续执行在未
+   * {@code clearParameters()} 的情况下可复用 JDBC 参数完整性结论，避免每批 insert
+   * 再扫描所有参数位。调用方仍需负责在清参后回到普通 {@link #tryExecute(Connection,
+   * Object[], boolean[])} 路径。</p>
+   *
+   * @param connection h2db 原始连接
+   * @param parameters 当前 PreparedStatement 参数
+   * @return 命中 bulk path 时返回写入行数；目标不再是 ADB 表时返回 {@code null}
+   * @throws SQLException bulk 写入失败时抛出
+   */
+  Integer tryExecuteKnownComplete(Connection connection, Object[] parameters)
+      throws SQLException {
+    if (parameters == null || parameters.length <= parameterCount()) {
+      return null;
+    }
     SessionLocal session = resolveSession(connection);
     AdbTable table = resolveAdbTable(session);
     if (table == null) {
       return null;
+    }
+    Integer rawCount = tryExecuteRawAppend(session, table, parameters);
+    if (rawCount != null) {
+      if (connection.getAutoCommit()) {
+        connection.commit();
+      }
+      return rawCount;
     }
     int count = rowCount == 1
         ? table.bulkInsertAppendRow(session, row(session, table, parameters))
@@ -148,6 +179,112 @@ final class AdbPreparedInsertPlan {
       connection.commit();
     }
     return Integer.valueOf(count);
+  }
+
+  private Integer tryExecuteRawAppend(SessionLocal session, AdbTable table,
+      Object[] parameters) {
+    if (rowCount <= 1 || table.getMainIndexColumn() == SearchRow.ROWID_INDEX) {
+      return null;
+    }
+    Column[] tableColumns = tableColumns(table);
+    Column[] insertColumns = insertColumns(table);
+    if (!isFullTableColumnOrder(tableColumns, insertColumns)) {
+      return null;
+    }
+    int mainIndexColumn = table.getMainIndexColumn();
+    if (mainIndexColumn < 0 || mainIndexColumn >= tableColumns.length
+        || !supportsRawAppend(tableColumns)) {
+      return null;
+    }
+    long[] rowIds = new long[rowCount];
+    byte[][] payloads = new byte[rowCount][];
+    int parameter = 1;
+    for (int row = 0; row < rowCount; row++) {
+      Object[] rawValues = new Object[tableColumns.length];
+      for (Column ignored : insertColumns) {
+        Object raw = parameters[parameter++];
+        if (raw == null) {
+          return null;
+        }
+        rawValues[parameterColumnIndex(insertColumns, parameter - 2)] = raw;
+      }
+      Object rowId = rawValues[mainIndexColumn];
+      if (!(rowId instanceof Number)) {
+        return null;
+      }
+      rowIds[row] = ((Number) rowId).longValue();
+      payloads[row] = encodeRawRow(tableColumns, rawValues);
+      if (payloads[row] == null) {
+        return null;
+      }
+    }
+    return table.tryBulkInsertEncodedAppendRows(session, rowIds, payloads);
+  }
+
+  private static int parameterColumnIndex(Column[] insertColumns,
+      int parameterIndex) {
+    return insertColumns[parameterIndex % insertColumns.length].getColumnId();
+  }
+
+  private static boolean isFullTableColumnOrder(Column[] tableColumns,
+      Column[] insertColumns) {
+    if (tableColumns == null || insertColumns == null
+        || tableColumns.length != insertColumns.length) {
+      return false;
+    }
+    for (int i = 0; i < tableColumns.length; i++) {
+      if (tableColumns[i] != insertColumns[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static boolean supportsRawAppend(Column[] columns) {
+    for (Column column : columns) {
+      int type = column.getType().getValueType();
+      if (type != Value.BIGINT && type != Value.VARCHAR) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static byte[] encodeRawRow(Column[] columns, Object[] values) {
+    DynamicByteBuffer row = new DynamicByteBuffer(64);
+    row.putInt(Value.ROW);
+    row.putInt(columns.length);
+    for (int i = 0; i < columns.length; i++) {
+      int type = columns[i].getType().getValueType();
+      Object value = values[i];
+      byte[] encoded;
+      if (type == Value.BIGINT && value instanceof Number) {
+        encoded = encodeRawBigint(((Number) value).longValue());
+      } else if (type == Value.VARCHAR && value instanceof String) {
+        encoded = encodeRawVarchar((String) value);
+      } else {
+        return null;
+      }
+      row.putInt(encoded.length);
+      row.put(encoded);
+    }
+    return row.toArray();
+  }
+
+  private static byte[] encodeRawBigint(long value) {
+    return new DynamicByteBuffer(12)
+        .putInt(Value.BIGINT)
+        .putLong(value)
+        .toArray();
+  }
+
+  private static byte[] encodeRawVarchar(String value) {
+    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+    return new DynamicByteBuffer(8 + bytes.length)
+        .putInt(Value.VARCHAR)
+        .putInt(bytes.length)
+        .put(bytes)
+        .toArray();
   }
 
   /**
