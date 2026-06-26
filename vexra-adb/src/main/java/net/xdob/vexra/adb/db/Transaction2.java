@@ -18,14 +18,14 @@ public class Transaction2 {
       segmentRowCountDeltas = new ConcurrentHashMap<>();
 
   private TxnState state = TxnState.PENDING;
-  private final List<OLdEntry> undoLogs = new ArrayList<>();
+  private final List<OLdEntry> undoLogs = new ArrayList<>(128);
   private final Map<String, Savepoint2> savepoints = new HashMap<>();
 
   // key -> 璇诲埌鐨?committed version(commitTs), 涓嶅瓨鍦ㄨ 0
   private final Map<DataKey, Long> readVersions = new HashMap<>();
 
   // key -> 褰撳墠浜嬪姟鏈€缁堝噯澶囨彁浜ょ殑鍊?
-  private final Map<DataKey, RowValue> writeSet = new LinkedHashMap<>();
+  private final Map<DataKey, RowValue> writeSet = new LinkedHashMap<>(128);
 
   private final Map<TabId, LocalRowWriteBounds> localRowWriteBounds =
       new HashMap<>();
@@ -360,9 +360,18 @@ public class Transaction2 {
     if (key == null || !key.isRow()) {
       return;
     }
+    recordLocalRowWriteBound(key.getTabID(), key.getRowId(), key.getRowId());
+  }
+
+  private void recordLocalRowWriteBound(TabId tabId, long minRowId,
+      long maxRowId) {
+    if (tabId == null || minRowId == Long.MAX_VALUE
+        || maxRowId == Long.MIN_VALUE) {
+      return;
+    }
     LocalRowWriteBounds bounds = localRowWriteBounds.computeIfAbsent(
-        key.getTabID(), ignored -> new LocalRowWriteBounds());
-    bounds.record(key.getRowId());
+        tabId, ignored -> new LocalRowWriteBounds());
+    bounds.record(minRowId, maxRowId);
   }
 
   private static final class LocalRowWriteBounds {
@@ -370,12 +379,12 @@ public class Transaction2 {
     private long min = Long.MAX_VALUE;
     private long max = Long.MIN_VALUE;
 
-    private void record(long rowId) {
-      if (rowId < min) {
-        min = rowId;
+    private void record(long minRowId, long maxRowId) {
+      if (minRowId < min) {
+        min = minRowId;
       }
-      if (rowId > max) {
-        max = rowId;
+      if (maxRowId > max) {
+        max = maxRowId;
       }
     }
 

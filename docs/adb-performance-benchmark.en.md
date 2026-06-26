@@ -5963,3 +5963,50 @@ Attribution:
    `Value[]/DefaultRow` object creation during column decoding.
 4. async write combining remains disabled by default. It is only kept as an
    optional switch for multi-threaded async-write profiles.
+
+## Round 80: SQL Mixed Recovery Confirmation
+
+This round rechecked why `mixed_threads8_batch100` had not recovered to a level
+close to H2. The conclusion is that the regression was mainly in ADB hot-path
+code, not in ldb write throughput. The retained positive fixes are:
+
+1. `TxnMap2.latestCommittedTs()` now uses the real latest committed watermark
+   instead of treating the timestamp generator's advanced value as committed.
+2. The point-lookup latest committed column cache now records a store-derived
+   cache epoch. Ordinary commits no longer invalidate the cache unnecessarily;
+   external restore or lower-level cache replacement still does.
+3. Segment range count is enabled by default with a metadata-completeness guard.
+   Old databases or incomplete metadata fall back to raw visible counting.
+4. After segment metadata commits, ADB refreshes the segment cache before the
+   row-count cache, so same-transaction commits do not leave range count reading
+   a stale segment view.
+5. The experiment that bypassed `VersionReadSession` for ordinary visible range
+   count was reverted because it did not show stable benefit. The validated
+   session entry remains the default path.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+Result: passed.
+
+Same-shape benchmark:
+
+| workload | Engine | threads | batch | ops/s | ADB/H2 | p99 us | alloc bytes/op | Result file |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | ADB | 8 | 100 | 16666.67 | 2.08x | 6325 | 25092 | `vexra-adb/build/adb-benchmark/goal-mixed-final-20260626-1600/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2 | 8 | 100 | 8000.00 | 1.00x | 6523 | 35920 | `vexra-adb/build/adb-benchmark/goal-mixed-final-20260626-1600/h2_mixed_threads8_batch100.properties` |
+
+Conclusion:
+
+1. In this same-shape short run, ADB mixed recovered from the previous
+   `8498.58 ops/s` sample to `16666.67 ops/s`, reaching `2.08x` of H2.
+2. The `mixed` short benchmark is sensitive to H2 and JVM state; historical H2
+   samples reached `25k+ ops/s`. This round proves the ADB-side regression is
+   fixed and ADB exceeds H2 in the current run, but release qualification should
+   still use longer windows and multi-run medians.
+3. The next high-value work is no longer ldb write throughput. It is reducing
+   fixed SQL range-count / point-lookup costs and allocation at the H2 executor
+   boundary.

@@ -31,6 +31,9 @@ import org.h2.value.ValueToObjectConverter;
  */
 final class AdbPreparedInsertPlan {
 
+  static final byte PARAMETER_UNKNOWN = 0;
+  static final byte PARAMETER_LONG = 1;
+  static final byte PARAMETER_STRING = 2;
   private static final String INSERT_INTO = "INSERT INTO";
 
   private final String tableName;
@@ -41,6 +44,8 @@ final class AdbPreparedInsertPlan {
   private Column[] cachedTableColumns;
   private Column[] cachedInsertColumns;
   private SessionLocal cachedSession;
+  private Boolean rawAppendSupported;
+  private int rawAppendMainIndexColumn = -1;
 
   private AdbPreparedInsertPlan(String tableName, List<String> columnNames,
       int rowCount, List<Object> literalValues) {
@@ -125,6 +130,10 @@ final class AdbPreparedInsertPlan {
     return columnNames.size() * rowCount;
   }
 
+  boolean isBulkInsert() {
+    return rowCount > 1;
+  }
+
   /**
    * 尝试执行 ADB bulk insert。
    *
@@ -157,6 +166,12 @@ final class AdbPreparedInsertPlan {
    */
   Integer tryExecuteKnownComplete(Connection connection, Object[] parameters)
       throws SQLException {
+    return tryExecuteKnownComplete(connection, parameters, null, null);
+  }
+
+  Integer tryExecuteKnownComplete(Connection connection, Object[] parameters,
+      byte[] parameterTypes, long[] longParameters)
+      throws SQLException {
     if (parameters == null || parameters.length <= parameterCount()) {
       return null;
     }
@@ -165,7 +180,8 @@ final class AdbPreparedInsertPlan {
     if (table == null) {
       return null;
     }
-    Integer rawCount = tryExecuteRawAppend(session, table, parameters);
+    Integer rawCount = tryExecuteRawAppend(session, table, parameters,
+        parameterTypes, longParameters);
     if (rawCount != null) {
       if (connection.getAutoCommit()) {
         connection.commit();
@@ -182,48 +198,90 @@ final class AdbPreparedInsertPlan {
   }
 
   private Integer tryExecuteRawAppend(SessionLocal session, AdbTable table,
-      Object[] parameters) {
-    if (rowCount <= 1 || table.getMainIndexColumn() == SearchRow.ROWID_INDEX) {
+      Object[] parameters, byte[] parameterTypes, long[] longParameters) {
+    if (rowCount <= 1) {
       return null;
     }
     Column[] tableColumns = tableColumns(table);
     Column[] insertColumns = insertColumns(table);
-    if (!isFullTableColumnOrder(tableColumns, insertColumns)) {
+    int mainIndexColumn = rawAppendMainIndexColumn(table, tableColumns,
+        insertColumns);
+    if (mainIndexColumn < 0) {
       return null;
     }
-    int mainIndexColumn = table.getMainIndexColumn();
-    if (mainIndexColumn < 0 || mainIndexColumn >= tableColumns.length
-        || !supportsRawAppend(tableColumns)) {
+    Integer typedCount = tryExecuteTypedBigintVarcharAppend(session, table,
+        parameters, parameterTypes, longParameters, mainIndexColumn,
+        tableColumns);
+    if (typedCount != null) {
+      return typedCount;
+    }
+    long[] rowIds = new long[rowCount];
+    byte[][] payloads = new byte[rowCount][];
+    int parameter = 1;
+    for (int row = 0; row < rowCount; row++) {
+      if (!encodeRawRow(tableColumns, parameters, parameter, mainIndexColumn,
+          rowIds, payloads, row)) {
+        return null;
+      }
+      parameter += insertColumns.length;
+    }
+    return table.tryBulkInsertEncodedAppendRows(session, rowIds, payloads);
+  }
+
+  private Integer tryExecuteTypedBigintVarcharAppend(SessionLocal session,
+      AdbTable table, Object[] parameters, byte[] parameterTypes,
+      long[] longParameters, int mainIndexColumn, Column[] tableColumns) {
+    if (parameterTypes == null || longParameters == null
+        || tableColumns.length != 2 || mainIndexColumn != 0
+        || tableColumns[0].getType().getValueType() != Value.BIGINT
+        || tableColumns[1].getType().getValueType() != Value.VARCHAR) {
       return null;
     }
     long[] rowIds = new long[rowCount];
     byte[][] payloads = new byte[rowCount][];
     int parameter = 1;
     for (int row = 0; row < rowCount; row++) {
-      Object[] rawValues = new Object[tableColumns.length];
-      for (Column ignored : insertColumns) {
-        Object raw = parameters[parameter++];
-        if (raw == null) {
-          return null;
-        }
-        rawValues[parameterColumnIndex(insertColumns, parameter - 2)] = raw;
-      }
-      Object rowId = rawValues[mainIndexColumn];
-      if (!(rowId instanceof Number)) {
+      if (parameterTypes[parameter] != PARAMETER_LONG
+          || parameterTypes[parameter + 1] != PARAMETER_STRING) {
         return null;
       }
-      rowIds[row] = ((Number) rowId).longValue();
-      payloads[row] = encodeRawRow(tableColumns, rawValues);
-      if (payloads[row] == null) {
+      long rowId = longParameters[parameter++];
+      String value = (String) parameters[parameter++];
+      if (value == null) {
         return null;
       }
+      byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+      byte[] payload = new byte[36 + bytes.length];
+      putInt(payload, 0, Value.ROW);
+      putInt(payload, 4, 2);
+      putInt(payload, 8, 12);
+      putInt(payload, 12, Value.BIGINT);
+      putLong(payload, 16, rowId);
+      putInt(payload, 24, 8 + bytes.length);
+      putInt(payload, 28, Value.VARCHAR);
+      putInt(payload, 32, bytes.length);
+      System.arraycopy(bytes, 0, payload, 36, bytes.length);
+      rowIds[row] = rowId;
+      payloads[row] = payload;
     }
     return table.tryBulkInsertEncodedAppendRows(session, rowIds, payloads);
   }
 
-  private static int parameterColumnIndex(Column[] insertColumns,
-      int parameterIndex) {
-    return insertColumns[parameterIndex % insertColumns.length].getColumnId();
+  private int rawAppendMainIndexColumn(AdbTable table, Column[] tableColumns,
+      Column[] insertColumns) {
+    if (rawAppendSupported != null) {
+      return rawAppendSupported.booleanValue() ? rawAppendMainIndexColumn : -1;
+    }
+    int mainIndexColumn = table.getMainIndexColumn();
+    boolean supported = mainIndexColumn != SearchRow.ROWID_INDEX
+        && mainIndexColumn >= 0 && mainIndexColumn < tableColumns.length
+        && tableColumns[mainIndexColumn].getType().getValueType()
+        == Value.BIGINT
+        && isFullTableColumnOrder(tableColumns, insertColumns)
+        && supportsRawAppend(tableColumns);
+    rawAppendSupported = Boolean.valueOf(supported);
+    rawAppendMainIndexColumn = supported ? mainIndexColumn : -1;
+    return rawAppendMainIndexColumn;
   }
 
   private static boolean isFullTableColumnOrder(Column[] tableColumns,
@@ -250,41 +308,58 @@ final class AdbPreparedInsertPlan {
     return true;
   }
 
-  private static byte[] encodeRawRow(Column[] columns, Object[] values) {
+  private static boolean encodeRawRow(Column[] columns, Object[] parameters,
+      int firstParameter, int mainIndexColumn, long[] rowIds, byte[][] payloads,
+      int rowIndex) {
     DynamicByteBuffer row = new DynamicByteBuffer(64);
     row.putInt(Value.ROW);
     row.putInt(columns.length);
+    long rowId = 0L;
     for (int i = 0; i < columns.length; i++) {
       int type = columns[i].getType().getValueType();
-      Object value = values[i];
-      byte[] encoded;
-      if (type == Value.BIGINT && value instanceof Number) {
-        encoded = encodeRawBigint(((Number) value).longValue());
-      } else if (type == Value.VARCHAR && value instanceof String) {
-        encoded = encodeRawVarchar((String) value);
-      } else {
-        return null;
+      Object value = parameters[firstParameter + i];
+      if (value == null) {
+        return false;
       }
-      row.putInt(encoded.length);
-      row.put(encoded);
+      if (type == Value.BIGINT && value instanceof Number) {
+        long longValue = ((Number) value).longValue();
+        row.putInt(12);
+        row.putInt(Value.BIGINT);
+        row.putLong(longValue);
+        if (i == mainIndexColumn) {
+          rowId = longValue;
+        }
+      } else if (type == Value.VARCHAR && value instanceof String) {
+        byte[] bytes = ((String) value).getBytes(StandardCharsets.UTF_8);
+        row.putInt(8 + bytes.length);
+        row.putInt(Value.VARCHAR);
+        row.putInt(bytes.length);
+        row.put(bytes);
+      } else {
+        return false;
+      }
     }
-    return row.toArray();
+    rowIds[rowIndex] = rowId;
+    payloads[rowIndex] = row.toArray();
+    return true;
   }
 
-  private static byte[] encodeRawBigint(long value) {
-    return new DynamicByteBuffer(12)
-        .putInt(Value.BIGINT)
-        .putLong(value)
-        .toArray();
+  private static void putInt(byte[] data, int offset, int value) {
+    data[offset] = (byte) (value >>> 24);
+    data[offset + 1] = (byte) (value >>> 16);
+    data[offset + 2] = (byte) (value >>> 8);
+    data[offset + 3] = (byte) value;
   }
 
-  private static byte[] encodeRawVarchar(String value) {
-    byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-    return new DynamicByteBuffer(8 + bytes.length)
-        .putInt(Value.VARCHAR)
-        .putInt(bytes.length)
-        .put(bytes)
-        .toArray();
+  private static void putLong(byte[] data, int offset, long value) {
+    data[offset] = (byte) (value >>> 56);
+    data[offset + 1] = (byte) (value >>> 48);
+    data[offset + 2] = (byte) (value >>> 40);
+    data[offset + 3] = (byte) (value >>> 32);
+    data[offset + 4] = (byte) (value >>> 24);
+    data[offset + 5] = (byte) (value >>> 16);
+    data[offset + 6] = (byte) (value >>> 8);
+    data[offset + 7] = (byte) value;
   }
 
   /**

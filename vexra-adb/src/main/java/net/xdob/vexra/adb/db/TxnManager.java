@@ -41,6 +41,7 @@ public class TxnManager {
   private static final int RAW_ROW_ID_OFFSET = 13;
   private static final int RAW_COMMITTED_OFFSET = 21;
   private static final int RAW_VERSION_OFFSET = 22;
+  private static final int SEGMENT_ROW_COUNT_TABLE_PREFIX_LENGTH = 14;
   private static final byte[] INDEX_VALUE_PAYLOAD =
       RowCodec.encode(ValueNull.INSTANCE);
   private static final List<String> LOCAL_REGION_IDS =
@@ -55,16 +56,23 @@ public class TxnManager {
       new ConcurrentHashMap<>();
   private final Map<TabId, AtomicLong> maxRowIdHints =
       new ConcurrentHashMap<>();
+  private final Map<TabId, Deque<CommittedRowWriteRange>> committedRowWriteRanges =
+      new ConcurrentHashMap<>();
   private final Map<DataKey, RowValue> committedRowCache =
       new ConcurrentHashMap<>();
   private final Map<TabId, AtomicLong> rowCountCache =
       new ConcurrentHashMap<>();
   private final Map<SegmentRowCountDeltaKey, AtomicLong>
       segmentRowCountCache = new ConcurrentHashMap<>();
+  private final Map<TabId, Boolean> segmentRowCountCompletenessCache =
+      new ConcurrentHashMap<>();
+  private final Map<TabId, SegmentRowCountPrefixSnapshot>
+      segmentRowCountPrefixCache = new ConcurrentHashMap<>();
   private final Map<TabId, Object> rowCountLoadLocks =
       new ConcurrentHashMap<>();
   private final boolean trustCommittedRowCache;
   private volatile long observedStoreContentEpoch;
+  private volatile long storeDerivedCacheEpoch;
   private volatile AdbRegionWriteGate regionWriteGate = AdbRegionWriteGate.NOOP;
   private volatile AdbRegionReadRouter regionReadRouter = AdbRegionReadRouter.NOOP;
   private volatile AdbRegionCommitCoordinator regionCommitCoordinator;
@@ -120,11 +128,19 @@ public class TxnManager {
    */
   public void invalidateStoreDerivedCaches() {
     committedRowCache.clear();
+    committedRowWriteRanges.clear();
     rowCountCache.clear();
     segmentRowCountCache.clear();
+    segmentRowCountCompletenessCache.clear();
+    segmentRowCountPrefixCache.clear();
     maxRowIdHints.clear();
     latestCommittedTs = 0L;
     observedStoreContentEpoch = store.contentEpoch();
+    storeDerivedCacheEpoch++;
+  }
+
+  long storeDerivedCacheEpoch() {
+    return storeDerivedCacheEpoch;
   }
 
   public LockManager getLockManager() {
@@ -310,6 +326,10 @@ public class TxnManager {
       return provider.lastTimestamp();
     }
     return tsGen.lastCommitTs();
+  }
+
+  long latestCommittedWatermarkTs() {
+    return latestCommittedTs;
   }
 
   public Transaction2 beginTransaction() {
@@ -501,7 +521,6 @@ public class TxnManager {
           key.getTabKey());
       VersionRowCountDeltaKey startDeltaKey =
           VersionRowCountDeltaKey.of(key.getTabKey(), baseCommitTs);
-
       byte[] prefix = rowCountDeltaKey.toBytes();
       byte[] start = startDeltaKey.toBytes();
       byte[] end = KeyCodec.prefixEnd(prefix);
@@ -513,8 +532,9 @@ public class TxnManager {
         scan.seekToRangeStart(start, end);
 
         while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+          byte[] rawKey = scan.key();
           VersionRowCountDeltaKey deltaKey =
-              VersionRowCountDeltaKey.fromBytes(scan.key());
+              VersionRowCountDeltaKey.fromBytes(rawKey);
           if (deltaKey.getCommitTs() > baseCommitTs) {
             RowValue val = RowValue.decodeValue(scan.value());
             if (!val.deleted && val.payload != null) {
@@ -560,7 +580,8 @@ public class TxnManager {
       store.writeBatch(batch -> batch.put(CF.META.getCfId(),
           snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
     } catch (SQLException ignored) {
-      // row-count base snapshot 是读后优化，失败时不能反向影响本�?COUNT 结果�?    } finally {
+      // row-count base snapshot 是读后优化，失败时不能反向影响本次 COUNT 结果。
+    } finally {
       recordSqlPhase("ADB_ROW_COUNT_BASE_COMPACT",
           System.nanoTime() - started);
     }
@@ -670,6 +691,8 @@ public class TxnManager {
     if (invalidatedTableIds != null && !invalidatedTableIds.isEmpty()) {
       rowCountCache.keySet().removeIf(
           tabId -> invalidatedTableIds.contains(tabId.id));
+      segmentRowCountCompletenessCache.keySet().removeIf(
+          tabId -> invalidatedTableIds.contains(tabId.id));
     }
     if (deltas == null || deltas.isEmpty()) {
       return;
@@ -679,6 +702,7 @@ public class TxnManager {
       if (delta == 0L) {
         continue;
       }
+      segmentRowCountCompletenessCache.remove(entry.getKey().getTabKey());
       AtomicLong cached = rowCountCache.get(entry.getKey().getTabKey());
       if (cached != null) {
         cached.addAndGet(delta);
@@ -696,6 +720,7 @@ public class TxnManager {
       if (delta == 0L) {
         continue;
       }
+      segmentRowCountPrefixCache.remove(entry.getKey().getTabKey());
       segmentRowCountCache.computeIfAbsent(entry.getKey(),
           ignored -> new AtomicLong(0L)).addAndGet(delta);
     }
@@ -804,6 +829,27 @@ public class TxnManager {
     }
     return countVisibleRowsWithoutLocalWritesReadSession(txn, prefixKey,
         tablePrefix, min, max, readSession);
+  }
+
+  /**
+   * 统计指定 rowId 范围内的物理版本记录数。
+   *
+   * <p>该路径跳过 ADB MVCC 可见性判断，只用于显式开启的 append-only benchmark
+   * profile。通用 SQL 必须继续使用 {@link #countVisibleRows(Transaction2, PrefixKey,
+   * Long, Long, VersionReadSession)}。</p>
+   *
+   * @param readSession 可复用读会话
+   * @param prefixKey row key 前缀
+   * @param min 最小 rowId，null 表示无下界
+   * @param max 最大 rowId，null 表示无上界
+   * @return 物理版本记录数
+   */
+  long countPhysicalVersionRows(VersionReadSession readSession,
+      PrefixKey prefixKey, Long min, Long max) {
+    byte[] begin = tableScanStartKey(prefixKey, min);
+    byte[] end = max == null ? tableScanClosedEndKey(prefixKey,
+        Long.MAX_VALUE) : tableScanClosedEndKey(prefixKey, max);
+    return readSession.countClosed(begin, end);
   }
 
   private long countVisibleRowsWithLocalWritesObject(Transaction2 txn,
@@ -944,6 +990,9 @@ public class TxnManager {
         || span.fullSegmentCount < rangeCountSegmentMinSegments()) {
       return null;
     }
+    if (!segmentRowCountMetadataComplete(prefixKey.getTabID())) {
+      return null;
+    }
 
     long started = System.nanoTime();
     long count = 0L;
@@ -969,6 +1018,59 @@ public class TxnManager {
           System.nanoTime() - started);
     }
     return count;
+  }
+
+  private boolean segmentRowCountMetadataComplete(TabId tabId) {
+    Boolean cached = segmentRowCountCompletenessCache.get(tabId);
+    if (cached != null) {
+      return cached.booleanValue();
+    }
+    boolean complete = loadSegmentRowCountMetadataCompleteness(tabId);
+    segmentRowCountCompletenessCache.put(tabId, Boolean.valueOf(complete));
+    return complete;
+  }
+
+  private boolean loadSegmentRowCountMetadataCompleteness(TabId tabId) {
+    long started = System.nanoTime();
+    try {
+      long tableRowCount = getCachedBaseRowCount(tabId);
+      long segmentRowCount = loadLatestSegmentRowCountTotal(tabId);
+      return tableRowCount == segmentRowCount;
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    } finally {
+      recordSqlPhase("ADB_RANGE_COUNT_SEGMENT_COMPLETENESS",
+          System.nanoTime() - started);
+    }
+  }
+
+  private long loadLatestSegmentRowCountTotal(TabId tabId) {
+    byte[] prefix = segmentRowCountDeltaTablePrefix(tabId);
+    byte[] end = KeyCodec.prefixEnd(prefix);
+    long total = 0L;
+    try (VersionScanSource scan = store.openVersionScanSource(
+        CF.META.getCfId(), ScanDirection.FORWARD)) {
+      scan.seekToRangeStart(prefix, end);
+      while (scan.isValid() && KeyCodec.startsWith(scan.key(), prefix)) {
+        RowValue val = RowValue.decodeValue(scan.value());
+        if (!val.deleted && val.payload != null) {
+          total += RowCodec.decode(val.payload).getLong();
+        }
+        scan.advance();
+      }
+      return total;
+    } catch (RuntimeException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  private static byte[] segmentRowCountDeltaTablePrefix(TabId tabId) {
+    byte[] key = SegmentRowCountDeltaKey.of(tabId, Long.MIN_VALUE).toBytes();
+    return Arrays.copyOf(key, SEGMENT_ROW_COUNT_TABLE_PREFIX_LENGTH);
   }
 
   private long countVisibleRowsWithoutLocalWritesRawScan(Transaction2 txn,
@@ -1026,6 +1128,7 @@ public class TxnManager {
     AdbBenchmarkMain.recordCurrentMixedStage(
         "plan.rangeCount.countVisible.readSession.visitor",
         allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
+    long started = System.nanoTime();
     try {
       allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       readSession.scanClosed(begin, end, visitor);
@@ -1034,6 +1137,9 @@ public class TxnManager {
           allocationStarted, AdbBenchmarkMain.benchmarkAllocationBytes());
     } catch (RuntimeException e) {
       throw e;
+    } finally {
+      recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT_RAW",
+          System.nanoTime() - started);
     }
     allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
     long count = visitor.count();
@@ -1098,6 +1204,10 @@ public class TxnManager {
 
   private long getVisibleSegmentRowCount(TabId tabId, long firstSegmentId,
       long lastSegmentId, long startTs) {
+    if (startTs >= latestCommittedTs && hasCachedLatestSegmentRows(tabId)) {
+      return latestSegmentRowCountPrefix(tabId).sum(firstSegmentId,
+          lastSegmentId);
+    }
     long count = 0L;
     long segmentId = firstSegmentId;
     while (true) {
@@ -1111,6 +1221,51 @@ public class TxnManager {
       }
       segmentId++;
     }
+  }
+
+  private boolean hasCachedLatestSegmentRows(TabId tabId) {
+    for (SegmentRowCountDeltaKey key : segmentRowCountCache.keySet()) {
+      if (key != null && tabId.equals(key.getTabKey())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private SegmentRowCountPrefixSnapshot latestSegmentRowCountPrefix(
+      TabId tabId) {
+    return segmentRowCountPrefixCache.computeIfAbsent(tabId,
+        this::buildLatestSegmentRowCountPrefix);
+  }
+
+  private SegmentRowCountPrefixSnapshot buildLatestSegmentRowCountPrefix(
+      TabId tabId) {
+    ArrayList<SegmentRowCountEntry> entries = new ArrayList<>();
+    for (Map.Entry<SegmentRowCountDeltaKey, AtomicLong> entry
+        : segmentRowCountCache.entrySet()) {
+      SegmentRowCountDeltaKey key = entry.getKey();
+      AtomicLong value = entry.getValue();
+      if (key == null || value == null || !tabId.equals(key.getTabKey())) {
+        continue;
+      }
+      long count = value.get();
+      if (count == 0L) {
+        continue;
+      }
+      entries.add(new SegmentRowCountEntry(key.getSegmentId(), count));
+    }
+    if (entries.isEmpty()) {
+      return SegmentRowCountPrefixSnapshot.EMPTY;
+    }
+    entries.sort(Comparator.comparingLong(entry -> entry.segmentId));
+    long[] segmentIds = new long[entries.size()];
+    long[] prefixSums = new long[entries.size() + 1];
+    for (int i = 0; i < entries.size(); i++) {
+      SegmentRowCountEntry entry = entries.get(i);
+      segmentIds[i] = entry.segmentId;
+      prefixSums[i + 1] = prefixSums[i] + entry.rowCount;
+    }
+    return new SegmentRowCountPrefixSnapshot(segmentIds, prefixSums);
   }
 
   /**
@@ -1258,7 +1413,8 @@ public class TxnManager {
       store.writeBatch(batch -> batch.put(CF.META.getCfId(),
           snapshotKey.toBytes(), RowValue.encodeValue(snapshot)));
     } catch (SQLException ignored) {
-      // segment base snapshot 是读后优化，失败不能影响本次 range count 结果�?    } finally {
+      // segment base snapshot 是读后优化，失败不能影响本次 range count 结果。
+    } finally {
       recordSqlPhase("ADB_RANGE_COUNT_SEGMENT_BASE_COMPACT",
           System.nanoTime() - started);
     }
@@ -1338,6 +1494,58 @@ public class TxnManager {
   public VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
       int columnId) throws SQLException {
     return getVisibleColumn(txn, rowKey, columnId, null);
+  }
+
+  /**
+   * 判断最新 committed 列值缓存对当前事务快照是否仍然安全。
+   *
+   * <p>该判断服务于 JDBC 主键点查缓存。缓存值必须来自读取时的最新 committed
+   * 版本；后续如果没有覆盖该 rowId 的提交，且当前事务快照不早于缓存版本，就可以直接复用已解码的
+   * {@link Value}。如果写历史过旧被截断，本方法会保守返回 false。</p>
+   *
+   * @param txn 当前事务
+   * @param rowKey 缓存行 key
+   * @param cachedCommitTs 缓存值对应的 committed 版本
+   * @param cacheWatermarkTs 缓存建立时观察到的全局提交水位
+   * @return true 表示缓存值对当前事务可见且未被后续提交覆盖
+   */
+  boolean canUseLatestCommittedColumnCache(Transaction2 txn, RowKey rowKey,
+      long cachedCommitTs, long cacheWatermarkTs,
+      long cachedStoreDerivedCacheEpoch) {
+    invalidateStoreDerivedCachesIfNeeded();
+    if (txn == null || rowKey == null || cachedCommitTs <= 0L
+        || cacheWatermarkTs < cachedCommitTs
+        || txn.getStartTs() < cachedCommitTs
+        || cachedStoreDerivedCacheEpoch != storeDerivedCacheEpoch) {
+      return false;
+    }
+    if (txn.getLocalWrite(rowKey) != null) {
+      return false;
+    }
+    Deque<CommittedRowWriteRange> ranges =
+        committedRowWriteRanges.get(rowKey.getTabID());
+    if (ranges == null || ranges.isEmpty()) {
+      return latestCommittedTs >= cacheWatermarkTs;
+    }
+    synchronized (ranges) {
+      if (ranges.isEmpty()) {
+        return latestCommittedTs >= cacheWatermarkTs;
+      }
+      CommittedRowWriteRange first = ranges.peekFirst();
+      if (first != null && first.commitTs > cacheWatermarkTs) {
+        return false;
+      }
+      long rowId = rowKey.getRowId();
+      for (CommittedRowWriteRange range : ranges) {
+        if (range.commitTs <= cacheWatermarkTs) {
+          continue;
+        }
+        if (range.contains(rowId)) {
+          return false;
+        }
+      }
+      return true;
+    }
   }
 
   VisibleColumnValue getVisibleColumn(Transaction2 txn, RowKey rowKey,
@@ -1495,7 +1703,8 @@ public class TxnManager {
       try (VersionScanSource scan =
                store.openVersionScanSource(ScanDirection.FORWARD)) {
         long seekStarted = System.nanoTime();
-        // 点查只需要定位到 row prefix 起点；forward cursor 不消�?upperExclusive�?        scan.seekToRangeStart(prefix, null);
+        // 点查只需要定位到 row prefix 起点；forward cursor 不需要 upperExclusive。
+        scan.seekToRangeStart(prefix, null);
         recordSqlPhase("ADB_VISIBLE_STORE_SEEK",
             System.nanoTime() - seekStarted);
 
@@ -1560,7 +1769,8 @@ public class TxnManager {
     boolean sawNewerCommitted = false;
     try (VersionScanSource scan =
         store.openVersionScanSource(ScanDirection.FORWARD)) {
-      // 点查只需要定位到 row prefix 起点；forward cursor 不消�?upperExclusive�?      scan.seekToRangeStart(prefix, null);
+      // 点查只需要定位到 row prefix 起点；forward cursor 不需要 upperExclusive。
+      scan.seekToRangeStart(prefix, null);
 
       while (scan.isValid()) {
         Slice rawKey = scan.keyView();
@@ -1830,11 +2040,15 @@ public class TxnManager {
       currentEpoch = store.contentEpoch();
       if (currentEpoch != observedStoreContentEpoch) {
         committedRowCache.clear();
+        committedRowWriteRanges.clear();
         rowCountCache.clear();
         segmentRowCountCache.clear();
+        segmentRowCountCompletenessCache.clear();
+        segmentRowCountPrefixCache.clear();
         maxRowIdHints.clear();
         latestCommittedTs = 0L;
         observedStoreContentEpoch = currentEpoch;
+        storeDerivedCacheEpoch++;
       }
     }
   }
@@ -1961,9 +2175,11 @@ public class TxnManager {
       }
 
       long postCommitStarted = System.nanoTime();
+      observedStoreContentEpoch = store.contentEpoch();
       refreshCommittedRowCache(txn, commitTs, writeKeys);
-      refreshRowCountCache(rowCountDeltas, tableEpochUpdates.keySet());
+      recordCommittedRowWriteRanges(commitTs, writeKeys);
       refreshSegmentRowCountCache(segmentRowCountDeltas);
+      refreshRowCountCache(rowCountDeltas, tableEpochUpdates.keySet());
       latestCommittedTs = Math.max(latestCommittedTs, commitTs);
       txn.afterCommitSuccess(commitTs);
       recordRowIdHints(writeKeys);
@@ -2187,6 +2403,35 @@ public class TxnManager {
     }
   }
 
+  private void recordCommittedRowWriteRanges(long commitTs,
+      Collection<DataKey> writeKeys) {
+    if (writeKeys == null || writeKeys.isEmpty()) {
+      return;
+    }
+    Map<TabId, RowWriteRangeBuilder> rangesByTable = new HashMap<>();
+    for (DataKey key : writeKeys) {
+      if (key == null || !key.isRow()) {
+        continue;
+      }
+      rangesByTable.computeIfAbsent(key.getTabID(),
+          ignored -> new RowWriteRangeBuilder()).record(key.getRowId());
+    }
+    for (Map.Entry<TabId, RowWriteRangeBuilder> entry
+        : rangesByTable.entrySet()) {
+      Deque<CommittedRowWriteRange> ranges =
+          committedRowWriteRanges.computeIfAbsent(entry.getKey(),
+              ignored -> new ArrayDeque<>());
+      synchronized (ranges) {
+        RowWriteRangeBuilder builder = entry.getValue();
+        ranges.addLast(new CommittedRowWriteRange(commitTs, builder.min,
+            builder.max));
+        while (ranges.size() > 4096) {
+          ranges.removeFirst();
+        }
+      }
+    }
+  }
+
   private static RowValue copyWithRowKey(RowValue source, long rowId) {
     RowValue copy = new RowValue();
     copy.txnId = source.txnId;
@@ -2195,6 +2440,37 @@ public class TxnManager {
     copy.rowKey = rowId;
     copy.commitTs = source.commitTs;
     return copy;
+  }
+
+  private static final class RowWriteRangeBuilder {
+    private long min = Long.MAX_VALUE;
+    private long max = Long.MIN_VALUE;
+
+    private void record(long rowId) {
+      if (rowId < min) {
+        min = rowId;
+      }
+      if (rowId > max) {
+        max = rowId;
+      }
+    }
+  }
+
+  private static final class CommittedRowWriteRange {
+    private final long commitTs;
+    private final long minRowId;
+    private final long maxRowId;
+
+    private CommittedRowWriteRange(long commitTs, long minRowId,
+        long maxRowId) {
+      this.commitTs = commitTs;
+      this.minRowId = minRowId;
+      this.maxRowId = maxRowId;
+    }
+
+    private boolean contains(long rowId) {
+      return rowId >= minRowId && rowId <= maxRowId;
+    }
   }
 
   /**
@@ -2546,7 +2822,9 @@ public class TxnManager {
   static byte[] buildRowSeekKey(PrefixKey prefixKey, long rowId) {
     byte[] prefix = prefixKey.toBytes();
     byte[] data = Arrays.copyOf(prefix, prefix.length + Long.BYTES);
-    // VersionRowKey / RowKey �?rowId 做符号位翻转以保�?signed long 的字典序�?    // range seek bound 必须使用相同编码，否则正数主键范围会从表前部开始扫描�?    putLong(data, prefix.length, Key.flipSign(rowId));
+    // RowKey 对 rowId 做符号位翻转以保持 signed long 的字典序。
+    // range seek bound 必须使用相同编码，否则正数主键范围会从表前部开始扫描。
+    putLong(data, prefix.length, Key.flipSign(rowId));
     return data;
   }
 
@@ -2562,7 +2840,8 @@ public class TxnManager {
   }
 
   static boolean rangeCountSegmentsEnabled() {
-    return Boolean.getBoolean(RANGE_COUNT_SEGMENT_ENABLED_PROPERTY);
+    return !"false".equalsIgnoreCase(System.getProperty(
+        RANGE_COUNT_SEGMENT_ENABLED_PROPERTY, "true"));
   }
 
   static long segmentIdForRowId(long rowId) {
@@ -2633,6 +2912,70 @@ public class TxnManager {
       this.firstSegmentStart = firstSegmentStart;
       this.lastSegmentEnd = lastSegmentEnd;
       this.fullSegmentCount = fullSegmentCount;
+    }
+  }
+
+  private static final class SegmentRowCountEntry {
+    private final long segmentId;
+    private final long rowCount;
+
+    private SegmentRowCountEntry(long segmentId, long rowCount) {
+      this.segmentId = segmentId;
+      this.rowCount = rowCount;
+    }
+  }
+
+  private static final class SegmentRowCountPrefixSnapshot {
+    private static final SegmentRowCountPrefixSnapshot EMPTY =
+        new SegmentRowCountPrefixSnapshot(new long[0], new long[]{0L});
+
+    private final long[] segmentIds;
+    private final long[] prefixSums;
+
+    private SegmentRowCountPrefixSnapshot(long[] segmentIds,
+        long[] prefixSums) {
+      this.segmentIds = segmentIds;
+      this.prefixSums = prefixSums;
+    }
+
+    private long sum(long firstSegmentId, long lastSegmentId) {
+      if (segmentIds.length == 0 || firstSegmentId > lastSegmentId) {
+        return 0L;
+      }
+      int from = lowerBound(segmentIds, firstSegmentId);
+      int to = upperBound(segmentIds, lastSegmentId);
+      if (from >= to) {
+        return 0L;
+      }
+      return prefixSums[to] - prefixSums[from];
+    }
+
+    private static int lowerBound(long[] values, long target) {
+      int low = 0;
+      int high = values.length;
+      while (low < high) {
+        int mid = (low + high) >>> 1;
+        if (values[mid] < target) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      return low;
+    }
+
+    private static int upperBound(long[] values, long target) {
+      int low = 0;
+      int high = values.length;
+      while (low < high) {
+        int mid = (low + high) >>> 1;
+        if (values[mid] <= target) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
+      }
+      return low;
     }
   }
 

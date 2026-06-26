@@ -11,6 +11,7 @@ import net.xdob.vexra.adb.DbStore;
 import net.xdob.vexra.adb.h2plugin.AdbTransactionRegistry;
 import net.xdob.vexra.adb.key.IndexBuildState;
 import net.xdob.vexra.adb.key.RowKey;
+import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
 import org.h2.api.DatabaseEventListener;
 import org.h2.api.ErrorCode;
@@ -42,6 +43,7 @@ import org.h2.util.DebuggingThreadLocal;
 import org.h2.util.Utils;
 import org.h2.value.DataType;
 import org.h2.value.TypeInfo;
+import org.h2.value.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -264,7 +266,7 @@ public class AdbTable extends TableBase {
     RuntimeException failure = null;
     try {
       TxnMap2 map = getTxnMap(session);
-      return map.getRowCount(getId());
+      return countRowsForTableCount(map);
     } catch (SQLException e) {
       failure = convertException(e);
       throw failure;
@@ -274,6 +276,29 @@ public class AdbTable extends TableBase {
     } finally {
       recordSqlDiagnostic("SELECT", "ROW_COUNT", startMillis, failure);
     }
+  }
+
+  /**
+   * 返回当前事务可见的全表行数。
+   *
+   * <p>BIGINT 主键且无二级索引的 append-fast 表继续使用 row-count
+   * 元数据；其他表用真实 row 可见性扫描兜底，避免非 append 写入场景下
+   * 元数据恢复或二级索引语义影响 COUNT 正确性。</p>
+   *
+   * @param session 当前 H2 session
+   * @return 当前事务快照可见的全表行数
+   * @throws SQLException 底层版本扫描失败时抛出
+   */
+  public long countRowsForTableCount(SessionLocal session) throws SQLException {
+    return countRowsForTableCount(getTxnMap(session));
+  }
+
+  private long countRowsForTableCount(TxnMap2 map) throws SQLException {
+    if (!hasAdbSecondaryIndex()) {
+      return map.getRowCount(getId());
+    }
+    return map.countVisibleRows(RowPrefix.of(map.getTabId(getId())),
+        null, null);
   }
 
 
@@ -793,7 +818,7 @@ public class AdbTable extends TableBase {
   public Integer tryBulkInsertEncodedAppendRows(SessionLocal session,
       long[] rowIds, byte[][] payloads) {
     if (rowIds == null || payloads == null || rowIds.length == 0
-        || rowIds.length != payloads.length || hasAdbSecondaryIndex()
+        || rowIds.length != payloads.length || !supportsAppendFastPath()
         || getSqlDistributedWriteRuntime() != null
         || txnManager.getRegionCommitCoordinator() != null) {
       return null;
@@ -914,7 +939,7 @@ public class AdbTable extends TableBase {
    */
   private Integer tryBulkInsertAppendRowWithoutSavepoint(TxnMap2 map,
       Row row) {
-    if (hasAdbSecondaryIndex()) {
+    if (!supportsAppendFastPath()) {
       return null;
     }
     long txnId = map.getTransaction().getTxnId();
@@ -947,7 +972,7 @@ public class AdbTable extends TableBase {
    */
   private Integer tryBulkInsertAppendRowsWithoutSavepoint(TxnMap2 map,
       List<Row> rows) {
-    if (hasAdbSecondaryIndex()) {
+    if (!supportsAppendFastPath()) {
       return null;
     }
     long txnId = map.getTransaction().getTxnId();
@@ -982,6 +1007,16 @@ public class AdbTable extends TableBase {
       }
     }
     return false;
+  }
+
+  private boolean supportsAppendFastPath() {
+    int mainIndexColumn = primaryIndex.getMainIndexColumn();
+    return !hasAdbSecondaryIndex()
+        && mainIndexColumn != SearchRow.ROWID_INDEX
+        && mainIndexColumn >= 0
+        && mainIndexColumn < getColumns().length
+        && getColumns()[mainIndexColumn].getType().getValueType()
+        == Value.BIGINT;
   }
 
   private static void rollbackBulkSavepoint(TxnMap2 map, long savepointId,

@@ -286,6 +286,83 @@ class TxnManagerVisibleRowFastPathTest {
    *
    * @throws Exception store 或事务操作失败时抛出
    */
+  /**
+   * 验证新写入数据默认维护 segment 元数据，并让宽范围 count 命中 segment 路径。
+   */
+  @Test
+  void shouldUseSegmentRangeCountByDefaultForCompleteMetadata()
+      throws Exception {
+    String property = "vexra.adb.rangeCount.segmentCount.enabled";
+    String previous = System.getProperty(property);
+    System.clearProperty(property);
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-segment-default").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+      TabId tabId = TabId.of(1, 0L);
+
+      Transaction2 writer = manager.beginTransaction();
+      for (long rowId = 1L; rowId <= 1500L; rowId++) {
+        manager.put(writer, RowKey.of(tabId, rowId),
+            row("row-" + rowId, 0L));
+      }
+      manager.commit(writer);
+
+      assertEquals(1500L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 1500L));
+      assertTrue(recorder.snapshot().getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+    } finally {
+      if (previous == null) {
+        System.clearProperty(property);
+      } else {
+        System.setProperty(property, previous);
+      }
+    }
+  }
+
+  /**
+   * 验证缺失 segment 元数据的旧数据会回退 raw scan，避免默认开启后误计数。
+   */
+  @Test
+  void shouldFallbackRawRangeCountWhenSegmentMetadataIncomplete()
+      throws Exception {
+    String property = "vexra.adb.rangeCount.segmentCount.enabled";
+    String previous = System.getProperty(property);
+    System.setProperty(property, "false");
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "range-visible-segment-incomplete").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+
+      Transaction2 writer = manager.beginTransaction();
+      for (long rowId = 1L; rowId <= 1500L; rowId++) {
+        manager.put(writer, RowKey.of(tabId, rowId),
+            row("row-" + rowId, 0L));
+      }
+      manager.commit(writer);
+
+      System.setProperty(property, "true");
+      AdbSqlDiagnosticRecorder recorder = new AdbSqlDiagnosticRecorder(0, 0);
+      manager.setSqlDiagnosticRecorder(recorder);
+
+      assertEquals(1500L, manager.countVisibleRows(manager.beginTransaction(),
+          RowPrefix.of(tabId), 1L, 1500L));
+      AdbSqlDiagnosticSnapshot snapshot = recorder.snapshot();
+      assertFalse(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_SEGMENT_COUNT"));
+      assertTrue(snapshot.getPhaseStats().containsKey(
+          "ADB_RANGE_COUNT_VISIBLE_COUNT_RAW"));
+    } finally {
+      if (previous == null) {
+        System.clearProperty(property);
+      } else {
+        System.setProperty(property, previous);
+      }
+    }
+  }
+
   @Test
   void shouldSkipSegmentRangeCountBelowFullSegmentThreshold()
       throws Exception {
@@ -476,6 +553,68 @@ class TxnManagerVisibleRowFastPathTest {
    * {@link LdbStore#restore(String)} 调用：同一个 TxnManager 在 restore 前缓存了较新的
    * committed row，restore 后下一次读取必须发现 store epoch 变化并回到 checkpoint 内容。</p>
    */
+  /**
+   * 验证 latest committed 单列缓存不会被不相交 append 写入误失效。
+   *
+   * <p>mixed_threads8_batch100 的点查主要读取既有行，批量 insert 追加新 rowId。缓存复用判定
+   * 需要只拒绝覆盖同一逻辑行的后续提交，否则每个 batch insert 都会把点查退回 cursor scan。</p>
+   */
+  @Test
+  void shouldKeepLatestCommittedColumnCacheAfterDisjointAppend()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "visible-column-cache-append").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      TabId tabId = TabId.of(1, 0L);
+      RowKey cachedKey = RowKey.of(tabId, 1L);
+
+      Transaction2 firstWriter = manager.beginTransaction();
+      manager.put(firstWriter, cachedKey, row("cached", 0L));
+      manager.commit(firstWriter);
+      TxnManager.VisibleColumnValue cachedVisible =
+          manager.getVisibleColumn(manager.beginTransaction(), cachedKey, 0);
+      long cacheWatermarkTs = manager.latestCommittedWatermarkTs();
+      long storeDerivedCacheEpoch = manager.storeDerivedCacheEpoch();
+
+      Transaction2 appendWriter = manager.beginTransaction();
+      manager.put(appendWriter, RowKey.of(tabId, 100L), row("append", 0L));
+      manager.commit(appendWriter);
+
+      assertTrue(manager.canUseLatestCommittedColumnCache(
+          manager.beginTransaction(), cachedKey, cachedVisible.commitTs(),
+          cacheWatermarkTs, storeDerivedCacheEpoch));
+    }
+  }
+
+  /**
+   * 验证 latest committed 单列缓存遇到同一逻辑行后续提交时必须失效。
+   */
+  @Test
+  void shouldInvalidateLatestCommittedColumnCacheAfterSameRowOverwrite()
+      throws Exception {
+    try (LdbStore store = new LdbStore(new File(tempDir,
+        "visible-column-cache-overwrite").getAbsolutePath())) {
+      TxnManager manager = new TxnManager(store);
+      RowKey key = RowKey.of(TabId.of(1, 0L), 1L);
+
+      Transaction2 firstWriter = manager.beginTransaction();
+      manager.put(firstWriter, key, row("cached", 0L));
+      manager.commit(firstWriter);
+      TxnManager.VisibleColumnValue cachedVisible =
+          manager.getVisibleColumn(manager.beginTransaction(), key, 0);
+      long cacheWatermarkTs = manager.latestCommittedWatermarkTs();
+      long storeDerivedCacheEpoch = manager.storeDerivedCacheEpoch();
+
+      Transaction2 overwriteWriter = manager.beginTransaction();
+      manager.put(overwriteWriter, key, row("new", 0L));
+      manager.commit(overwriteWriter);
+
+      assertFalse(manager.canUseLatestCommittedColumnCache(
+          manager.beginTransaction(), key, cachedVisible.commitTs(),
+          cacheWatermarkTs, storeDerivedCacheEpoch));
+    }
+  }
+
   @Test
   void shouldInvalidateDefaultTrustedCacheAfterDirectLdbRestore()
       throws Exception {

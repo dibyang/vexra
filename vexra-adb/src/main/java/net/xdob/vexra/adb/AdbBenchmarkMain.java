@@ -152,6 +152,10 @@ public final class AdbBenchmarkMain {
       result = benchmark.executeJdbcBulk(url, workload, rows,
           warmupOperations, operations, dropTable, transactionBatchSize,
           statementBatchSize, sqlDiagnostics, tableEngine, secondaryIndex);
+    } else if ("jdbc_raw_bulk".equals(mode)) {
+      result = benchmark.executeJdbcRawBulk(url, workload, rows,
+          warmupOperations, operations, dropTable, transactionBatchSize,
+          statementBatchSize, sqlDiagnostics, tableEngine, secondaryIndex);
     } else if ("txn".equals(mode)) {
       result = benchmark.executeTxn(storeDir, workload, rows,
           warmupOperations, operations, transactionBatchSize);
@@ -588,6 +592,124 @@ public final class AdbBenchmarkMain {
     }
   }
 
+  /**
+   * 执行 JDBC raw bulk 上限 benchmark。
+   *
+   * <p>该模式模拟 h2db 未来提供“批量 DML 参数视图”后 ADB 能拿到的理想输入：
+   * 调用方直接把 rowId 和已编码 payload 交给 ADB table，仍保留 H2 连接、session
+   * 和 commit 事务边界。它只用于定位 3.x 目标的瓶颈，不作为应用可见 API。</p>
+   *
+   * @param url JDBC URL
+   * @param workload workload 名称，仅支持 insert
+   * @param rows 预置行数
+   * @param warmupOperations 预热操作数
+   * @param operations 计量操作数
+   * @param dropTable 是否重建 benchmark 表
+   * @param transactionBatchSize 每次 commit 的操作数
+   * @param statementBatchSize 每次 raw bulk 写入的行数
+   * @param sqlDiagnostics 是否启用 SQL 诊断
+   * @param tableEngine 表引擎名称
+   * @param secondaryIndex 是否创建二级索引
+   * @return benchmark 结果
+   * @throws Exception JDBC 或写入失败时抛出
+   */
+  public AdbBenchmarkResult executeJdbcRawBulk(String url, String workload,
+      int rows, int warmupOperations, int operations, boolean dropTable,
+      int transactionBatchSize, int statementBatchSize,
+      boolean sqlDiagnostics, String tableEngine, boolean secondaryIndex)
+      throws Exception {
+    if (!"insert".equals(workload)) {
+      throw new IllegalArgumentException(
+          "jdbc_raw_bulk mode only supports insert workload: " + workload);
+    }
+    String resolvedTableEngine = normalizeTableEngine(tableEngine);
+    if (!TABLE_ENGINE_ADB.equals(resolvedTableEngine)) {
+      throw new IllegalArgumentException(
+          "jdbc_raw_bulk mode only supports ADB table engine: "
+              + resolvedTableEngine);
+    }
+    loadJdbcDriver(url);
+    try (Connection connection = DriverManager.getConnection(url,
+        new Properties())) {
+      connection.setAutoCommit(false);
+      prepareSchema(connection, rows, dropTable, sqlDiagnostics,
+          resolvedTableEngine, secondaryIndex);
+      connection.commit();
+      AdbTable table = adbBenchmarkTable(connection);
+
+      executeJdbcRawBulkBatches(connection, table, rows, warmupOperations,
+          statementBatchSize, transactionBatchSize, false, null);
+      AdbSqlDiagnosticsRegistry.resetAll();
+
+      long[] latencies = new long[operations];
+      long allocationStart = currentThreadAllocatedBytes();
+      long started = System.nanoTime();
+      long failed = executeJdbcRawBulkBatches(connection, table, rows,
+          operations, statementBatchSize, transactionBatchSize, true,
+          latencies);
+      long durationMillis = Math.max(1L,
+          (System.nanoTime() - started) / 1_000_000L);
+      Arrays.sort(latencies);
+      double throughput = operations * 1000D / durationMillis;
+      Map<String, String> details = collectSqlDiagnostics();
+      details.put("tableEngine", resolvedTableEngine);
+      details.put("secondaryIndex", String.valueOf(secondaryIndex));
+      addAllocationDetails(details, allocationStart,
+          currentThreadAllocatedBytes(), operations);
+      return new AdbBenchmarkResult("jdbc_raw_bulk", workload, url,
+          warmupOperations, operations, failed, durationMillis, throughput,
+          percentile(latencies, 0.50D), percentile(latencies, 0.95D),
+          percentile(latencies, 0.99D), latencies[latencies.length - 1],
+          details);
+    }
+  }
+
+  private static long executeJdbcRawBulkBatches(Connection connection,
+      AdbTable table, int rows, int operations, int statementBatchSize,
+      int transactionBatchSize, boolean countedRun, long[] latencies)
+      throws Exception {
+    long failed = 0L;
+    int completedInTransaction = 0;
+    SessionLocal session = sessionLocal(connection);
+    int index = 0;
+    while (index < operations) {
+      int batchSize = Math.min(statementBatchSize, operations - index);
+      long opStarted = System.nanoTime();
+      try {
+        long firstId = rows + (countedRun ? 1_000_000L : 100_000L) + index;
+        RawInsertBatch batch = rawInsertBatch(firstId, batchSize,
+            countedRun ? "insert-" : "warmup-insert-");
+        Integer count = table.tryBulkInsertEncodedAppendRows(session,
+            batch.rowIds, batch.payloads);
+        if (count == null || count.intValue() != batchSize) {
+          throw new IllegalStateException(
+              "ADB raw bulk insert fast path missed: batchSize=" + batchSize);
+        }
+        completedInTransaction += batchSize;
+        commitIfNeeded(connection, transactionBatchSize,
+            completedInTransaction);
+        if (completedInTransaction >= transactionBatchSize) {
+          completedInTransaction = 0;
+        }
+      } catch (Exception e) {
+        failed += batchSize;
+        connection.rollback();
+        completedInTransaction = 0;
+      } finally {
+        if (latencies != null) {
+          long perRowMicros = nanosToMicros(System.nanoTime() - opStarted)
+              / Math.max(1, batchSize);
+          for (int i = 0; i < batchSize; i++) {
+            latencies[index + i] = perRowMicros;
+          }
+        }
+      }
+      index += batchSize;
+    }
+    commitRemaining(connection, transactionBatchSize, completedInTransaction);
+    return failed;
+  }
+
   private static long executeJdbcBulkBatches(Connection connection,
       AdbTable table, int rows, int operations, int statementBatchSize,
       int transactionBatchSize, boolean countedRun, long[] latencies)
@@ -674,6 +796,61 @@ public final class AdbBenchmarkMain {
       rows.add(row);
     }
     return rows;
+  }
+
+  private static RawInsertBatch rawInsertBatch(long firstId, int batchSize,
+      String namePrefix) {
+    long[] rowIds = new long[batchSize];
+    byte[][] payloads = new byte[batchSize][];
+    for (int i = 0; i < batchSize; i++) {
+      long id = firstId + i;
+      rowIds[i] = id;
+      payloads[i] = rawBigintVarcharPayload(id, namePrefix + id);
+    }
+    return new RawInsertBatch(rowIds, payloads);
+  }
+
+  private static byte[] rawBigintVarcharPayload(long id, String name) {
+    byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+    byte[] payload = new byte[36 + nameBytes.length];
+    putInt(payload, 0, Value.ROW);
+    putInt(payload, 4, 2);
+    putInt(payload, 8, 12);
+    putInt(payload, 12, Value.BIGINT);
+    putLong(payload, 16, id);
+    putInt(payload, 24, 8 + nameBytes.length);
+    putInt(payload, 28, Value.VARCHAR);
+    putInt(payload, 32, nameBytes.length);
+    System.arraycopy(nameBytes, 0, payload, 36, nameBytes.length);
+    return payload;
+  }
+
+  private static void putInt(byte[] data, int offset, int value) {
+    data[offset] = (byte) (value >>> 24);
+    data[offset + 1] = (byte) (value >>> 16);
+    data[offset + 2] = (byte) (value >>> 8);
+    data[offset + 3] = (byte) value;
+  }
+
+  private static void putLong(byte[] data, int offset, long value) {
+    data[offset] = (byte) (value >>> 56);
+    data[offset + 1] = (byte) (value >>> 48);
+    data[offset + 2] = (byte) (value >>> 40);
+    data[offset + 3] = (byte) (value >>> 32);
+    data[offset + 4] = (byte) (value >>> 24);
+    data[offset + 5] = (byte) (value >>> 16);
+    data[offset + 6] = (byte) (value >>> 8);
+    data[offset + 7] = (byte) value;
+  }
+
+  private static final class RawInsertBatch {
+    private final long[] rowIds;
+    private final byte[][] payloads;
+
+    private RawInsertBatch(long[] rowIds, byte[][] payloads) {
+      this.rowIds = rowIds;
+      this.payloads = payloads;
+    }
   }
 
   /**

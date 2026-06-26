@@ -56,6 +56,9 @@ final class AdbJdbcProxy {
         }
         AdbPreparedInsertPlan insertPlan = AdbPreparedInsertPlan.parse(
             (String) args[0]);
+        if (insertPlan != null && !insertPlan.isBulkInsert()) {
+          insertPlan = null;
+        }
         AdbPreparedPointLookupPlan pointLookupPlan =
             AdbPreparedPointLookupPlan.parse((String) args[0]);
         AdbPreparedRangeCountPlan rangeCountPlan =

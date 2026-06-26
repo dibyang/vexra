@@ -78,11 +78,15 @@ public final class VersionRowKey extends VersionKey {
    * @return committed version key 字节
    */
   public static byte[] committedBytes(RowKey rowKey, long commitTs) {
+    return committedBytes(rowKey.getTabID(), rowKey.getRowId(), commitTs);
+  }
+
+  public static byte[] committedBytes(TabId tabId, long rowId, long commitTs) {
     byte[] data = new byte[KEY_SIZE];
-    putInt(data, OFFSET_TABLE_ID, rowKey.tableId);
-    putLong(data, OFFSET_EPOCH, rowKey.epoch);
+    putInt(data, OFFSET_TABLE_ID, tabId.id);
+    putLong(data, OFFSET_EPOCH, tabId.epoch);
     data[OFFSET_TYPE] = KeyType.ROW.getCode();
-    putLong(data, OFFSET_ROW_ID, flipSign(rowKey.getRowId()));
+    putLong(data, OFFSET_ROW_ID, flipSign(rowId));
     data[OFFSET_COMMITED] = 1;
     putLong(data, OFFSET_VERSION, flipSign(Long.MAX_VALUE - commitTs));
     return data;

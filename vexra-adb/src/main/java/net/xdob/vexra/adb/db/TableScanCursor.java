@@ -55,8 +55,13 @@ public final class TableScanCursor implements AutoCloseable {
     ensureOpen();
     current = null;
 
-    while (scanSource.isValid() && startsWith(scanSource.key(), tablePrefix)) {
-      VersionKey versionKey = VersionKey.fromBytes(scanSource.key());
+    while (scanSource.isValid()) {
+      byte[] raw = scanSource.key();
+      if (!startsWith(raw, tablePrefix)) {
+        scanSource.advance();
+        continue;
+      }
+      VersionKey versionKey = VersionKey.fromBytes(raw);
       DataKey dataKey = versionKey.toDataKey();
       byte[] rowPrefix = dataKey.toBytes();
       long rowId = dataKey.getRowId();

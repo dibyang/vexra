@@ -5,10 +5,22 @@ import net.xdob.vexra.adb.db.VersionScanSource;
 import net.xdob.vexra.ldb.SnapshotCursor;
 import net.xdob.vexra.ldb.util.Slice;
 
+/**
+ * LDB 快照游标到 ADB 版本扫描接口的适配器。
+ *
+ * <p>该类只负责把 ADB 的正向/反向扫描语义映射到 LDB {@link SnapshotCursor}，
+ * 不持有额外事务状态；调用方负责关闭底层快照游标。</p>
+ */
 public final class LdbVersionEntryCursor implements VersionScanSource {
   private final SnapshotCursor it;
   private final ScanDirection direction;
 
+  /**
+   * 创建游标适配器。
+   *
+   * @param it LDB 快照游标
+   * @param direction ADB 扫描方向
+   */
   public LdbVersionEntryCursor(SnapshotCursor it, ScanDirection direction) {
     this.it = it;
     this.direction = direction;
@@ -25,14 +37,12 @@ public final class LdbVersionEntryCursor implements VersionScanSource {
       if (lowerInclusive == null) {
         it.seekToFirst();
       } else {
-        // ldb seek(begin, end) 语义为 [begin, end)，正好匹配 ADB
-        // seekToRangeStart 的 upperExclusive 约束。
+        // LDB seek(begin, end) 的语义是 [begin, end)。
         it.seek(lowerInclusive, upperExclusive);
       }
       return;
     }
 
-    // REVERSE
     if (upperExclusive == null) {
       it.seekToLast();
     } else {
@@ -49,8 +59,7 @@ public final class LdbVersionEntryCursor implements VersionScanSource {
       if (lowerInclusive == null) {
         it.seekToFirst();
       } else {
-        // ldb seekClosed(begin, end) 语义为 [begin, end]，用于 ADB
-        // 逻辑闭区间 rowId 扫描映射出的完整物理 version-key 上界。
+        // LDB seekClosed(begin, end) 的语义是 [begin, end]。
         it.seekClosed(lowerInclusive, upperInclusive);
       }
       return;

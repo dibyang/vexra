@@ -5,11 +5,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Locale;
 import net.xdob.vexra.adb.db.AdbTable;
-import net.xdob.vexra.adb.db.TxnMap2;
 import org.h2.engine.Session;
 import org.h2.engine.SessionLocal;
+import org.h2.index.Index;
 import org.h2.jdbc.JdbcConnection;
 import org.h2.schema.Schema;
+import org.h2.table.Column;
 import org.h2.table.Table;
 
 /**
@@ -23,13 +24,17 @@ final class AdbTableCountPlan {
 
   private static final String SELECT_COUNT = "SELECT COUNT(*)";
   private static final String FROM = " FROM ";
+  private static final String WHERE = " WHERE ";
+  private static final String IS_NOT_NULL = " IS NOT NULL";
 
   private final String tableName;
+  private final String notNullColumn;
   private AdbTable resolvedTable;
   private SessionLocal cachedSession;
 
-  private AdbTableCountPlan(String tableName) {
+  private AdbTableCountPlan(String tableName, String notNullColumn) {
     this.tableName = tableName;
+    this.notNullColumn = notNullColumn;
   }
 
   /**
@@ -55,10 +60,27 @@ final class AdbTableCountPlan {
       return null;
     }
     String tablePart = trimmed.substring(from + FROM.length()).trim();
+    String notNullColumn = null;
+    int where = tablePart.toUpperCase(Locale.ROOT).indexOf(WHERE);
+    if (where >= 0) {
+      String condition = tablePart.substring(where + WHERE.length()).trim();
+      tablePart = tablePart.substring(0, where).trim();
+      String conditionUpper = condition.toUpperCase(Locale.ROOT);
+      if (!conditionUpper.endsWith(IS_NOT_NULL)) {
+        return null;
+      }
+      String column = condition.substring(0,
+          condition.length() - IS_NOT_NULL.length()).trim();
+      if (column.isEmpty() || column.indexOf(' ') >= 0) {
+        return null;
+      }
+      notNullColumn = normalizeIdentifier(column);
+    }
     if (tablePart.isEmpty() || tablePart.indexOf(' ') >= 0) {
       return null;
     }
-    return new AdbTableCountPlan(normalizeIdentifier(tablePart));
+    return new AdbTableCountPlan(normalizeIdentifier(tablePart),
+        notNullColumn);
   }
 
   /**
@@ -83,11 +105,13 @@ final class AdbTableCountPlan {
     if (table == null) {
       return null;
     }
+    if (notNullColumn != null && !isNonNullable(table, notNullColumn)) {
+      return null;
+    }
     long startMillis = System.currentTimeMillis();
     Throwable failure = null;
     try {
-      TxnMap2 map = table.getTxnMap(session);
-      long count = map.getRowCount(table.getId());
+      long count = table.countRowsForTableCount(session);
       return AdbSimpleResultSet.singleLong("COUNT(*)", count);
     } catch (SQLException e) {
       failure = e;
@@ -124,6 +148,26 @@ final class AdbTableCountPlan {
     }
     Table table = schema.findTableOrView(session, localTableName);
     return table instanceof AdbTable ? (AdbTable) table : null;
+  }
+
+  private static boolean isNonNullable(AdbTable table, String columnName) {
+    Column column = table.getColumn(columnName, true);
+    return column != null && (!column.isNullable()
+        || column.isPrimaryKey() || isPrimaryKeyColumn(table, column));
+  }
+
+  private static boolean isPrimaryKeyColumn(AdbTable table, Column column) {
+    Index primaryKey = table.findPrimaryKey();
+    if (primaryKey == null) {
+      return false;
+    }
+    for (Column primaryColumn : primaryKey.getColumns()) {
+      if (primaryColumn == column
+          || primaryColumn.getColumnId() == column.getColumnId()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

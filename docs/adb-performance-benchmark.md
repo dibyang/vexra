@@ -5019,3 +5019,37 @@ benchmark：
    最主要的分配来源；后续优化应优先减少 key copy、RowValue payload copy、列解码
    `Value[]/DefaultRow` 对象创建。
 4. async write combining 继续不默认启用；只保留多线程 async 写 profile 的可选开关。
+## 第八十轮：SQL mixed 恢复确认
+
+本轮针对 `mixed_threads8_batch100` 未恢复到接近 H2 的问题复核 ADB 侧热路径。结论是：问题主要在
+ADB 侧，而不是 ldb 写入能力不足。已保留的正向修复包括：
+
+1. `TxnMap2.latestCommittedTs()` 改为使用真实 latest committed watermark，避免把时间戳生成器的前移值当作已提交水位。
+2. 点查 latest committed column cache 增加 store-derived cache epoch，只在外部恢复或底层缓存替换时失效，普通提交不再误杀缓存。
+3. 默认启用带完整性保护的 segment range count；旧库或元数据不完整时回退 raw visible count，避免语义风险。
+4. segment 元数据提交后先刷新 segment cache，再刷新 row count cache，避免同事务提交后的 range count 命中旧片段视图。
+5. 回退了“普通可见行 range count 绕开 `VersionReadSession`”的实验；该实验没有稳定收益，保留已验证更好的 session 入口。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.db.TxnManagerVisibleRowFastPathTest --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+验证结果：通过。
+
+同口径 benchmark：
+
+| workload | 引擎 | threads | batch | ops/s | ADB/H2 | p99 us | alloc bytes/op | 结果文件 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `mixed` | ADB | 8 | 100 | 16666.67 | 2.08x | 6325 | 25092 | `vexra-adb/build/adb-benchmark/goal-mixed-final-20260626-1600/adb_mixed_threads8_batch100.properties` |
+| `mixed` | H2 | 8 | 100 | 8000.00 | 1.00x | 6523 | 35920 | `vexra-adb/build/adb-benchmark/goal-mixed-final-20260626-1600/h2_mixed_threads8_batch100.properties` |
+
+阶段结论：
+
+1. 本轮同口径短测下，ADB mixed 已从前一轮 `8498.58 ops/s` 恢复到 `16666.67 ops/s`，并达到 H2 的
+   `2.08x`。
+2. `mixed` 短测对 H2 和 JVM 状态比较敏感；历史 H2 样本曾达到 `25k+ ops/s`。因此本轮结果可证明
+   ADB 侧回归已经修复并在当前口径超过 H2，但后续发布前仍应跑更长窗口和多轮中位数。
+3. 下一阶段更有价值的方向不再是 ldb 写入，而是继续压 SQL range count/point lookup 的固定成本和
+   H2 执行器边界分配。

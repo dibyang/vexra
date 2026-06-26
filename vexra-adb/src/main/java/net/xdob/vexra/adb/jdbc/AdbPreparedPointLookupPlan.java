@@ -35,9 +35,6 @@ final class AdbPreparedPointLookupPlan {
   private static final int DECODED_COLUMN_CACHE_LIMIT =
       Integer.getInteger("adb.pointLookup.fastDecodedColumnCacheLimit",
           16_384);
-  private static final int VALUE_CACHE_MODIFICATION_CHANGE_LIMIT =
-      Integer.getInteger("adb.pointLookup.valueCacheModificationChangeLimit",
-          8);
   private static final String SELECT = "SELECT";
   private static final String FROM = " FROM ";
   private static final String WHERE = " WHERE ";
@@ -58,8 +55,6 @@ final class AdbPreparedPointLookupPlan {
   private final ConcurrentHashMap<Long, CachedSingleColumnValue>
       decodedSingleColumnCache = new ConcurrentHashMap<>();
   private volatile long decodedCacheTableModificationId = Long.MIN_VALUE;
-  private int decodedCacheTableModificationChanges;
-  private boolean directValueCacheDisabled;
 
   private AdbPreparedPointLookupPlan(List<String> selectColumns,
       String tableName, String whereColumn, boolean selectAllColumns) {
@@ -165,7 +160,7 @@ final class AdbPreparedPointLookupPlan {
       boolean singleColumn = resolvedColumnIds.length == 1;
       allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       Value cachedSingleValue = singleColumn
-          ? cachedSingleValue(table, rowId) : null;
+          ? cachedSingleValue(session, table, rowId) : null;
       AdbBenchmarkMain.recordCurrentMixedStage(
           "plan.pointLookup.cacheLookup", allocationStarted,
           AdbBenchmarkMain.benchmarkAllocationBytes());
@@ -214,7 +209,7 @@ final class AdbPreparedPointLookupPlan {
       }
       allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
       Value singleValue = singleColumn && visibleColumn != null
-          ? decodedSingleValue(table, rowId, visibleColumn) : null;
+          ? decodedSingleValue(session, table, rowId, visibleColumn) : null;
       Value[] values = !singleColumn && rowValue != null
           ? decodedValues(table, rowId, rowValue) : null;
       AdbBenchmarkMain.recordCurrentMixedStage(
@@ -462,8 +457,9 @@ final class AdbPreparedPointLookupPlan {
     }
   }
 
-  private Value decodedSingleValue(AdbTable table, long rowId,
-      TxnManager.VisibleColumnValue visibleColumn) {
+  private Value decodedSingleValue(SessionLocal session, AdbTable table,
+      long rowId,
+      TxnManager.VisibleColumnValue visibleColumn) throws SQLException {
     long started = System.nanoTime();
     long commitTs = visibleColumn.commitTs();
     if (commitTs <= 0L) {
@@ -479,7 +475,7 @@ final class AdbPreparedPointLookupPlan {
     }
     try {
       Value value = visibleColumn.value();
-      cacheDecodedSingleValue(table, rowId, commitTs, value,
+      cacheDecodedSingleValue(table.getTxnMap(session), rowId, commitTs, value,
           visibleColumn.latestCommitted());
       return value;
     } finally {
@@ -488,23 +484,18 @@ final class AdbPreparedPointLookupPlan {
     }
   }
 
-  private Value cachedSingleValue(AdbTable table, long rowId) {
+  private Value cachedSingleValue(SessionLocal session, AdbTable table,
+      long rowId) throws SQLException {
     long started = System.nanoTime();
     try {
-      if (directValueCacheDisabled) {
-        table.recordSqlPhase("ADB_POINT_LOOKUP_VALUE_CACHE_DISABLED",
-            System.nanoTime() - started);
-        return null;
-      }
       if (decodedSingleColumnCache.isEmpty()) {
         table.recordSqlPhase("ADB_POINT_LOOKUP_VALUE_CACHE_MISS",
             System.nanoTime() - started);
         return null;
       }
       CachedSingleColumnValue cached = decodedSingleColumnCache.get(rowId);
-      if (cached != null
-          && cached.latestCommitted
-          && cached.tableModificationId == table.getMaxDataModificationId()) {
+      if (cached != null && cached.latestCommitted
+          && canUseCachedSingleValue(session, table, rowId, cached)) {
         table.recordSqlPhase("ADB_POINT_LOOKUP_VALUE_CACHE_HIT",
             System.nanoTime() - started);
         return cached.value();
@@ -517,6 +508,14 @@ final class AdbPreparedPointLookupPlan {
           System.nanoTime() - started);
       throw e;
     }
+  }
+
+  private boolean canUseCachedSingleValue(SessionLocal session, AdbTable table,
+      long rowId, CachedSingleColumnValue cached) throws SQLException {
+    TxnMap2 map = table.getTxnMap(session);
+    RowKey rowKey = RowKey.of(map.getTabId(table.getId()), rowId);
+    return map.canUseLatestCommittedColumnCache(rowKey, cached.commitTs(),
+        cached.cacheWatermarkTs(), cached.storeDerivedCacheEpoch());
   }
 
   private void cacheDecodedValues(long rowId, long commitTs, Value[] values) {
@@ -535,7 +534,7 @@ final class AdbPreparedPointLookupPlan {
     cacheDecodedSingleValue(null, rowId, commitTs, value, false);
   }
 
-  private void cacheDecodedSingleValue(AdbTable table, long rowId,
+  private void cacheDecodedSingleValue(TxnMap2 map, long rowId,
       long commitTs, Value value, boolean latestCommitted) {
     if (DECODED_COLUMN_CACHE_LIMIT <= 0) {
       return;
@@ -545,7 +544,8 @@ final class AdbPreparedPointLookupPlan {
     }
     decodedSingleColumnCache.put(Long.valueOf(rowId),
         new CachedSingleColumnValue(commitTs, value,
-            table == null ? -1L : table.getMaxDataModificationId(),
+            map == null ? commitTs : map.latestCommittedTs(),
+            map == null ? -1L : map.storeDerivedCacheEpoch(),
             latestCommitted));
   }
 
@@ -554,14 +554,7 @@ final class AdbPreparedPointLookupPlan {
     if (decodedCacheTableModificationId == tableModificationId) {
       return;
     }
-    if (decodedCacheTableModificationId != Long.MIN_VALUE
-        && VALUE_CACHE_MODIFICATION_CHANGE_LIMIT >= 0
-        && ++decodedCacheTableModificationChanges
-            >= VALUE_CACHE_MODIFICATION_CHANGE_LIMIT) {
-      directValueCacheDisabled = true;
-    }
     decodedColumnCache.clear();
-    decodedSingleColumnCache.clear();
     decodedCacheTableModificationId = tableModificationId;
   }
 
@@ -652,19 +645,34 @@ final class AdbPreparedPointLookupPlan {
   private static final class CachedSingleColumnValue {
     private final long commitTs;
     private final Value value;
-    private final long tableModificationId;
+    private final long cacheWatermarkTs;
+    private final long storeDerivedCacheEpoch;
     private final boolean latestCommitted;
 
     private CachedSingleColumnValue(long commitTs, Value value,
-        long tableModificationId, boolean latestCommitted) {
+        long cacheWatermarkTs, long storeDerivedCacheEpoch,
+        boolean latestCommitted) {
       this.commitTs = commitTs;
       this.value = value;
-      this.tableModificationId = tableModificationId;
+      this.cacheWatermarkTs = cacheWatermarkTs;
+      this.storeDerivedCacheEpoch = storeDerivedCacheEpoch;
       this.latestCommitted = latestCommitted;
+    }
+
+    private long commitTs() {
+      return commitTs;
     }
 
     private Value value() {
       return value;
+    }
+
+    private long cacheWatermarkTs() {
+      return cacheWatermarkTs;
+    }
+
+    private long storeDerivedCacheEpoch() {
+      return storeDerivedCacheEpoch;
     }
   }
 }

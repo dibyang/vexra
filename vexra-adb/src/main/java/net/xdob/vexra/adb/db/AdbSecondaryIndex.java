@@ -294,7 +294,6 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
     TxnMap2 map = getTxnMap(session);
     try {
       TabId tabId = map.getTabId(table.getId());
-
       IndexPrefix prefix = IndexPrefix.of(tabId, this.getId());
       IndexPrefix2 minKey = null;
       IndexPrefix2 maxKey = null;
@@ -402,7 +401,7 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
 
   @Override
   public boolean canGetFirstOrLast() {
-    return true;
+    return false;
   }
 
   @Override
@@ -451,7 +450,7 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
 
   @Override
   public boolean canFindNext() {
-    return true;
+    return false;
   }
 
   @Override
@@ -479,21 +478,22 @@ public final class AdbSecondaryIndex extends AdbIndex<SearchRow, Value> {
 
     @Override
     public Row get() {
-      if (row == null) {
-        SearchRow r = getSearchRow();
-        if (r != null) {
-          row = mvTable.getRow(session, r.getKey());
-        }
-      }
-      return row;
+      return fullRow();
     }
 
     @Override
     public SearchRow getSearchRow() {
-      if (current == null) return null;
-      SimpleRowValue r = new SimpleRowValue(0);
-      r.setKey(current.getRowId());
-      return r;
+      return fullRow();
+    }
+
+    private Row fullRow() {
+      if (current == null) {
+        return null;
+      }
+      if (row == null) {
+        row = mvTable.getRow(session, current.getRowId());
+      }
+      return row;
     }
 
     @Override

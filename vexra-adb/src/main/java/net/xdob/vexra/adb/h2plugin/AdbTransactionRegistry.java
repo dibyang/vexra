@@ -43,7 +43,7 @@ public final class AdbTransactionRegistry {
         TxnMap2 map = TXN_MAPS.compute(key, (ignored, existing) ->
                 isPending(existing) ? existing
                         : new TxnMap2(txnManager, txnManager.beginTransaction()));
-        CURRENT.set(new CurrentTransaction(database, sessionId, txnManager, map));
+        CURRENT.set(new CurrentTransaction(database, sessionId, txnManager, key, map));
         return map;
     }
 
@@ -54,7 +54,10 @@ public final class AdbTransactionRegistry {
      * @param sessionId h2db session id
      */
     public static void commit(Database database, int sessionId) {
-        TxnMap2 map = TXN_MAPS.get(TransactionKey.of(database, sessionId));
+        TxnMap2 map = currentMap(database, sessionId);
+        if (map == null) {
+            map = TXN_MAPS.get(TransactionKey.of(database, sessionId));
+        }
         if (map != null) {
             map.commit();
         }
@@ -67,7 +70,10 @@ public final class AdbTransactionRegistry {
      * @param sessionId h2db session id
      */
     public static void rollback(Database database, int sessionId) {
-        TxnMap2 map = TXN_MAPS.get(TransactionKey.of(database, sessionId));
+        TxnMap2 map = currentMap(database, sessionId);
+        if (map == null) {
+            map = TXN_MAPS.get(TransactionKey.of(database, sessionId));
+        }
         if (map != null) {
             map.rollback();
         }
@@ -80,28 +86,41 @@ public final class AdbTransactionRegistry {
      * @param sessionId h2db session id
      */
     public static void clear(Database database, int sessionId) {
-        TXN_MAPS.remove(TransactionKey.of(database, sessionId));
         CurrentTransaction current = CURRENT.get();
         if (current != null && current.matches(database, sessionId)) {
             CURRENT.remove();
+            TXN_MAPS.remove(current.key);
+            return;
         }
+        TXN_MAPS.remove(TransactionKey.of(database, sessionId));
     }
 
     private static boolean isPending(TxnMap2 map) {
         return map != null && TxnState.PENDING.equals(map.getTransaction().getState());
     }
 
+    private static TxnMap2 currentMap(Database database, int sessionId) {
+        CurrentTransaction current = CURRENT.get();
+        if (current != null && current.matches(database, sessionId)) {
+            return current.map;
+        }
+        return null;
+    }
+
     private static final class CurrentTransaction {
         private final Database database;
         private final int sessionId;
         private final TxnManager txnManager;
+        private final TransactionKey key;
         private final TxnMap2 map;
 
         private CurrentTransaction(Database database, int sessionId,
-                                   TxnManager txnManager, TxnMap2 map) {
+                                   TxnManager txnManager, TransactionKey key,
+                                   TxnMap2 map) {
             this.database = database;
             this.sessionId = sessionId;
             this.txnManager = txnManager;
+            this.key = key;
             this.map = map;
         }
 

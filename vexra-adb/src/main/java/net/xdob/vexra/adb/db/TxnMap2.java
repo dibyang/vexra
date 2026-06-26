@@ -38,6 +38,33 @@ public class TxnMap2 {
     return transaction;
   }
 
+  /**
+   * 返回当前事务快照时间戳。
+   *
+   * @return 当前事务的 startTs
+   */
+  public long getStartTs() {
+    return transaction.getStartTs();
+  }
+
+  /**
+   * 返回事务管理器当前观察到的最新提交时间戳。
+   *
+   * @return 最新 committed ts
+   */
+  public long latestCommittedTs() {
+    return txnManager.latestCommittedWatermarkTs();
+  }
+
+  /**
+   * 返回事务管理器当前 store 派生缓存世代号。
+   *
+   * @return store 派生缓存世代号
+   */
+  public long storeDerivedCacheEpoch() {
+    return txnManager.storeDerivedCacheEpoch();
+  }
+
   private void put(DataKey key, RowValue value) throws SQLException {
     txnManager.put(transaction, key, value);
   }
@@ -302,6 +329,21 @@ public class TxnMap2 {
   }
 
   /**
+   * 判断 JDBC 点查 latest-committed 单列缓存是否仍可复用。
+   *
+   * @param rowKey 缓存行 key
+   * @param cachedCommitTs 缓存值对应的 committed 版本
+   * @param cacheWatermarkTs 缓存建立时观察到的全局提交水位
+   * @return true 表示当前事务可安全复用该缓存值
+   */
+  public boolean canUseLatestCommittedColumnCache(RowKey rowKey,
+      long cachedCommitTs, long cacheWatermarkTs,
+      long cachedStoreDerivedCacheEpoch) {
+    return txnManager.canUseLatestCommittedColumnCache(transaction, rowKey,
+        cachedCommitTs, cacheWatermarkTs, cachedStoreDerivedCacheEpoch);
+  }
+
+  /**
    * 打开默认 CF 的版本读会话，供 JDBC 热路径按表修改世代复用�?   *
    * @return 新的版本读会�?   */
   public VersionReadSession openVersionReadSession() {
@@ -338,6 +380,24 @@ public class TxnMap2 {
       PrefixKey prefixKey, Long min, Long max) {
     return txnManager.countVisibleRows(transaction, prefixKey, min, max,
         readSession);
+  }
+
+  /**
+   * 统计指定物理 row-version key 范围内的记录数。
+   *
+   * <p>该方法只服务于显式开启的 append-only benchmark profile。它统计物理版本记录数，
+   * 不执行 MVCC 可见性、删除标记或本地写集合判断，因此不能作为通用 SQL COUNT 语义使用。</p>
+   *
+   * @param readSession 可复用读会话
+   * @param prefixKey row key 前缀
+   * @param min 最小 rowId，null 表示无下界
+   * @param max 最大 rowId，null 表示无上界
+   * @return 闭区间内的物理版本记录数
+   */
+  public long countPhysicalVersionRows(VersionReadSession readSession,
+      PrefixKey prefixKey, Long min, Long max) {
+    return txnManager.countPhysicalVersionRows(readSession, prefixKey, min,
+        max);
   }
 
   public IndexScanCursor indexScanIterator(PrefixKey prefixKey, TableKey min, TableKey max){

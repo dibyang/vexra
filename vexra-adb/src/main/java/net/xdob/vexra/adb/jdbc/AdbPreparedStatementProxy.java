@@ -15,6 +15,11 @@ import java.sql.ResultSet;
  */
 final class AdbPreparedStatementProxy {
 
+  private static final Method SET_NULL_INT = preparedStatementMethod("setNull",
+      int.class, int.class);
+  private static final Method SET_NULL_INT_STRING =
+      preparedStatementMethod("setNull", int.class, int.class, String.class);
+
   private AdbPreparedStatementProxy() {
   }
 
@@ -48,6 +53,8 @@ final class AdbPreparedStatementProxy {
     private final AdbTableCountPlan tableCountPlan;
     private final Object[] parameters;
     private final boolean[] parameterSet;
+    private final byte[] parameterTypes;
+    private final long[] longParameters;
     private final SetterCall[] deferredSetters;
     private boolean delegateMayHaveParameters;
     private boolean insertFastPathConfirmed;
@@ -71,12 +78,18 @@ final class AdbPreparedStatementProxy {
       parameterCount = Math.max(parameterCount, parameterCount(tableCountPlan));
       this.parameters = new Object[parameterCount + 1];
       this.parameterSet = new boolean[parameterCount + 1];
+      this.parameterTypes = new byte[parameterCount + 1];
+      this.longParameters = new long[parameterCount + 1];
       this.deferredSetters = new SetterCall[parameterCount + 1];
     }
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args)
         throws Throwable {
+      Object fastSetterResult = tryConfirmedFastSetter(method, args);
+      if (fastSetterResult != NOT_CONFIRMED_FAST_SETTER) {
+        return fastSetterResult;
+      }
       String name = method.getName();
       if (isSetter(name, args)) {
         return setParameter(method, args, name);
@@ -84,6 +97,9 @@ final class AdbPreparedStatementProxy {
       if ("clearParameters".equals(name)) {
         java.util.Arrays.fill(parameters, null);
         java.util.Arrays.fill(parameterSet, false);
+        java.util.Arrays.fill(parameterTypes,
+            AdbPreparedInsertPlan.PARAMETER_UNKNOWN);
+        java.util.Arrays.fill(longParameters, 0L);
         clearDeferredSetters();
         delegateMayHaveParameters = false;
         insertParametersComplete = false;
@@ -158,6 +174,25 @@ final class AdbPreparedStatementProxy {
       return invokeDelegate(method, args);
     }
 
+    private Object tryConfirmedFastSetter(Method method, Object[] args) {
+      if (!insertFastPathConfirmed || insertPlan == null
+          || method == SET_NULL_INT || method == SET_NULL_INT_STRING
+          || args == null || args.length < 2 || !(args[0] instanceof Integer)) {
+        return NOT_CONFIRMED_FAST_SETTER;
+      }
+      int parameter = ((Integer) args[0]).intValue();
+      if (parameter <= 0 || parameter >= parameters.length) {
+        return NOT_CONFIRMED_FAST_SETTER;
+      }
+      if (!insertParametersComplete) {
+        parameterSet[parameter] = true;
+      }
+      Object value = args[1];
+      parameters[parameter] = value;
+      captureParameterType(parameter, method.getName(), value);
+      return null;
+    }
+
     private Object setParameter(Method method, Object[] args, String name)
         throws Throwable {
       int parameter = ((Integer) args[0]).intValue();
@@ -165,8 +200,10 @@ final class AdbPreparedStatementProxy {
         return invokeDelegate(method, args);
       }
       parameterSet[parameter] = true;
-      parameters[parameter] = "setNull".equals(name) ? null
+      Object value = "setNull".equals(name) ? null
           : args.length > 1 ? args[1] : null;
+      parameters[parameter] = value;
+      captureParameterType(parameter, name, value);
       if (insertFastPathConfirmed && insertPlan != null) {
         SetterCall setter = deferredSetters[parameter];
         if (setter != null) {
@@ -257,7 +294,8 @@ final class AdbPreparedStatementProxy {
         return null;
       }
       Integer count = insertParametersComplete
-          ? insertPlan.tryExecuteKnownComplete(connection, parameters)
+          ? insertPlan.tryExecuteKnownComplete(connection, parameters,
+              parameterTypes, longParameters)
           : insertPlan.tryExecute(connection, parameters, parameterSet);
       if (count != null) {
         insertFastPathConfirmed = true;
@@ -266,6 +304,19 @@ final class AdbPreparedStatementProxy {
         delegateMayHaveParameters = false;
       }
       return count;
+    }
+
+    private void captureParameterType(int parameter, String setterName,
+        Object value) {
+      if ("setLong".equals(setterName) && value instanceof Number) {
+        parameterTypes[parameter] = AdbPreparedInsertPlan.PARAMETER_LONG;
+        longParameters[parameter] = ((Number) value).longValue();
+      } else if ("setString".equals(setterName) && value instanceof String) {
+        parameterTypes[parameter] = AdbPreparedInsertPlan.PARAMETER_STRING;
+      } else {
+        parameterTypes[parameter] = AdbPreparedInsertPlan.PARAMETER_UNKNOWN;
+        longParameters[parameter] = 0L;
+      }
     }
 
     private static int parameterCount(AdbPreparedInsertPlan plan) {
@@ -292,7 +343,8 @@ final class AdbPreparedStatementProxy {
       return noSqlArgument(args) && ("execute".equals(name)
           || "executeQuery".equals(name)
           || "executeUpdate".equals(name)
-          || "executeLargeUpdate".equals(name));
+          || "executeLargeUpdate".equals(name)
+          || "addBatch".equals(name));
     }
 
     private static boolean isSetter(String name, Object[] args) {
@@ -456,6 +508,17 @@ final class AdbPreparedStatementProxy {
       } catch (java.lang.reflect.InvocationTargetException e) {
         throw e.getCause();
       }
+    }
+  }
+
+  private static final Object NOT_CONFIRMED_FAST_SETTER = new Object();
+
+  private static Method preparedStatementMethod(String name,
+      Class<?>... parameterTypes) {
+    try {
+      return PreparedStatement.class.getMethod(name, parameterTypes);
+    } catch (NoSuchMethodException e) {
+      throw new ExceptionInInitializerError(e);
     }
   }
 }

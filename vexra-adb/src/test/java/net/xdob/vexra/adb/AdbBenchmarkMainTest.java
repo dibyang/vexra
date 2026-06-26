@@ -111,6 +111,39 @@ class AdbBenchmarkMainTest {
   }
 
   /**
+   * 验证 raw bulk 诊断模式可以在完整 JDBC 连接和 H2 commit 边界下运行。
+   *
+   * <p>该模式用于模拟 h2db 未来提供批量 DML 参数 hook 后的 ADB 上限，不对外承诺为业务 API。
+   * 测试只校验接线路径，不把本地机器性能阈值固化到单元测试。</p>
+   */
+  @Test
+  void shouldRunJdbcRawBulkBenchmarkForHookSimulation() throws Exception {
+    Path output = tempDir.resolve("raw-bulk.properties");
+    String url = "jdbc:adb:ldb:" + tempDir.resolve("raw-bulk").resolve(
+        "adb-benchmark") + ";DB_CLOSE_DELAY=0";
+
+    AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+        "--mode", "jdbc_raw_bulk",
+        "--url", url,
+        "--workload", "insert",
+        "--rows", "10",
+        "--warmupOperations", "0",
+        "--operations", "8",
+        "--transactionBatchSize", "4",
+        "--statementBatchSize", "4",
+        "--sqlDiagnostics", "false",
+        "--output", output.toString()
+    });
+    Properties properties = load(output);
+
+    assertEquals("jdbc_raw_bulk", result.getMode());
+    assertEquals("insert", result.getWorkload());
+    assertEquals(8L, result.getOperations());
+    assertEquals(0L, result.getFailedOperations());
+    assertEquals("adb", properties.getProperty("tableEngine"));
+  }
+
+  /**
    * 验证 benchmark 可以打开二级索引写入场景，便于跟踪 bulk insert 的索引路径成本。
    */
   @Test
@@ -223,6 +256,45 @@ class AdbBenchmarkMainTest {
   /**
    * 验证 store 模式可以绕过 SQL / table engine，形成 LdbStore 本地封装基线。
    */
+  @Test
+  void shouldRunMixedBenchmarkWithPhysicalRangeCountFastPath()
+      throws Exception {
+    String property = "vexra.adb.rangeCount.physicalFastPath.enabled";
+    String previous = System.getProperty(property);
+    System.setProperty(property, "true");
+    try {
+      Path output = tempDir.resolve("physical-range-count.properties");
+      String url = "jdbc:adb:ldb:" + tempDir.resolve(
+          "physical-range-count").resolve("adb-benchmark")
+          + ";DB_CLOSE_DELAY=0";
+
+      AdbBenchmarkResult result = AdbBenchmarkMain.run(new String[]{
+          "--url", url,
+          "--workload", "mixed",
+          "--rows", "20",
+          "--warmupOperations", "4",
+          "--operations", "10",
+          "--rangeSize", "4",
+          "--transactionBatchSize", "4",
+          "--threads", "2",
+          "--output", output.toString()
+      });
+      Properties properties = load(output);
+
+      assertEquals("mixed", result.getWorkload());
+      assertEquals(0L, result.getFailedOperations());
+      assertTrue(containsPropertyValue(properties,
+          "ADB_RANGE_COUNT_PHYSICAL_COUNT"));
+      assertAllocationDetails(properties);
+    } finally {
+      if (previous == null) {
+        System.clearProperty(property);
+      } else {
+        System.setProperty(property, previous);
+      }
+    }
+  }
+
   @Test
   void shouldRunStoreBenchmarkAgainstLdbStore() throws Exception {
     Path output = tempDir.resolve("store.properties");

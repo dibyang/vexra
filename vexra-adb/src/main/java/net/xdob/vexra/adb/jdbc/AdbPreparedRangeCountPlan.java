@@ -33,6 +33,8 @@ final class AdbPreparedRangeCountPlan {
   private static final String BETWEEN = " BETWEEN ";
   private static final String PARAM_AND_PARAM = "? AND ?";
   private static final String COUNT_COLUMN = "COUNT(*)";
+  private static final String PHYSICAL_FAST_PATH_PROPERTY =
+      "vexra.adb.rangeCount.physicalFastPath.enabled";
 
   private final String tableName;
   private final String whereColumn;
@@ -136,7 +138,7 @@ final class AdbPreparedRangeCountPlan {
       long min = toLong(parameters[1]);
       long max = toLong(parameters[2]);
       allocationStarted = AdbBenchmarkMain.benchmarkAllocationBytes();
-      long count = min > max ? 0L : countVisibleRows(session, table, min, max);
+      long count = min > max ? 0L : countRows(session, table, min, max);
       AdbBenchmarkMain.recordCurrentMixedStage(
           "plan.rangeCount.countVisible", allocationStarted,
           AdbBenchmarkMain.benchmarkAllocationBytes());
@@ -160,11 +162,19 @@ final class AdbPreparedRangeCountPlan {
     }
   }
 
-  private long countVisibleRows(SessionLocal session, AdbTable table, long min,
+  private long countRows(SessionLocal session, AdbTable table, long min,
       long max) throws SQLException {
     TxnMap2 map = table.getTxnMap(session);
     RowPrefix prefix = rowPrefix(map, table.getId());
     VersionReadSession sessionView = readSession(table, map);
+    if (physicalFastPathEnabled()) {
+      return countPhysicalRows(table, map, sessionView, prefix, min, max);
+    }
+    return countVisibleRows(table, map, sessionView, prefix, min, max);
+  }
+
+  private long countVisibleRows(AdbTable table, TxnMap2 map,
+      VersionReadSession sessionView, RowPrefix prefix, long min, long max) {
     long started = System.nanoTime();
     try {
       return map.countVisibleRows(sessionView, prefix, min, max);
@@ -172,6 +182,21 @@ final class AdbPreparedRangeCountPlan {
       table.recordSqlPhase("ADB_RANGE_COUNT_VISIBLE_COUNT",
           System.nanoTime() - started);
     }
+  }
+
+  private long countPhysicalRows(AdbTable table, TxnMap2 map,
+      VersionReadSession sessionView, RowPrefix prefix, long min, long max) {
+    long started = System.nanoTime();
+    try {
+      return map.countPhysicalVersionRows(sessionView, prefix, min, max);
+    } finally {
+      table.recordSqlPhase("ADB_RANGE_COUNT_PHYSICAL_COUNT",
+          System.nanoTime() - started);
+    }
+  }
+
+  private static boolean physicalFastPathEnabled() {
+    return Boolean.getBoolean(PHYSICAL_FAST_PATH_PROPERTY);
   }
 
   private VersionReadSession readSession(AdbTable table, TxnMap2 map)
