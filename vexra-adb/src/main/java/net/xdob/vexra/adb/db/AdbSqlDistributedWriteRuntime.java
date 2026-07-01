@@ -1,7 +1,5 @@
 package net.xdob.vexra.adb.db;
 
-import net.xdob.vexra.adb.ha2.AdbRaftRegionCommitTransport;
-import net.xdob.vexra.adb.ha2.RaftRClient;
 import net.xdob.vexra.adb.key.DataKey;
 import net.xdob.vexra.adb.key.IndexKey;
 import net.xdob.vexra.adb.key.RowKey;
@@ -15,9 +13,10 @@ import net.xdob.vexra.ha.VirtualNodeMetadata;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.Properties;
+import java.util.ServiceLoader;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
+import org.h2.message.DbException;
 
 /**
  * ADB SQL 分布式写入 runtime。
@@ -29,8 +28,8 @@ import java.util.function.Function;
  */
 public final class AdbSqlDistributedWriteRuntime implements AutoCloseable {
   private final AdbSqlDistributedScanConfig config;
-  private final RaftRClient rClient;
   private final AdbRpcRegionCommitClient commitClient;
+  private final AutoCloseable closeable;
   private final AtomicBoolean closed = new AtomicBoolean(false);
 
   /**
@@ -43,13 +42,9 @@ public final class AdbSqlDistributedWriteRuntime implements AutoCloseable {
     if (!config.isRaftWriteClient()) {
       throw new IllegalArgumentException("raft write client is not enabled");
     }
-    Properties properties = new Properties();
-    properties.setProperty("HA2.GROUP", config.getRaftGroup());
-    properties.setProperty("HA2.NODES", config.getRaftPeers());
-    this.rClient = new RaftRClient(properties);
-    this.commitClient = new AdbRpcRegionCommitClient(
-        new AdbRaftRegionCommitTransport(config.getRaftDbName(), rClient),
-        config.getWriteTimeoutMillis());
+    AdbSqlDistributedWriteTarget target = writeTarget(config);
+    this.commitClient = target.commitClient();
+    this.closeable = target.closeable();
   }
 
   /**
@@ -75,9 +70,27 @@ public final class AdbSqlDistributedWriteRuntime implements AutoCloseable {
       try {
         commitClient.close();
       } finally {
-        rClient.close();
+        closeable.close();
       }
     }
+  }
+
+  private static AdbSqlDistributedWriteTarget writeTarget(
+      AdbSqlDistributedScanConfig config) {
+    ServiceLoader<AdbSqlDistributedRuntimeExtension> loader =
+        ServiceLoader.load(AdbSqlDistributedRuntimeExtension.class);
+    for (AdbSqlDistributedRuntimeExtension extension : loader) {
+      if (extension.supportsWriteClient(config.getWriteClient())) {
+        try {
+          return extension.createWriteTarget(config);
+        } catch (java.sql.SQLException e) {
+          throw DbException.convert(e);
+        }
+      }
+    }
+    throw DbException.getUnsupportedException(
+        "Distributed SQL write client '" + config.getWriteClient()
+            + "' requires an extension module such as vexra-adb-raft");
   }
 
   private TabId remoteTabId(TabId localTabId) {

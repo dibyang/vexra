@@ -1,7 +1,6 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.DbStore;
-import net.xdob.vexra.adb.ha2.RaftStore;
 import net.xdob.vexra.adb.ldb.LdbStore;
 import net.xdob.vexra.adb.rocks.RocksStore;
 import org.h2.api.ErrorCode;
@@ -20,7 +19,8 @@ public class DbStoreEngine {
   public static DbStore getOrCreate(DbStoreType type, String databaseName, Properties properties) {
     String dbPath = FileUtils.toRealPath(databaseName);
     if(DbStoreType.HA2 ==  type) {
-      return new RaftStore(dbPath, properties);
+      throw DbException.getUnsupportedException(
+          "HA2 store requires the vexra-adb-raft module");
     }
     DbStore store = stores.get(dbPath);
     if(store==null){

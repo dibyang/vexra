@@ -1,7 +1,5 @@
 package net.xdob.vexra.adb.db;
 
-import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
-
 import java.util.Objects;
 
 /**
@@ -129,7 +127,8 @@ public final class AdbDeploymentNodeSpec {
    * @return 可审计启动命令
    */
   public String startupCommand(String javaCommand, String classpath) {
-    return startupCommand(javaCommand, classpath, AdbRegionNodeMain.MAIN_CLASS,
+    return startupCommand(javaCommand, classpath,
+        AdbDeploymentPlan.DEFAULT_REGION_NODE_MAIN_CLASS,
         AdbDeploymentPlan.DEFAULT_GROUP_ID, nodeId + "@" + endpoint());
   }
 

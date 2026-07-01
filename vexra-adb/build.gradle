@@ -1,9 +1,6 @@
 dependencies {
     api project(':vexra-proto')
     api project(':vexra-common')
-    api project(':vexra-client')
-    api project(':vexra-server')
-    api project(':vexra-grpc')
 
 
     //api 'com.zaxxer:HikariCP:4.0.3'
@@ -39,16 +36,6 @@ tasks.register('adbSqlServerStartScripts', org.gradle.jvm.application.tasks.Crea
     outputDir = layout.buildDirectory.dir('adb-runtime/scripts/sql').get().asFile
     optsEnvironmentVar = 'ADB_SQL_SERVER_OPTS'
     exitEnvironmentVar = 'ADB_SQL_SERVER_EXIT_CONSOLE'
-}
-
-tasks.register('adbRegionNodeStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
-    dependsOn tasks.named('jar')
-    applicationName = 'adb-region-node'
-    mainClassName = 'net.xdob.vexra.adb.ha2.AdbRegionNodeMain'
-    classpath = adbRuntimeClasspath
-    outputDir = layout.buildDirectory.dir('adb-runtime/scripts/region').get().asFile
-    optsEnvironmentVar = 'ADB_REGION_NODE_OPTS'
-    exitEnvironmentVar = 'ADB_REGION_NODE_EXIT_CONSOLE'
 }
 
 tasks.register('adbClusterPlanStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
@@ -198,14 +185,9 @@ tasks.register('adbBenchmark', JavaExec) {
 
 tasks.register('adbRuntimeDist', Zip) {
     dependsOn tasks.named('jar'), tasks.named('adbSqlServerStartScripts'),
-        tasks.named('adbRegionNodeStartScripts'),
-        tasks.named('adbClusterPlanStartScripts'),
-        tasks.named('adbClusterPreflightStartScripts'),
         tasks.named('adbBackupStartScripts'),
         tasks.named('adbRestoreStartScripts'),
         tasks.named('adbUpgradePlanStartScripts'),
-        tasks.named('adbDoctorStartScripts'),
-        tasks.named('adbReleaseProfileStartScripts'),
         tasks.named('adbBenchmarkStartScripts')
     archiveClassifier = 'runtime'
 
@@ -215,14 +197,9 @@ tasks.register('adbRuntimeDist', Zip) {
     }
     into('bin') {
         from(tasks.named('adbSqlServerStartScripts'))
-        from(tasks.named('adbRegionNodeStartScripts'))
-        from(tasks.named('adbClusterPlanStartScripts'))
-        from(tasks.named('adbClusterPreflightStartScripts'))
         from(tasks.named('adbBackupStartScripts'))
         from(tasks.named('adbRestoreStartScripts'))
         from(tasks.named('adbUpgradePlanStartScripts'))
-        from(tasks.named('adbDoctorStartScripts'))
-        from(tasks.named('adbReleaseProfileStartScripts'))
         from(tasks.named('adbBenchmarkStartScripts'))
         fileMode = 0755
     }

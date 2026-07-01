@@ -1,7 +1,5 @@
 package net.xdob.vexra.adb.db;
 
-import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -19,6 +17,9 @@ import java.util.Set;
 public final class AdbDeploymentPlan {
   /** 兼容旧部署计划构造器时使用的默认 ADB Raft group 标识。 */
   public static final String DEFAULT_GROUP_ID = "adb-default-region";
+  /** ADB Raft region node 默认 main class 名称。 */
+  public static final String DEFAULT_REGION_NODE_MAIN_CLASS =
+      "net.xdob.vexra.adb.ha2.AdbRegionNodeMain";
   private final AdbDistributedRuntimeOptions runtimeOptions;
   private final String javaCommand;
   private final String classpath;
@@ -36,7 +37,7 @@ public final class AdbDeploymentPlan {
    */
   public AdbDeploymentPlan(AdbDistributedRuntimeOptions runtimeOptions,
       String javaCommand, String jarPath, List<AdbDeploymentNodeSpec> nodes) {
-    this(runtimeOptions, javaCommand, jarPath, AdbRegionNodeMain.MAIN_CLASS,
+    this(runtimeOptions, javaCommand, jarPath, DEFAULT_REGION_NODE_MAIN_CLASS,
         DEFAULT_GROUP_ID, nodes);
   }
 
@@ -52,7 +53,7 @@ public final class AdbDeploymentPlan {
   public AdbDeploymentPlan(AdbDistributedRuntimeOptions runtimeOptions,
       String javaCommand, String classpath, String groupId,
       List<AdbDeploymentNodeSpec> nodes) {
-    this(runtimeOptions, javaCommand, classpath, AdbRegionNodeMain.MAIN_CLASS,
+    this(runtimeOptions, javaCommand, classpath, DEFAULT_REGION_NODE_MAIN_CLASS,
         groupId, nodes);
   }
 

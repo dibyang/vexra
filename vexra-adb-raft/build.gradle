@@ -1,0 +1,89 @@
+dependencies {
+    api project(':vexra-adb')
+    api project(':vexra-client')
+    api project(':vexra-server')
+    api project(':vexra-grpc')
+}
+
+test {
+    useJUnitPlatform()
+}
+
+def adbRaftRuntimeClasspath = files(tasks.named('jar')) + configurations.runtimeClasspath
+
+tasks.register('adbRegionNodeStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-region-node'
+    mainClassName = 'net.xdob.vexra.adb.ha2.AdbRegionNodeMain'
+    classpath = adbRaftRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-raft-runtime/scripts/region').get().asFile
+    optsEnvironmentVar = 'ADB_REGION_NODE_OPTS'
+    exitEnvironmentVar = 'ADB_REGION_NODE_EXIT_CONSOLE'
+}
+
+tasks.register('adbClusterPlanStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-cluster-plan'
+    mainClassName = 'net.xdob.vexra.adb.AdbClusterPlanMain'
+    classpath = adbRaftRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-raft-runtime/scripts/cluster').get().asFile
+    optsEnvironmentVar = 'ADB_CLUSTER_PLAN_OPTS'
+    exitEnvironmentVar = 'ADB_CLUSTER_PLAN_EXIT_CONSOLE'
+}
+
+tasks.register('adbClusterPreflightStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-cluster-preflight'
+    mainClassName = 'net.xdob.vexra.adb.AdbClusterPreflightMain'
+    classpath = adbRaftRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-raft-runtime/scripts/preflight').get().asFile
+    optsEnvironmentVar = 'ADB_CLUSTER_PREFLIGHT_OPTS'
+    exitEnvironmentVar = 'ADB_CLUSTER_PREFLIGHT_EXIT_CONSOLE'
+}
+
+tasks.register('adbDoctorStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-doctor'
+    mainClassName = 'net.xdob.vexra.adb.AdbDoctorMain'
+    classpath = adbRaftRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-raft-runtime/scripts/doctor').get().asFile
+    optsEnvironmentVar = 'ADB_DOCTOR_OPTS'
+    exitEnvironmentVar = 'ADB_DOCTOR_EXIT_CONSOLE'
+}
+
+tasks.register('adbReleaseProfileStartScripts', org.gradle.jvm.application.tasks.CreateStartScripts) {
+    dependsOn tasks.named('jar')
+    applicationName = 'adb-release-profile'
+    mainClassName = 'net.xdob.vexra.adb.AdbReleaseProfileMain'
+    classpath = adbRaftRuntimeClasspath
+    outputDir = layout.buildDirectory.dir('adb-raft-runtime/scripts/release').get().asFile
+    optsEnvironmentVar = 'ADB_RELEASE_PROFILE_OPTS'
+    exitEnvironmentVar = 'ADB_RELEASE_PROFILE_EXIT_CONSOLE'
+}
+
+tasks.register('adbRaftRuntimeDist', Zip) {
+    dependsOn tasks.named('jar'),
+        tasks.named('adbRegionNodeStartScripts'),
+        tasks.named('adbClusterPlanStartScripts'),
+        tasks.named('adbClusterPreflightStartScripts'),
+        tasks.named('adbDoctorStartScripts'),
+        tasks.named('adbReleaseProfileStartScripts')
+    archiveClassifier = 'runtime'
+
+    into('lib') {
+        from(tasks.named('jar'))
+        from(configurations.runtimeClasspath)
+    }
+    into('bin') {
+        from(tasks.named('adbRegionNodeStartScripts'))
+        from(tasks.named('adbClusterPlanStartScripts'))
+        from(tasks.named('adbClusterPreflightStartScripts'))
+        from(tasks.named('adbDoctorStartScripts'))
+        from(tasks.named('adbReleaseProfileStartScripts'))
+        fileMode = 0755
+    }
+}
+
+tasks.named('test') {
+    dependsOn tasks.named('adbRaftRuntimeDist')
+}

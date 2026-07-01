@@ -1,6 +1,5 @@
 package net.xdob.vexra.adb.db;
 
-import net.xdob.vexra.adb.ha2.AdbRegionNodeMain;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -36,7 +35,8 @@ class AdbDeploymentPlanTest {
     assertTrue(command.contains("-Dvexra.adb.nodeId=node-a"));
     assertTrue(command.contains("-Dvexra.adb.tlsCert=/tls/node-a.pem"));
     assertTrue(command.contains("-cp vexra-adb-node.jar"));
-    assertTrue(command.contains(AdbRegionNodeMain.MAIN_CLASS));
+    assertTrue(command.contains(
+        AdbDeploymentPlan.DEFAULT_REGION_NODE_MAIN_CLASS));
     assertTrue(command.contains("--group region-group-1"));
     assertTrue(command.contains("--node node-a"));
     assertTrue(command.contains("--peers " + plan.peersArgument()));

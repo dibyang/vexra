@@ -1,8 +1,6 @@
 package net.xdob.vexra.adb.db;
 
 import net.xdob.vexra.adb.DbStore;
-import net.xdob.vexra.adb.ha2.AdbRaftRegionScanClient;
-import net.xdob.vexra.adb.ha2.RaftRClient;
 import net.xdob.vexra.adb.key.RowKey;
 import net.xdob.vexra.adb.key.RowPrefix;
 import net.xdob.vexra.adb.key.TabId;
@@ -12,6 +10,7 @@ import net.xdob.vexra.cluster.region.RegionRouter;
 import net.xdob.vexra.cluster.sql.DistributedPlan;
 import net.xdob.vexra.ha.VirtualNodeMetadata;
 import org.h2.index.Cursor;
+import org.h2.message.DbException;
 import org.h2.result.Row;
 
 import java.sql.SQLException;
@@ -20,7 +19,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Properties;
+import java.util.ServiceLoader;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -72,11 +71,12 @@ public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
   }
 
   private AdbSqlDistributedScanRuntime(DbStore store,
-      AdbSqlDistributedScanConfig config, ScanTarget target) {
+      AdbSqlDistributedScanConfig config, AdbSqlDistributedScanTarget target) {
     this.store = Objects.requireNonNull(store, "store == null");
     this.config = Objects.requireNonNull(config, "config == null");
-    this.executor = Objects.requireNonNull(target, "target == null").executor;
-    this.closeable = target.closeable;
+    this.executor = Objects.requireNonNull(target, "target == null")
+        .executor();
+    this.closeable = target.closeable();
   }
 
   /**
@@ -141,7 +141,7 @@ public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
   /**
    * 关闭 SQL distributed scan runtime 持有的远端连接资源。
    *
-   * <p>本地 scan 没有实际资源；远端 raft scan 会关闭内部 `RaftRClient`。该方法幂等，便于
+   * <p>本地 scan 没有实际资源；远端 scan 会关闭扩展模块持有的连接资源。该方法幂等，便于
    * H2 table close/remove 多次调用。</p>
    *
    * @throws Exception 关闭底层远端 client 失败时抛出
@@ -212,23 +212,34 @@ public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
             replicas.replicas(), 0, 0, 0));
   }
 
-  private static ScanTarget scanTarget(DbStore store,
+  private static AdbSqlDistributedScanTarget scanTarget(DbStore store,
       AdbSqlDistributedScanConfig config) {
     Objects.requireNonNull(store, "store == null");
     Objects.requireNonNull(config, "config == null");
     if (!config.isRaftScanClient()) {
-      return new ScanTarget(new AdbDistributedRegionScanExecutor(
+      return new AdbSqlDistributedScanTarget(new AdbDistributedRegionScanExecutor(
           new AdbLocalRegionScanClient(new AdbLocalRegionScanExecutor(store))),
           () -> {
           });
     }
-    Properties properties = new Properties();
-    properties.setProperty("HA2.GROUP", config.getRaftGroup());
-    properties.setProperty("HA2.NODES", config.getRaftPeers());
-    RaftRClient rClient = new RaftRClient(properties);
-    return new ScanTarget(new AdbDistributedRegionScanExecutor(
-        new AdbRaftRegionScanClient(config.getRaftDbName(), rClient)),
-        rClient);
+    try {
+      return extension(config.getScanClient()).createScanTarget(store, config);
+    } catch (SQLException e) {
+      throw DbException.convert(e);
+    }
+  }
+
+  private static AdbSqlDistributedRuntimeExtension extension(String client) {
+    ServiceLoader<AdbSqlDistributedRuntimeExtension> loader =
+        ServiceLoader.load(AdbSqlDistributedRuntimeExtension.class);
+    for (AdbSqlDistributedRuntimeExtension extension : loader) {
+      if (extension.supportsScanClient(client)) {
+        return extension;
+      }
+    }
+    throw DbException.getUnsupportedException(
+        "Distributed SQL scan client '" + client
+            + "' requires an extension module such as vexra-adb-raft");
   }
 
   private static byte[] normalizeEnd(byte[] endKey) {
@@ -287,14 +298,4 @@ public final class AdbSqlDistributedScanRuntime implements AutoCloseable {
     }
   }
 
-  private static final class ScanTarget {
-    private final AdbDistributedRegionScanExecutor executor;
-    private final AutoCloseable closeable;
-
-    private ScanTarget(AdbDistributedRegionScanExecutor executor,
-        AutoCloseable closeable) {
-      this.executor = Objects.requireNonNull(executor, "executor == null");
-      this.closeable = Objects.requireNonNull(closeable, "closeable == null");
-    }
-  }
 }
