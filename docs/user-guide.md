@@ -339,7 +339,16 @@ runtime 包也包含 `bin/adb-benchmark.bat` / `bin/adb-benchmark`，参数与 m
 `concurrency.perThreadThroughputPerSecond`。当 `threads > 1` 时，还会包含
 `concurrency.completedOperations`。如果当前 JVM 支持线程分配统计，还会输出
 `allocation.supported=true`、`allocation.totalBytes` 和
-`allocation.bytesPerOperation`；不支持时输出 `allocation.supported=false`。
+`allocation.bytesPerOperation`；不支持时输出 `allocation.supported=false`。benchmark 还会在正式
+测量窗口内采样 JVM 堆使用量，输出 `heap.sampling.supported`、`heap.usedBeforeBytes`、
+`heap.usedAfterBytes`、`heap.usedPeakBytes`、`heap.usedDeltaBytes`、
+`heap.usedPeakDeltaBytes` 和 `heap.sampleCount`。同时会记录
+`heap.checkpoint.initialBytes`、`heap.checkpoint.afterPrepareBytes`、
+`heap.checkpoint.afterWarmupBytes`、`heap.checkpoint.afterMeasureBytes` 以及
+`heap.stage.prepareDeltaBytes`、`heap.stage.warmupDeltaBytes`、
+`heap.stage.measureDeltaBytes`、`heap.stage.measurePeakDeltaBytes`，用于把建库/预置数据、预热保留堆
+和正式测量窗口峰值拆开观察。这些 heap 指标反映本进程短窗口内的已用堆，用于观察峰值和
+retained/cache 压力，不等同于操作级分配量。
 启用 SQL 诊断时，还会输出
 `sqlDiagnostics.operationStats.*` 和 `sqlDiagnostics.phaseStats.*`，分别用于观察
 table-engine 入口和 commit / row-count / 索引查找等关键阶段耗时。prepared 主键点查还会记录

@@ -10,7 +10,7 @@ Vexra is a distributed data storage project based on the Raft consensus protocol
 - **Fault tolerance and recovery**: supports node recovery, log recovery, snapshot installation, and state-machine restore flows.
 - **Multiple transports**: provides both gRPC and Netty transport implementations.
 - **Pluggable state machines**: extends state-machine behavior through `SMPlugin`, including a replicated-map example and the ADB plugin.
-- **ADB/JDBC access**: `vexra-adb` provides database state-machine and JDBC-related capabilities.
+- **ADB/JDBC access**: the adjacent independent `vexra-adb` project provides core database capabilities, while this project adds Raft cluster mode through `vexra-adb-raft`.
 - **Virtual node support**: supports virtual nodes, shared-storage checks, and minimum-node deployment scenarios.
 - **External LDB storage dependency**: LDB has been split into an independent project; Vexra integrates local KV storage through dependency and plugin boundaries.
 
@@ -27,7 +27,7 @@ Vexra is a distributed data storage project based on the Raft consensus protocol
 | `vexra-grpc` | gRPC transport implementation |
 | `vexra-netty` | Netty transport and DataStream implementation |
 | `vexra-rmap` | Replicated-map state-machine example |
-| `vexra-adb` | ADB/JDBC/database state-machine plugin |
+| `vexra-adb-raft` | Raft cluster database extension built on the independent `vexra-adb` core |
 | `vexra-metrics-api` / `vexra-metrics-default` | Metrics API and default implementation |
 
 ## LDB Independence
@@ -58,7 +58,7 @@ The root build contains test-task configuration, so validation should follow the
 ```powershell
 .\gradlew.bat :vexra-server-sm:test
 .\gradlew.bat :vexra-server:test
-.\gradlew.bat :vexra-adb:test
+.\gradlew.bat :vexra-adb-raft:test
 ```
 
 LDB's own tests should run in the independent LDB project. In Vexra, testing should focus on ADB integration with the external LDB dependency.
@@ -84,4 +84,4 @@ LDB design, reliability plans, and API compatibility notes are now maintained in
 
 Vexra-owned code is licensed under the Apache License 2.0 by default. See [LICENSE](LICENSE).
 
-Third-party source code, resources, and dependency attributions are documented in [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The `vexra-adb` module includes source code and resources derived from H2 Database Engine; those files retain the H2 Group MPL 2.0 / EPL 1.0 dual-license notices.
+Third-party source code, resources, and dependency attributions are documented in [NOTICE](NOTICE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). ADB core and its H2 Database Engine-derived resources are maintained in the adjacent independent `vexra-adb` project.

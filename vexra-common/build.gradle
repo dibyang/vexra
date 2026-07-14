@@ -1,5 +1,7 @@
 
 
+def adbCoreProject = findProject(':vexra-adb')
+
 dependencies {
     //implementation("org.apache.commons:commons-lang3:${lang3_version}")
 //    implementation "com.google.code.gson:gson:${gson_version}"
@@ -24,5 +26,10 @@ dependencies {
 //    implementation "io.dropwizard.metrics:metrics-jvm:${dropwizard_version}"
 //    implementation "io.dropwizard.metrics:metrics-jmx:${dropwizard_version}"
     api project(':vexra-proto')
+    if (adbCoreProject != null) {
+        api adbCoreProject
+    } else {
+        api("net.xdob.vexra:vexra-adb:${vexra_adb_version}")
+    }
     //api project(':vexra-fasts')
 }

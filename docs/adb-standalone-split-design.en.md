@@ -13,6 +13,8 @@ Today, `vexra-adb` exposes Raft dependencies through `api project(':vexra-client
 - Remove direct `vexra-client`, `vexra-server`, and `vexra-grpc` dependencies from `vexra-adb`.
 - Keep embedded mode and single-node TCP mode in `vexra-adb`.
 - Expose cluster capabilities through `vexra-adb-raft`.
+- Extract core `vexra-adb` into an independent Gradle project next to `vexra` at `D:\\work\\java2\\vexra-adb`.
+- Keep `vexra-adb-raft` in the `vexra` project and make it depend on the independent `vexra-adb` through published coordinates.
 
 ## Non-Goals
 
@@ -21,6 +23,7 @@ Today, `vexra-adb` exposes Raft dependencies through `api project(':vexra-client
 - Do not design new SQL syntax or JDBC protocol behavior.
 - Do not modify `vexra-ldb`.
 - Do not implement a non-Raft cluster protocol in this phase.
+- Do not extract `vexra-adb-raft` into the independent project or change its Raft cluster responsibility.
 
 ## Current Flows
 
@@ -36,6 +39,7 @@ Today, `vexra-adb` exposes Raft dependencies through `api project(':vexra-client
 ## Core Constraints
 
 - `vexra-adb` must no longer transitively expose `vexra-client`, `vexra-server`, or `vexra-grpc`.
+- `vexra-adb` must not depend on `vexra-proto`, `vexra-common`, or any other Vexra module. Among adjacent projects, it may depend only on the independent `vexra-ldb`.
 - `vexra-adb` must keep `jdbc:adb:mem:`, `jdbc:adb:ldb:`, and `jdbc:adb:tcp://...` working.
 - `vexra-adb-raft` may depend on `vexra-adb`, but `vexra-adb` must not depend on `vexra-adb-raft`.
 - Core SPI types may describe requests, responses, routing, commit phases, and local fallback, but must not import Raft types.
@@ -47,8 +51,19 @@ Today, `vexra-adb` exposes Raft dependencies through `api project(':vexra-client
 
 | Module | Responsibility | Main dependencies |
 | --- | --- | --- |
-| `vexra-adb` | ADB core, H2 provider, JDBC URL prefix, LDB/Rocks, local transactions, single-node TCP | `vexra-proto`, `vexra-common`, `h2db`, `vexra-ldb` |
+| `vexra-adb` | ADB core, H2 provider, JDBC URL prefix, LDB/Rocks, local transactions, single-node TCP | `h2db`, `vexra-ldb`, and general third-party libraries; no Vexra dependency |
 | `vexra-adb-raft` | ADB Raft state machine, Raft client/store, region node, cluster runtime distribution | `vexra-adb`, `vexra-client`, `vexra-server`, `vexra-grpc` |
+
+Phase 2 uses the following project topology:
+
+| Project directory | Contents | Dependency model |
+| --- | --- | --- |
+| `D:\\work\\java2\\vexra-adb` | Independent ADB root project with the former module sources directly under `src/` | Depends only on `vexra-ldb` through Maven coordinates and neither includes nor depends on the adjacent Vexra project |
+| `D:\\work\\java2\\vexra` | Vexra Raft project and the `vexra-adb-raft` module | Releases depend on core through `net.xdob.vexra:vexra-adb`; local builds link the adjacent source project with Gradle `includeFlat` |
+
+The independent project continues to publish `net.xdob.vexra:vexra-adb`, so Java packages and consumer dependency coordinates remain unchanged. Only Gradle project ownership changes.
+
+To preserve the existing SPI and source compatibility, pure data models, routing models, DDL/transaction plans, and basic replica descriptors already used by ADB are owned by `vexra-adb` while temporarily retaining their current `net.xdob.vexra.cluster.*` / `net.xdob.vexra.ha.*` packages. These types must not depend on Raft clients/servers, networking, or the Vexra runtime. Vexra reuses them by depending on ADB. Protocol codecs and witness/Raft implementations remain in `vexra-adb-raft` or other Vexra modules.
 
 ### Core SPI Rule
 
@@ -139,6 +154,7 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 ## Rollback
 
 - Revert the new module and Gradle dependency changes to restore the single-module layout.
+- For the independent-project extraction, move `vexra-adb` back under `vexra` and restore its `settings.gradle` module declaration. Published coordinates and Java packages remain unchanged, so application code does not need to change.
 - No data conversion is required because storage formats are unchanged.
 - If `vexra-adb-raft` compilation or tests fail, the documentation can remain while implementation changes are narrowed to preparatory core dependency cleanup.
 
@@ -148,6 +164,7 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 - Single-node TCP: `adb-sql-server` and `jdbc:adb:tcp://...` remain compatible.
 - Raft cluster entry points: `adb-region-node`, Raft smoke tests, and cluster runtime move from `vexra-adb` to `vexra-adb-raft`.
 - Maven/Gradle consumers must explicitly depend on `vexra-adb-raft` for cluster capabilities.
+- When the adjacent project exists, `vexra` links the independent `vexra-adb` source project through Gradle `includeFlat`; otherwise it uses Maven coordinates. Published metadata always uses the artifact coordinates and does not expose local directory relationships.
 
 ## Rollout
 
@@ -158,6 +175,7 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 | 3 | Remove Raft dependencies from core | `:vexra-adb:compileJava` no longer depends on client/server/grpc |
 | 4 | Split runtime scripts | Core package keeps single-node scripts, Raft package keeps region/cluster scripts |
 | 5 | Regression tests | Core local tests and Raft extension tests pass |
+| 6 | Extract core as an adjacent independent project | The independent project compiles, the original repository no longer contains the `vexra-adb` source directory, and `vexra-adb-raft` still compiles |
 
 ## Test Plan
 
@@ -166,6 +184,9 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 - `:vexra-adb:test --tests net.xdob.vexra.adb.AdbSqlServerMainTest`
 - `:vexra-adb-raft:compileJava`
 - `:vexra-adb-raft:test --tests net.xdob.vexra.adb.ha2.*`
+- Run `:compileJava` and `:compileTestJava` in the independent project.
+- Verify that the independent project `compileClasspath` contains no `net.xdob.vexra:vexra-*` dependency except `vexra-ldb`.
+- Run `:vexra-adb-raft:compileJava` and `:vexra-adb-raft:compileTestJava` in the original `vexra` project.
 
 ## Risks
 
@@ -175,6 +196,9 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 | Test package moves can miss files | P1 | Move by import/package scans |
 | Runtime distribution boundary can become unclear | P2 | Core keeps SQL/backup/restore/benchmark, Raft keeps region/cluster |
 | Existing consumers rely on Raft transitively from `vexra-adb` | P2 | Document explicit `vexra-adb-raft` dependency |
+| Adjacent projects use mismatched local snapshot versions | P1 | Keep a shared `vexra_adb_version` and link adjacent sources directly with `includeFlat` for local builds |
+| Uncommitted core changes are missed during extraction | P1 | Copy the complete current working tree and verify the file list before removing the original module directory |
+| Pure SPI models remain supplied by `vexra-common`, reversing the dependency direction | P1 | Move ownership of runtime-free models used by ADB to ADB, make Vexra depend on ADB, and keep protocol adapters in the Raft extension |
 
 ## Implementation Plan
 
@@ -184,3 +208,6 @@ This phase does not change the commit protocol. `AdbRegionCommitRequest`, `AdbDu
 4. Adjust `DbStoreEngine` and `AdbTableProvider` so core no longer imports `ha2`.
 5. Move Raft/region-node tests into `vexra-adb-raft`.
 6. Verify the core module and Raft extension module separately.
+7. Extract `vexra-adb` into an adjacent independent Gradle root project while preserving current core working-tree changes.
+8. Remove the core source directory from the original repository and make `vexra-adb-raft` depend on the independent project through published coordinates and a local `includeFlat` link.
+9. Remove core dependencies on `vexra-proto` and `vexra-common`, move pure SPI model ownership to ADB, and move Proto/witness adapters into `vexra-adb-raft`.

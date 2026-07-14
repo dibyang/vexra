@@ -1,5 +1,6 @@
+
 dependencies {
-    api project(':vexra-adb')
+    api("net.xdob.vexra:vexra-adb:${vexra_adb_version}")
     api project(':vexra-client')
     api project(':vexra-server')
     api project(':vexra-grpc')

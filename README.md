@@ -10,7 +10,7 @@ Vexra 是一个基于 Raft 共识协议的分布式数据存储项目，目标�
 - **容错与恢复**：支持节点故障恢复、日志恢复、快照安装和状态机恢复流程。
 - **多传输实现**：提供 gRPC 与 Netty 两套传输实现，便于不同部署场景选择。
 - **状态机插件化**：通过 `SMPlugin` 扩展状态机能力，当前包含复制 Map 示例和 ADB 插件。
-- **ADB/JDBC 接入**：`vexra-adb` 提供数据库状态机插件和 JDBC 访问相关能力。
+- **ADB/JDBC 接入**：相邻的独立 `vexra-adb` 项目提供核心数据库能力，本项目通过 `vexra-adb-raft` 扩展 Raft 集群模式。
 - **虚拟节点支持**：支持虚拟节点、共享存储检查和最少节点部署场景。
 - **外部 LDB 存储依赖**：LDB 已拆分为独立项目，Vexra 通过依赖和插件边界集成本地 KV 存储能力。
 
@@ -27,7 +27,7 @@ Vexra 是一个基于 Raft 共识协议的分布式数据存储项目，目标�
 | `vexra-grpc` | gRPC 传输实现 |
 | `vexra-netty` | Netty 传输和 DataStream 实现 |
 | `vexra-rmap` | 复制 Map 状态机示例 |
-| `vexra-adb` | ADB/JDBC/数据库状态机插件 |
+| `vexra-adb-raft` | 基于独立 `vexra-adb` 核心的 Raft 集群数据库扩展 |
 | `vexra-metrics-api` / `vexra-metrics-default` | 指标接口和默认实现 |
 
 ## LDB 独立说明
@@ -58,7 +58,7 @@ ADB 与 LDB 的集成边界主要包括：
 ```powershell
 .\gradlew.bat :vexra-server-sm:test
 .\gradlew.bat :vexra-server:test
-.\gradlew.bat :vexra-adb:test
+.\gradlew.bat :vexra-adb-raft:test
 ```
 
 LDB 自身测试应在独立 LDB 项目中执行；Vexra 侧重点验证 ADB 与外部 LDB 依赖的集成行为。
@@ -84,4 +84,4 @@ LDB 相关设计、可靠性计划和 API 兼容说明已迁移到独立 LDB 项
 
 Vexra 自有代码默认使用 Apache License 2.0，见 [LICENSE](LICENSE)。
 
-仓库中包含的第三方源码、资源和依赖归属见 [NOTICE](NOTICE) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。其中 `vexra-adb` 模块包含 H2 Database Engine 衍生代码和资源，相关文件保留 H2 Group 的 MPL 2.0 / EPL 1.0 双许可证声明。
+仓库中包含的第三方源码、资源和依赖归属见 [NOTICE](NOTICE) 和 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。ADB 核心及其 H2 Database Engine 衍生资源由相邻的独立 `vexra-adb` 项目维护。

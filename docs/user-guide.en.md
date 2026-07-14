@@ -347,7 +347,19 @@ includes `concurrency.completedOperations`. If the current JVM supports
 thread-allocation tracking, the report also includes
 `allocation.supported=true`, `allocation.totalBytes`, and
 `allocation.bytesPerOperation`; otherwise it records
-`allocation.supported=false`. When SQL diagnostics are enabled,
+`allocation.supported=false`. The benchmark also samples JVM heap usage during
+the measured window and records `heap.sampling.supported`,
+`heap.usedBeforeBytes`, `heap.usedAfterBytes`, `heap.usedPeakBytes`,
+`heap.usedDeltaBytes`, `heap.usedPeakDeltaBytes`, and `heap.sampleCount`. It
+also records `heap.checkpoint.initialBytes`,
+`heap.checkpoint.afterPrepareBytes`, `heap.checkpoint.afterWarmupBytes`,
+`heap.checkpoint.afterMeasureBytes`, `heap.stage.prepareDeltaBytes`,
+`heap.stage.warmupDeltaBytes`, `heap.stage.measureDeltaBytes`, and
+`heap.stage.measurePeakDeltaBytes`, so setup/load, warmup-retained heap, and
+measured-window peak can be inspected separately. These heap fields describe
+used heap in this short benchmark process and help separate peak /
+retained-cache pressure from per-operation allocation.
+When SQL diagnostics are enabled,
 the report also includes `sqlDiagnostics.operationStats.*` and
 `sqlDiagnostics.phaseStats.*` for table-engine entry points and key stages such
 as commit, row-count, and index lookup. Prepared primary-key lookups also record

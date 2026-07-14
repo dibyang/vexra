@@ -1,4 +1,5 @@
 rootProject.name = 'vexra'
+
 include 'vexra-proto'
 include 'vexra-common'
 include 'vexra-client'
@@ -10,5 +11,4 @@ include 'vexra-server'
 include 'vexra-grpc'
 include 'vexra-netty'
 include 'vexra-rmap'
-include 'vexra-adb'
 include 'vexra-adb-raft'

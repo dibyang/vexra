@@ -5053,3 +5053,119 @@ ADB 侧，而不是 ldb 写入能力不足。已保留的正向修复包括：
    ADB 侧回归已经修复并在当前口径超过 H2，但后续发布前仍应跑更长窗口和多轮中位数。
 3. 下一阶段更有价值的方向不再是 ldb 写入，而是继续压 SQL range count/point lookup 的固定成本和
    H2 执行器边界分配。
+
+## 第八十一轮：补充 heap peak 采样并复测 ldb snapshot
+
+本轮在 `AdbBenchmarkMain` 的正式测量窗口增加进程内 JVM heap 采样，输出
+`heap.usedBeforeBytes`、`heap.usedAfterBytes`、`heap.usedPeakBytes`、
+`heap.usedDeltaBytes`、`heap.usedPeakDeltaBytes` 和 `heap.sampleCount`。该指标用于观察短窗口内
+已用堆峰值和 retained/cache 压力，和 `allocation.bytesPerOperation` 不是同一类指标。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:dependencyInsight --dependency vexra-ldb --configuration runtimeClasspath
+```
+
+验证结果：通过。运行时依赖解析为 `net.xdob.vexra:vexra-ldb:0.12.0-SNAPSHOT`。
+
+同口径 benchmark：
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB alloc/op | H2 alloc/op | ADB heap peak MB | H2 heap peak MB | ADB heap delta MB | H2 heap delta MB | 结果目录 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert batch100` | 57692.31 | 33333.33 | 1.73x | 2707 | 3108 | 165.76 | 177.85 | 17.28 | 15.55 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `point_lookup` | 38961.04 | 217.19 | 179.39x | 2747 | 44769 | 254.24 | 139.29 | 0.15 | 31.92 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `range_scan 4096` | 16483.52 | 200.00 | 82.42x | 26123 | 232709 | 259.89 | 153.69 | 11.85 | 12.18 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `table_count` | 130434.78 | 228.73 | 570.26x | 987 | 42550 | 213.27 | 156.59 | 3.92 | 4.24 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `mixed t8 b100 r4096` | 8310.25 | 8955.22 | 0.93x | 25113 | 35917 | 406.75 | 275.21 | 73.08 | 35.24 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+
+阶段结论：
+
+1. ADB 的 `allocation.bytesPerOperation` 仍然全面低于 H2，说明 ldb snapshot 的低分配方向有效；mixed
+   下为 `25113` vs `35917 bytes/op`。
+2. heap 绝对峰值并没有同步下降。除 insert 外，ADB 的 `heap.usedPeakBytes` 高于 H2，mixed 为
+   `406.75 MB` vs `275.21 MB`，说明 ADB 在正式窗口前后保留了更多 store/cache/可见性相关运行期结构。
+3. 本轮带 1ms heap sampler 的 mixed 吞吐为 ADB `8310.25 ops/s`、H2 `8955.22 ops/s`，低于上一轮无
+   heap 采样时的 ADB mixed 样本。后续判断吞吐应继续使用无采样主 benchmark，heap 压力使用本轮采样字段辅助定位。
+4. 下一步性能优化不应只盯 `allocation/op`，还需要拆分 ADB heap peak 来源：预置数据后的 store cache、
+   latest-column cache、segment/row-count cache、以及 mixed 高并发提交期间的临时对象滞留。
+
+## 第八十二轮：heap checkpoint 拆分与 mixed 复测
+
+本轮继续第八十一轮的 heap peak 归因，将 benchmark 进程内已用堆拆成四个 checkpoint：
+
+| 字段 | 含义 |
+| --- | --- |
+| `heap.checkpoint.initialBytes` | benchmark 路径刚开始时的已用堆 |
+| `heap.checkpoint.afterPrepareBytes` | schema / store / benchmark 数据准备后的已用堆 |
+| `heap.checkpoint.afterWarmupBytes` | warmup 完成、正式测量前的已用堆 |
+| `heap.checkpoint.afterMeasureBytes` | 正式测量完成后的已用堆 |
+| `heap.stage.prepareDeltaBytes` | prepare 阶段相对 initial 的堆变化 |
+| `heap.stage.warmupDeltaBytes` | warmup 阶段相对 prepare 的堆变化 |
+| `heap.stage.measureDeltaBytes` | 正式测量结束相对 warmup 的堆变化 |
+| `heap.stage.measurePeakDeltaBytes` | 正式测量窗口内相对 warmup 的最大峰值变化 |
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+验证结果：通过。
+
+同参数 `mixed_threads8_batch100` 复测：
+
+| 引擎 | ops/s | ADB/H2 | p99 us | alloc bytes/op | heap peak MB | prepare delta MB | warmup delta MB | measure peak delta MB | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ADB | 17341.04 | 2.27x | 7107 | 22776 | 412.43 | 139.83 | 191.45 | 68.54 | `vexra-adb/build/adb-benchmark/heap-stage-20260702-001/adb_mixed_threads8_batch100.properties` |
+| H2 | 7653.06 | 1.00x | 5908 | 35922 | 272.21 | 151.57 | 74.14 | 33.90 | `vexra-adb/build/adb-benchmark/heap-stage-20260702-001/h2_mixed_threads8_batch100.properties` |
+
+阶段结论：
+
+1. 本轮短测下 ADB mixed 吞吐为 H2 的 `2.27x`，说明第八十一轮带 heap sampler 的低吞吐不是
+   ADB 写入路径重新退化。
+2. ADB 的 `allocation.bytesPerOperation` 仍低于 H2，`22776` vs `35922 bytes/op`；但
+   `heap.usedPeakBytes` 和 `heap.stage.measurePeakDeltaBytes` 高于 H2，说明剩余问题更像保留堆和
+   cache 生命周期压力，而不是单次操作分配量。
+3. ADB 的 `warmupDelta` 明显高于 H2，`191.45 MB` vs `74.14 MB`。下一步最有价值的优化应优先拆
+   latest-column cache、segment / row-count cache、store block/cache 和 benchmark 预置数据后的引用保留，
+   再决定是否需要调整缓存上限或预热策略。
+
+## 第八十三轮：接入 LDB multi-get visitor API
+
+本轮按 LDB 侧建议在 ADB store 封装层接入批量点查 visitor API：
+
+1. `DbStore` 新增批量 materialized get 和 visitor get 默认方法，非 LDB store 继续逐个单 key get 回退。
+2. `LdbStore` 覆盖为 `LDB.get(cf, keys)` 和 `LDB.get(cf, keys, visitor)`。
+3. 新增 store-mode allocation boundary workload：
+   `alloc_multiget_materialized` 与 `alloc_multiget_visitor`。
+
+兼容性约束：
+
+- 该改动是 additive API，不改变已有单 key get、scan、ReadSession 和 SQL 语义。
+- visitor 中的 `Slice value` 只在当前回调期间有效；如果 ADB 后续要跨回调缓存 row/value，仍必须复制。
+- 本轮 benchmark 只模拟“命中判断 / 立即消费 value 长度”的场景，不代表完整 row materialization。
+
+验证命令：
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+验证结果：通过。
+
+同口径 store-mode benchmark，`rows=150000`、`operations=3000`、`rangeSize=100`：
+
+| workload | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | heap peak MB | measure peak delta MB | 结果文件 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `alloc_multiget_materialized` | 25862.07 | 27 | 51 | 105 | 66176 | 227.99 | 100.48 | `vexra-adb/build/adb-benchmark/multiget-visitor-20260702-001/alloc_multiget_materialized.properties` |
+| `alloc_multiget_visitor` | 30000.00 | 22 | 37 | 88 | 56807 | 192.82 | 72.70 | `vexra-adb/build/adb-benchmark/multiget-visitor-20260702-001/alloc_multiget_visitor.properties` |
+
+阶段结论：
+
+1. ADB 上层接入 visitor 后，本轮短测吞吐从 `25862.07 ops/s` 提升到 `30000.00 ops/s`，约 `+16.0%`。
+2. `allocation.bytesPerOperation` 从 `66176` 降到 `56807`，约 `-14.2%`。下降幅度低于 LDB 本地
+   benchmark 的 `-26.4%`，原因是 ADB benchmark 仍包含 key 列表构造、DbStore 适配层和统计开销。
+3. heap measured-window 峰值也下降，`measurePeakDelta` 从 `100.48 MB` 降到 `72.70 MB`。后续可以把该
+   API 用到真正的 dense/batch point lookup 热路径，但必须先确认调用方不会跨回调持有 value view。

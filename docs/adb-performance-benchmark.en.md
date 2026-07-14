@@ -6010,3 +6010,145 @@ Conclusion:
 3. The next high-value work is no longer ldb write throughput. It is reducing
    fixed SQL range-count / point-lookup costs and allocation at the H2 executor
    boundary.
+
+## Round 81: Heap Peak Sampling and ldb Snapshot Retest
+
+This round adds in-process JVM heap sampling to the measured window in
+`AdbBenchmarkMain`. Reports now include `heap.usedBeforeBytes`,
+`heap.usedAfterBytes`, `heap.usedPeakBytes`, `heap.usedDeltaBytes`,
+`heap.usedPeakDeltaBytes`, and `heap.sampleCount`. These fields describe used
+heap peak and retained/cache pressure in the short benchmark process; they are
+not the same metric as `allocation.bytesPerOperation`.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+.\gradlew.bat :vexra-adb:dependencyInsight --dependency vexra-ldb --configuration runtimeClasspath
+```
+
+Result: passed. Runtime dependency resolution used
+`net.xdob.vexra:vexra-ldb:0.12.0-SNAPSHOT`.
+
+Same-shape benchmark:
+
+| workload | ADB ops/s | H2 ops/s | ADB/H2 | ADB alloc/op | H2 alloc/op | ADB heap peak MB | H2 heap peak MB | ADB heap delta MB | H2 heap delta MB | Result dir |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `insert batch100` | 57692.31 | 33333.33 | 1.73x | 2707 | 3108 | 165.76 | 177.85 | 17.28 | 15.55 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `point_lookup` | 38961.04 | 217.19 | 179.39x | 2747 | 44769 | 254.24 | 139.29 | 0.15 | 31.92 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `range_scan 4096` | 16483.52 | 200.00 | 82.42x | 26123 | 232709 | 259.89 | 153.69 | 11.85 | 12.18 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `table_count` | 130434.78 | 228.73 | 570.26x | 987 | 42550 | 213.27 | 156.59 | 3.92 | 4.24 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+| `mixed t8 b100 r4096` | 8310.25 | 8955.22 | 0.93x | 25113 | 35917 | 406.75 | 275.21 | 73.08 | 35.24 | `vexra-adb/build/adb-benchmark/ldb-snapshot-h2-heap-20260702-001` |
+
+Conclusion:
+
+1. ADB still has lower `allocation.bytesPerOperation` than H2 in every row;
+   for mixed it is `25113` vs `35917 bytes/op`.
+2. Absolute heap peak did not fall with allocation. Except for insert, ADB has
+   higher `heap.usedPeakBytes` than H2. In mixed it is `406.75 MB` vs
+   `275.21 MB`, which means ADB retains more store/cache/visibility runtime
+   structures around the measured window.
+3. With the 1 ms heap sampler enabled, mixed throughput is `8310.25 ops/s` for
+   ADB and `8955.22 ops/s` for H2, below the previous unsampled ADB mixed
+   sample. Throughput decisions should continue to use the normal benchmark;
+   heap sampling should be used as a pressure and attribution aid.
+4. The next performance work should not only chase `allocation/op`; it should
+   split ADB heap peak sources such as post-load store cache, latest-column
+   cache, segment / row-count cache, and temporary retention during mixed
+   high-concurrency commits.
+
+## Round 82: Heap Checkpoint Split and Mixed Retest
+
+This round continues the Round 81 heap-peak attribution work. The benchmark now
+splits in-process used heap into four checkpoints:
+
+| Field | Meaning |
+| --- | --- |
+| `heap.checkpoint.initialBytes` | Used heap at the start of the benchmark path |
+| `heap.checkpoint.afterPrepareBytes` | Used heap after schema / store / benchmark data preparation |
+| `heap.checkpoint.afterWarmupBytes` | Used heap after warmup and before the measured window |
+| `heap.checkpoint.afterMeasureBytes` | Used heap after the measured window |
+| `heap.stage.prepareDeltaBytes` | Prepare-stage heap change relative to initial |
+| `heap.stage.warmupDeltaBytes` | Warmup-stage heap change relative to prepare |
+| `heap.stage.measureDeltaBytes` | End-of-measure heap change relative to warmup |
+| `heap.stage.measurePeakDeltaBytes` | Maximum measured-window peak change relative to warmup |
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+Result: passed.
+
+Same-parameter `mixed_threads8_batch100` retest:
+
+| Engine | ops/s | ADB/H2 | p99 us | alloc bytes/op | heap peak MB | prepare delta MB | warmup delta MB | measure peak delta MB | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ADB | 17341.04 | 2.27x | 7107 | 22776 | 412.43 | 139.83 | 191.45 | 68.54 | `vexra-adb/build/adb-benchmark/heap-stage-20260702-001/adb_mixed_threads8_batch100.properties` |
+| H2 | 7653.06 | 1.00x | 5908 | 35922 | 272.21 | 151.57 | 74.14 | 33.90 | `vexra-adb/build/adb-benchmark/heap-stage-20260702-001/h2_mixed_threads8_batch100.properties` |
+
+Conclusions:
+
+1. In this short run, ADB mixed reaches `2.27x` of H2. The lower Round 81
+   sampled throughput should not be treated as a renewed ADB write-path
+   regression.
+2. ADB still has lower `allocation.bytesPerOperation` than H2, `22776` vs
+   `35922 bytes/op`; however, `heap.usedPeakBytes` and
+   `heap.stage.measurePeakDeltaBytes` are higher than H2. The remaining issue
+   looks more like retained heap and cache lifetime pressure than per-operation
+   allocation.
+3. ADB's `warmupDelta` is much higher than H2, `191.45 MB` vs `74.14 MB`.
+   The next highest-value work should split latest-column cache, segment /
+   row-count cache, store block/cache, and references retained after benchmark
+   data loading before changing cache limits or warmup policy.
+
+## Round 83: Adopt LDB Multi-get Visitor API
+
+This round follows the LDB-side recommendation and wires the batch point-lookup
+visitor API into the ADB store abstraction:
+
+1. `DbStore` now has default materialized batch get and visitor batch get
+   methods. Non-LDB stores keep the old per-key fallback.
+2. `LdbStore` overrides them with `LDB.get(cf, keys)` and
+   `LDB.get(cf, keys, visitor)`.
+3. Two store-mode allocation-boundary workloads were added:
+   `alloc_multiget_materialized` and `alloc_multiget_visitor`.
+
+Compatibility constraints:
+
+- The change is additive and does not alter existing single-key get, scan,
+  ReadSession, or SQL semantics.
+- The `Slice value` passed to the visitor is valid only during the callback.
+  If ADB later needs to cache a row/value across callbacks, it must still copy.
+- This benchmark only models hit checks / immediate value-length consumption;
+  it does not represent full row materialization.
+
+Validation:
+
+```powershell
+.\gradlew.bat :vexra-adb:test --tests net.xdob.vexra.adb.AdbBenchmarkMainTest
+```
+
+Result: passed.
+
+Same-shape store-mode benchmark, `rows=150000`, `operations=3000`,
+`rangeSize=100`:
+
+| workload | ops/s | p50 us | p95 us | p99 us | alloc bytes/op | heap peak MB | measure peak delta MB | Result file |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `alloc_multiget_materialized` | 25862.07 | 27 | 51 | 105 | 66176 | 227.99 | 100.48 | `vexra-adb/build/adb-benchmark/multiget-visitor-20260702-001/alloc_multiget_materialized.properties` |
+| `alloc_multiget_visitor` | 30000.00 | 22 | 37 | 88 | 56807 | 192.82 | 72.70 | `vexra-adb/build/adb-benchmark/multiget-visitor-20260702-001/alloc_multiget_visitor.properties` |
+
+Conclusions:
+
+1. After the ADB-side visitor wiring, throughput improved from
+   `25862.07 ops/s` to `30000.00 ops/s`, about `+16.0%` in this short run.
+2. `allocation.bytesPerOperation` dropped from `66176` to `56807`, about
+   `-14.2%`. The drop is smaller than the LDB-local `-26.4%` benchmark because
+   this ADB benchmark still includes key-list construction, the DbStore adapter,
+   and benchmark accounting overhead.
+3. The measured-window heap peak also fell: `measurePeakDelta` moved from
+   `100.48 MB` to `72.70 MB`. The next step is to use this API in real
+   dense/batch point-lookup hot paths after confirming callers do not retain
+   value views beyond the callback.
